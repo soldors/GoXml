@@ -46,6 +46,11 @@ type expander struct {
 // Result 展开结果。
 type Result struct {
 	Doc *contracts.DocumentIR
+	// Schemas 是本次展开得到的组件契约视图，供 Analyzer 查询。
+	//
+	// 它与 Doc 属于同一编译上下文，不得跨文件或跨轮次混用。
+	// 即使 Diags 非空也会填充，便于工具在出错时仍能展示契约。
+	Schemas SchemaRegistry
 	// Diags 至少有一条时，Doc 不可用于代码生成。
 	Diags []contracts.CompilerError
 }
@@ -55,9 +60,12 @@ type Result struct {
 // 输入文档必须已通过 Parser 的语法检查。
 func Expand(file string, doc *contracts.DocumentIR) Result {
 	if doc == nil {
-		return Result{Diags: []contracts.CompilerError{
-			contracts.NewError(file, contracts.SourceSpan{}, CodeNilDocument, "nil document"),
-		}}
+		return Result{
+			Schemas: newRegistry(nil),
+			Diags: []contracts.CompilerError{
+				contracts.NewError(file, contracts.SourceSpan{}, CodeNilDocument, "nil document"),
+			},
+		}
 	}
 
 	e := &expander{
@@ -79,7 +87,7 @@ func Expand(file string, doc *contracts.DocumentIR) Result {
 		}
 	}
 	if len(e.diags) > 0 {
-		return Result{Diags: e.diags}
+		return Result{Schemas: newRegistry(e.schemas), Diags: e.diags}
 	}
 
 	// 分类页面与所有 Def 体内的元素。
@@ -97,11 +105,11 @@ func Expand(file string, doc *contracts.DocumentIR) Result {
 	// 展开必须在分类之后：组件调用的属性需要先按 Schema 分类，
 	// 才能确定哪些是 Prop、哪些是事件。
 	if len(e.diags) > 0 {
-		return Result{Diags: e.diags}
+		return Result{Schemas: newRegistry(e.schemas), Diags: e.diags}
 	}
 	e.expandDefs()
 
-	return Result{Doc: doc, Diags: e.diags}
+	return Result{Doc: doc, Schemas: newRegistry(e.schemas), Diags: e.diags}
 }
 
 // registerDef 把 <Def> 转换为 ComponentSchema 并检查契约冲突。
