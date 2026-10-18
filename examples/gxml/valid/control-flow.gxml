@@ -1,0 +1,20 @@
+<!-- 控制流：If / Then / Else -->
+<Goxml Version="1" ViewModel="demo.ViewModel">
+  <Page Route="/flow">
+    <Column Padding="24" Gap="12">
+      <If Condition="{Loading}">
+        <Then>
+          <Text Value="加载中…"/>
+        </Then>
+        <Else>
+          <Text Value="{User.Name}"/>
+        </Else>
+      </If>
+      <If Condition="{!ReadOnly}">
+        <Then>
+          <Button Text="编辑" Click="Edit"/>
+        </Then>
+      </If>
+    </Column>
+  </Page>
+</Goxml>

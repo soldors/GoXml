@@ -1,0 +1,10 @@
+<!-- 期望 GXML-DEF-010：组件间接递归引用 -->
+<Goxml Version="1">
+  <Defs>
+    <Def Name="A" Props="T:string"><Column><B T="{T}"/></Column></Def>
+    <Def Name="B" Props="T:string"><Column><A T="{T}"/></Column></Def>
+  </Defs>
+  <Page Route="/">
+    <A T="x"/>
+  </Page>
+</Goxml>

@@ -1,0 +1,11 @@
+<!-- 期望 GXML-DEF-007：组件未声明该属性 -->
+<Goxml Version="1">
+  <Defs>
+    <Def Name="Card" Props="Title:string">
+      <Text Value="{Title}"/>
+    </Def>
+  </Defs>
+  <Page Route="/">
+    <Card Title="x" Bogus="y"/>
+  </Page>
+</Goxml>

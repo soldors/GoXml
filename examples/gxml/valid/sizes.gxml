@@ -1,0 +1,16 @@
+<!-- 尺寸：自然 / Fill / 固定，两个方向独立 -->
+<Goxml Version="1">
+  <Page Route="/sizes">
+    <Column Padding="16" Gap="8">
+      <Text Value="自然尺寸"/>
+      <Text Value="固定 120x32" Width="120" Height="32"/>
+      <Text Value="横向填充" Width="Fill" Height="24"/>
+      <Row Height="48" Gap="8">
+        <Text Value="占三分之一" Width="Fill"/>
+        <Text Value="固定 80" Width="80"/>
+        <Text Value="占剩余" Width="Fill"/>
+      </Row>
+      <Text Value="小数尺寸 80.5" Width="80.5"/>
+    </Column>
+  </Page>
+</Goxml>

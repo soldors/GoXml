@@ -1,0 +1,8 @@
+<!-- 期望 GXML-ATTR-003：Baseline 仅允许 Row -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Column Align="Baseline">
+      <Text Value="a"/>
+    </Column>
+  </Page>
+</Goxml>

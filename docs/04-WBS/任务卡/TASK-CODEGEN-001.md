@@ -38,7 +38,7 @@
 实现必须遵守 `docs/03-架构/adr/ADR-0008-布局属性模型.md` 与 `GXML语言规范.md` §3.1：
 
 - **`Align`**：`Start/Center/End/Baseline` → `layout.Start/Middle/End/Baseline`。**注意 `Center` 映射到 `Middle`**。
-- **`Baseline` 适用面**：只允许 `<Row Align="Baseline">`。`<Column>` 与 `<Grid>` 上用 `Baseline` 是编译错误 `GXML-ATTR-002`，Codegen 不应收到这种输入。
+- **`Baseline` 适用面**：只允许 `<Row Align="Baseline">`。`<Column>` 与 `<Grid>` 上用 `Baseline` 是编译错误 `GXML-ATTR-003`，Codegen 不应收到这种输入。
 - **v1 无 `AlignSelf`**：规范 §3.1.2 已移除子项级对齐，Codegen 不生成任何子项覆盖逻辑。
 - **轴向感知默认值**：`<Row>` 未写 `Align` 时生成 `layout.Middle`；`<Column>` 生成 `layout.Start`。这是 Codegen 的责任，IR 层保持 `AlignUnset`。
 - **`Justify`**：按 ADR-0008 §2.4 映射表转换，**方向相反**（`Start→SpaceEnd`、`End→SpaceStart`），不可直接同名赋值。
@@ -71,7 +71,7 @@ Column{ Gap: rowGap }
 
 - **补位**：最后一行按列定义补齐剩余列（固定列补等宽 `Rigid` 占位，弹性列补同权重 `Flexed` 占位）。补位是 Codegen 内部的布局项，**不得写回 IR**、不得创建控件、不得参与状态 Diff。
 - **补位必须计入 `Gap` 计数**：补位行的子项数量必须等于列数，否则 `Flex` 预留的间距数少一个，弹性列会变宽。
-- **子项 `Width` 不进入 Codegen**：Parser 已报 `GXML-ATTR-002`；若在 Codegen 收到带 `Width` 的 Grid 子项，属于上游缺陷，应断言失败。
+- **子项 `Width` 不进入 Codegen**：Parser 已报 `GXML-ATTR-003`；若在 Codegen 收到带 `Width` 的 Grid 子项，属于上游缺陷，应断言失败。
 - **不自行计算像素宽度**：列宽全部交给 `Rigid`/`Flexed`，由 Gio 分配。取整规则见规范 §3.1.6；其中「可能留下未分配像素」是**非保证项**，**不得补偿**（补偿会让生成代码与规范描述不一致）。
 
 ## 1.5 尺寸解析（规范 §3.1.7 / ADR-0008 §2.8）

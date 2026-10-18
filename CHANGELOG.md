@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **P0-2 `Fill` 语义错误**：原规范把 `Fill` 等同于「生成 `Flexed(1)`」，但 `Flexed` 只作用于主轴——在 `<Column Width="Fill">` 里完全无效。现改为语言层语义（「占满父容器在对应方向上的可用空间」），由 Codegen 按主轴/交叉轴分别实现。同步修正 `TASK-CODEGEN-001` 中错误的映射指令。
 - **P0-1 v1 移除 `AlignSelf`（子项级对齐）**：原表写「同 `Align`」，语义与实现都不成立。核查 Gio 后发现 `layout.FlexChild` 没有对齐字段，`Flex.Alignment` 是容器级——实现 `AlignSelf` 只能给每个子项包一层 `Stack`，代价是多一层嵌套、破坏静态子树固化、每帧多一次闭包分配（实测约 11× 慢）。而 `AlignSelf` 的价值恰是「省一层嵌套」，用嵌套换嵌套净收益为零，故 v1 不提供，需要时用嵌套 `<Row>`/`<Column>` 表达。详见 ADR-0008 §2.6.1。
-- **P0-3 `Baseline` 适用范围未收紧**：原规范只禁止 `<Column>`，`<Grid>` 未定义。现限定仅 `<Row Align="Baseline">` 合法，其余报 `GXML-ATTR-002`。
+- **P0-3 `Baseline` 适用范围未收紧**：原规范只禁止 `<Column>`，`<Grid>` 未定义。现限定仅 `<Row Align="Baseline">` 合法，其余报 `GXML-ATTR-003`。
 - **放弃 `Baseline == 0` 的隐式兜底**：原方案让 Codegen 生成 `if d.Baseline == 0 { d.Baseline = d.Size.Y }`，会把「基线在顶部」误改成「底部基线」。现明确 `Baseline == 0` 是合法值，Codegen 不做任何改写，基线正确性由控件实现方负责。
 - **尺寸数值格式未校验**：`strconv.ParseFloat` 接受 `1e5`、`Inf`、`NaN`，与规范「只接受十进制」冲突。现显式拒绝指数形式与单位后缀。
 - 补全尺寸约束冲突规则：无界约束下 `Fill` 退化为自然尺寸；固定尺寸超出父容器不裁剪不报错；多个 `Fill` 兄弟均分剩余空间。
@@ -21,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - **`internal/compiler/sizelayout`**：尺寸决策的可执行形式（`Resolve` / `ResolveMainCross`），Codegen 应直接调用而非自行解释规范。13 个测试，覆盖率 94.4%。
 - **Grid 布局模型冻结（P1-4）**：规范 §3.1.6 与 ADR-0008 §2.7 完整定义行优先排列、最后一行补位、列宽计算、`Gap` 双轴、单元格约束与取整规则。
 - **`internal/compiler/grid`**：列宽计算的规范参考实现（oracle），100% 覆盖。18 个测试，其中 `TestMatchesGioMeasurements` 逐项复现 Gio v0.10.3 的实测输出。
-- **Grid 输入校验**：`<Grid>` 无子节点、直接子项设置 `Width` 均报 `GXML-ATTR-002`。
+- **Grid 输入校验**：`<Grid>` 无子节点、直接子项设置 `Width` 均报 `GXML-ATTR-003`。
 
 - **事件语法与 Schema 分类机制**（规范 §5 重写）。事件由 `@Click` 改为 `Click`（`@` 非合法 XML 属性名字符，标准库直接报语法错误）；属性/事件由组件类型化 Schema 区分，未知名称**绝不退化为事件**。
 - **`internal/compiler/parser`**：GXML 语法分析器。复用 `encoding/xml` 处理 XML 规则，用 `InputOffset()` 维护字节偏移到行列的映射，并对起始标签原文重扫以获得**每个属性**的精确 `SourceSpan`（`xml.Attr` 本身不带位置）。列号按 rune 计数，中文与 ASCII 混排定位正确。93 个测试，覆盖率 **86.8%**。

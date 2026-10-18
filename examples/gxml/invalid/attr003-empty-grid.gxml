@@ -1,0 +1,6 @@
+<!-- 期望 GXML-ATTR-003：Grid 无子节点 -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Grid Columns="100 *"></Grid>
+  </Page>
+</Goxml>

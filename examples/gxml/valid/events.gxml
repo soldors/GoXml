@@ -1,0 +1,15 @@
+<!-- 事件绑定与列表：Click / ValueChanged / For + Key -->
+<Goxml Version="1" ViewModel="demo.ViewModel">
+  <Page Route="/list">
+    <Column Padding="16" Gap="12">
+      <Input Value="{User.Name}" Width="Fill"/>
+      <For Each="item" In="{Items}" Key="{item.ID}">
+        <Row Gap="8" Align="Center">
+          <Text Value="{item.Name}" Width="Fill"/>
+          <Button Text="删除" Click="Delete(item.ID)"/>
+        </Row>
+      </For>
+      <Button Text="新增" Click="Add"/>
+    </Column>
+  </Page>
+</Goxml>

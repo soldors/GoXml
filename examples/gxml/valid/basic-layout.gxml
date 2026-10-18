@@ -1,0 +1,12 @@
+<!-- 基础布局：Padding / Gap / Align / Justify -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Column Padding="24" Gap="16" Align="Start">
+      <Text Value="账户设置" Color="#333333"/>
+      <Row Gap="8" Justify="End">
+        <Button Text="取消"/>
+        <Button Text="保存"/>
+      </Row>
+    </Column>
+  </Page>
+</Goxml>

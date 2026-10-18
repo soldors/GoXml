@@ -1,0 +1,6 @@
+<!-- 期望 GXML-ATTR-005：Columns 是布局属性，但不适用于 Button -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Button Text="保存" Columns="72 *"/>
+  </Page>
+</Goxml>

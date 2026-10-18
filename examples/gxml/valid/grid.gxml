@@ -1,0 +1,17 @@
+<!-- Grid：固定列 + 弹性列 + 行优先流，最后一行不完整 -->
+<Goxml Version="1" ViewModel="demo.ViewModel">
+  <Page Route="/grid">
+    <Column Padding="16">
+      <Grid Columns="72 * 96" Gap="8" Align="Center">
+        <Text Value="姓名"/>
+        <Input Value="{User.Name}"/>
+        <Button Text="保存"/>
+        <Text Value="年龄"/>
+        <Input Value="{User.Age}"/>
+        <Button Text="重置"/>
+        <Text Value="备注"/>
+        <Input Value="{User.Note}"/>
+      </Grid>
+    </Column>
+  </Page>
+</Goxml>

@@ -14,22 +14,70 @@ func fixed(v float32) contracts.SizeSpec { return contracts.FixedSize(v) }
 // 无界判定
 // ---------------------------------------------------------------------------
 
-func TestUnboundedThreshold(t *testing.T) {
+func TestUnboundedBoundaries(t *testing.T) {
+	// 阈值前后各一像素。
 	if IsUnbounded(UnboundedThreshold - 1) {
 		t.Error("阈值减一不应判为无界")
 	}
 	if !IsUnbounded(UnboundedThreshold) {
 		t.Error("阈值本身应判为无界")
 	}
-	// Gio 用 math.MaxInt 表示无界，必须触发。
-	if !IsUnbounded(int(^uint(0) >> 1)) {
+	if !IsUnbounded(UnboundedThreshold + 1) {
+		t.Error("阈值加一应判为无界")
+	}
+}
+
+func TestUnboundedDetectsMaxInt(t *testing.T) {
+	// 明显的「无穷」标记必须触发。
+	maxInt := int(^uint(0) >> 1)
+	if !IsUnbounded(maxInt) {
 		t.Error("MaxInt 应判为无界")
 	}
-	// 常见屏幕宽度不应被判为无界。
-	for _, w := range []int{1920, 2560, 3840, 7680} {
+	if !IsUnbounded(maxInt - 1) {
+		t.Error("MaxInt-1 应判为无界")
+	}
+}
+
+func TestUnboundedDoesNotMisjudgeRealSizes(t *testing.T) {
+	// 真实设备的单边像素数永不应被判为无界。
+	real := []int{
+		320, 480, 640, 720, 768, 1080, 1280, 1440, 1600,
+		1920, 2160, 2560, 2880, 3200, 3840, 5120, 6016, 7680,
+	}
+	for _, w := range real {
 		if IsUnbounded(w) {
-			t.Errorf("%d 不应判为无界", w)
+			t.Errorf("%d 是真实尺寸，不应判为无界", w)
 		}
+	}
+}
+
+func TestUnboundedDoesNotMisjudgeLargeFixedSizes(t *testing.T) {
+	// 合法的超大固定尺寸（例如长文档页面高度）不应被误判为无界。
+	// 注意：固定尺寸本身不参与无界判定，这里验证的是「即使把一个大值
+	// 当作可用上限传入，只要未达阈值，Fill 仍应正常填充」。
+	for _, h := range []int{10000, 50000, 100000, 500000, UnboundedThreshold - 1} {
+		if IsUnbounded(h) {
+			t.Errorf("可用高度 %d 未达阈值，不应判为无界", h)
+		}
+		if got := Resolve(fill(), AxisCross, h); got != DirectiveFillCross {
+			t.Errorf("可用高度 %d 下交叉轴 Fill = %v, want FillCross", h, got)
+		}
+	}
+}
+
+func TestLargeFixedSizeAlwaysExact(t *testing.T) {
+	// 固定尺寸与可用空间无关：即使可用空间无界，固定值仍精确。
+	for _, v := range []float32{80, 5000, 500000, 2 << 20} {
+		if got := Resolve(fixed(v), AxisCross, UnboundedThreshold); got != DirectiveExact {
+			t.Errorf("固定 %v 在无界下 = %v, want Exact", v, got)
+		}
+	}
+}
+
+func TestUnboundedBoundaryIsInclusive(t *testing.T) {
+	// 明确记录阈值判定的开闭区间，避免后续调整时语义漂移。
+	if IsUnbounded(UnboundedThreshold-1) == IsUnbounded(UnboundedThreshold) {
+		t.Error("阈值处必须发生状态切换")
 	}
 }
 

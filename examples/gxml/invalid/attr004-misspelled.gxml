@@ -1,0 +1,6 @@
+<!-- 期望 GXML-ATTR-004：拼写错误的属性名，绝不能退化为事件 -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Button Text="保存" Clik="Save"/>
+  </Page>
+</Goxml>

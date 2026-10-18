@@ -1,0 +1,26 @@
+<!-- 组件：Def + Props + Slot，调用点内联展开 -->
+<!-- 注意：v1 的 <Slot/> 只能被一个子节点替换，多个子节点需用 <Column> 包裹。 -->
+<Goxml Version="1" ViewModel="demo.ViewModel">
+  <Defs>
+    <Def Name="Field" Props="Label:string; Value:string">
+      <Row Gap="12" Align="Center">
+        <Text Value="{Label}" Width="72"/>
+        <Input Value="{Value}" Width="Fill"/>
+      </Row>
+    </Def>
+    <Def Name="Panel" Props="Title:string">
+      <Column Padding="12" Gap="8" Background="#F5F5F5">
+        <Text Value="{Title}"/>
+        <Slot/>
+      </Column>
+    </Def>
+  </Defs>
+  <Page Route="/components">
+    <Panel Title="账户">
+      <Column Gap="8">
+        <Field Label="姓名" Value="{User.Name}"/>
+        <Field Label="邮箱" Value="{User.Email}"/>
+      </Column>
+    </Panel>
+  </Page>
+</Goxml>

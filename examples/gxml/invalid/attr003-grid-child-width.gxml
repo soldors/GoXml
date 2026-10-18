@@ -1,0 +1,8 @@
+<!-- 期望 GXML-ATTR-003：Grid 直接子项不得设置 Width -->
+<Goxml Version="1">
+  <Page Route="/">
+    <Grid Columns="100 *">
+      <Text Value="列定义拥有宽度" Width="50"/>
+    </Grid>
+  </Page>
+</Goxml>
