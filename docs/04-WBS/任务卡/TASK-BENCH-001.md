@@ -22,6 +22,7 @@
 | TASK-BENCH-001-6 | 文本 shaping 对照：稳定字符串 vs 每帧变化字符串 | go test -run '^$' -bench 'Text' -benchmem ./benchmarks/... |
 | TASK-BENCH-001-7 | 实现 `make bench-assert` 性能不变量断言 | make bench-assert |
 | TASK-BENCH-001-8 | 字体加载耗时与 CJK 文本基准（依赖 TASK-FONT-001） | go test -run '^$' -bench 'Font' ./benchmarks/... |
+| TASK-BENCH-001-9 | 抽象开销对照：接口派发 vs 具体类型调用（ADR-0001 §3.2 的 5.9× 复现） | go test -run '^$' -bench 'Adt' -benchmem ./benchmarks/... |
 
 ## 3. 必须断言的性能不变量
 依据 `docs/03-架构/性能预算与优化策略.md` §3：

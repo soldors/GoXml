@@ -17,6 +17,12 @@ All notable changes to this project will be documented in this file.
 - **`<Page>` 布局语义缺失**：规范从未定义 `<Page>` 如何排列多个子节点。现明确等价于没有 `Gap`/`Padding` 的 `<Column>`（垂直排列），避免按 `Stack` 叠放导致的静默覆盖。
 
 ### Added
+- **ADR-0001 / 0002 / 0003 重构**：三份此前只有 5–6 行结论的根基文档补齐为完整决策记录，统一采用「证据分级」结构：项目实测 / 项目证据 / 外部事实 / 设计判断四类分离，外部框架事实附来源且明确限定适用范围。
+- **ADR-0001**：加入构建实测（Windows 零 CGO，Linux/macOS 必须 CGO）与性能量级证据，并声明 11×/5.9× **当前不可复现**（仓库无 Benchmark 代码，复现任务为 TASK-BENCH-001-5/9）。外部事实只引用 Gio 官方 README、Fyne Quick Start、Wails How-does-it-work，并记录 Fyne「C 编译器仅开发环境需要」这一官方限定。
+- **ADR-0002**：记录四组语法决议、`@` 非合法 XML 字符的实测、`Clik` 拼写错误绝不退化为事件，以及 Parser/Expander/Analyzer 分层是被两个具体发现逼出来的（Parser 不能内置控件白名单；适用性检查需 Schema 知识）。
+- **ADR-0003**：明确浅对比的**适用边界与漏更新清单**（指针别名、原地修改、Map 不参与 Diff），并声明 ShadowState/Dirty Mask 尚未实现。
+- **规范 §7.2.2 补充 `<Slot/>` 单子节点限制的完整论证**：插槽可能处于任意布局上下文，自动包裹会改变布局语义（`<Row><Icon/><Slot/></Row>` 注入多子节点会被强制纵向堆叠且无法覆盖）。
+- **TASK-BENCH-001-9**：新增抽象开销基准子任务，使 5.9× 有明确的复现路径。
 - **尺寸组合与约束传递冻结（P1-5）**：规范新增 §3.1.7，定义主轴/交叉轴判定（含 `<Page>` 等价于无 `Gap`/`Padding` 的 `<Column>`）、单方向解析、无界约束（阈值 `1 << 20`）、嵌套传递与 9 种 `Width`×`Height` 组合矩阵。ADR-0008 新增 §2.8 记录选项依据。
 - **`internal/compiler/sizelayout`**：尺寸决策的可执行形式（`Resolve` / `ResolveMainCross`），Codegen 应直接调用而非自行解释规范。13 个测试，覆盖率 94.4%。
 - **Grid 布局模型冻结（P1-4）**：规范 §3.1.6 与 ADR-0008 §2.7 完整定义行优先排列、最后一行补位、列宽计算、`Gap` 双轴、单元格约束与取整规则。
