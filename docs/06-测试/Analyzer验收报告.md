@@ -101,7 +101,7 @@ analyzer                    141 测试 · 92.1% 覆盖
 
 | 项目 | 状态 | 原因 |
 |---|---|---|
-| **编排层门禁** | ❌ 未验证 | Codegen 与编排层都不存在。当前只证明 `Verified()` 拒绝非 OK 结果，**未证明**管线阻止了 Codegen 执行 |
+| ~~**编排层门禁**~~ | ✅ **已验证**（2026-10-19，`d5c083b`） | 原状态为「❌ 未验证」（基准 `9381542`）：Codegen 与编排层都不存在。`d5c083b` 实现 `internal/compiler/pipeline` 后，由 `TestGatePartialDoesNotCallCodegen` / `TestGateBlockedDoesNotCallCodegen` 断言 Codegen 调用计数为 0，`TestRunNeverWritesFiles` 断言无文件产生。证据见 `TASK-ORCH-001` §6.1 |
 | **`<Def>` 调用点的事件签名** | ❌ 未校验 | v1 不传播 Def 事件（规范 §7.2.3），展开后事件消失，物理上无法校验。由 `TestDefEventNotSignatureChecked` 锁定 |
 | **端到端生成** | ❌ 不存在 | 无 `codegen` 包，无 CLI |
 | **`color`/`insets` 载荷** | ⚠️ 仅单元测试 | 没有内置事件使用这两类载荷，无法通过 `.gxml` 走到该分支 |
@@ -122,4 +122,9 @@ Codegen 可以依赖以下**已验证**的事实：
 
 - `TypeInfo.Display` 的格式（仅用于诊断，随时可能变化）
 - `Facts` 中存在某个节点的条目（未校验的节点不会有）
-- `StatusOK` 意味着整条管线安全（编排层门禁尚未验证）
+- `StatusOK` 意味着整条管线安全——**编排层门禁已于 `d5c083b` 验证**，
+  但它只证明「失败不产生产物」，不证明生成结果正确
+
+> **状态基准规则**：本节的「未验证」结论均须注明基准提交。结论发生变化时
+> 更新当前状态并保留原基准，不得让历史结论冒充当前事实；也不得仅凭
+> 「代码已实现」就改判为已验证——必须有对应验收项的实测证据。

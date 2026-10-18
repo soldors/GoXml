@@ -138,7 +138,7 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error)
 | TASK-CODEGEN-001-3 | 跑通 Golden 编译测试集 | go test -v -run TestGoldenCodegen ./internal/compiler/codegen |
 | TASK-CODEGEN-001-4 | 入口只接受 `*analyzer.VerifiedDoc`，并拒绝未经校验的 IR | go test -v -run TestRejects ./internal/compiler/codegen | ✅ 完成 |
 | TASK-CODEGEN-001-5 | 生成结果能被 Go 工具链编译（临时模块 `go build`） | go test -v -run TestGeneratedCompiles ./internal/compiler/codegen | ✅ 完成 |
-| TASK-CODEGEN-001-6 | 编排层门禁：`Partial`/`Blocked` 不调用 Codegen、不产生任何文件 | go test -v -run TestPipelineGate ./internal/compiler | ⬜ 待编排层 |
+| TASK-CODEGEN-001-6 | 编排层门禁：`Partial`/`Blocked` 不调用 Codegen、不产生任何文件 | go test -v ./internal/compiler/pipeline/ | ✅ 完成（由 `TASK-ORCH-001`，`d5c083b`） |
 
 ## 3. 验收要求（必须全部满足）
 
@@ -191,7 +191,8 @@ ok  （全仓 496 个测试）
 
 ### 仍未完成
 
-- 子任务 6（编排层门禁）：编排层不存在，第 20 条验收项仍**不可执行**
+- ~~子任务 6（编排层门禁）~~ → 已由 `TASK-ORCH-001`（`d5c083b`）完成，
+  契约 §13 第 20 条已关闭
 - 绑定、事件、`<For>`、Grid、多控件：后续切片
 
 ## 4. 首个纵向切片的后续扩展
