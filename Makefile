@@ -22,10 +22,10 @@ lint: contract-lint
 	golangci-lint run ./...
 
 # 单元测试。
-#   - 目前仅 contracts/ 存在；internal/ 与 pkg/ 由后续任务创建。
 #   - 使用 `go test ./...` 而非显式列举目录，避免目录尚不存在时 go 报
 #     "directory prefix does not exist" 而把门禁卡死。
-#   - contracts 不依赖 gio，CGO_ENABLED=0 安全。
+#   - 当前前端（contracts / parser / expander / analyzer 等）不依赖 gio，
+#     CGO_ENABLED=0 安全。
 test:
 	CGO_ENABLED=0 go test -v -cover ./...
 
