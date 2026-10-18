@@ -1,7 +1,7 @@
 # TASK-CODEGEN-001：实现 Gio 布局与控件代码生成器
 
 ## 元信息
-- 状态：Todo | 优先级：P0 | 预计：6h
+- 状态：**进行中**（最小纵向切片已完成）| 优先级：P0 | 预计：6h
 - 依赖：TASK-ANALYZER-001（已完成并整体验收）
 - 输出契约：`docs/03-架构/代码生成输出契约.md`（§2.1–§2.3 入口与门禁，§13 验收项）
 
@@ -136,9 +136,9 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error)
 | TASK-CODEGEN-001-1 | 将 `<Column>`/`<Row>`/`<Grid>`/`<Spacer>` 映射为 Gio Flex 代码 | go test -v -run TestGenerateLayout ./internal/compiler/codegen |
 | TASK-CODEGEN-001-2 | 生成基础控件与 Shadow Struct 状态定义 | go test -v -run TestGenerateWidgets ./internal/compiler/codegen |
 | TASK-CODEGEN-001-3 | 跑通 Golden 编译测试集 | go test -v -run TestGoldenCodegen ./internal/compiler/codegen |
-| TASK-CODEGEN-001-4 | 入口只接受 `*analyzer.VerifiedDoc`，并拒绝未经校验的 IR | go test -v -run TestGenerateRequiresVerified ./internal/compiler/codegen |
-| TASK-CODEGEN-001-5 | 生成结果能被 Go 工具链编译（临时模块 `go build`） | go test -v -run TestGeneratedCompiles ./internal/compiler/codegen |
-| TASK-CODEGEN-001-6 | 编排层门禁：`Partial`/`Blocked` 不调用 Codegen、不产生任何文件 | go test -v -run TestPipelineGate ./internal/compiler |
+| TASK-CODEGEN-001-4 | 入口只接受 `*analyzer.VerifiedDoc`，并拒绝未经校验的 IR | go test -v -run TestRejects ./internal/compiler/codegen | ✅ 完成 |
+| TASK-CODEGEN-001-5 | 生成结果能被 Go 工具链编译（临时模块 `go build`） | go test -v -run TestGeneratedCompiles ./internal/compiler/codegen | ✅ 完成 |
+| TASK-CODEGEN-001-6 | 编排层门禁：`Partial`/`Blocked` 不调用 Codegen、不产生任何文件 | go test -v -run TestPipelineGate ./internal/compiler | ⬜ 待编排层 |
 
 ## 3. 验收要求（必须全部满足）
 
@@ -154,9 +154,49 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error)
 > 第 6 条中的第 20 条（编排层门禁）在编排层落地前无法执行。
 > 在此之前，任务状态只能是「设计已定义、实现待完成」，**不得标记为通过**。
 
-## 4. 建议的首个纵向切片
+## 3.1 最小纵向切片已完成（2026-10-19）
 
-不要一次实现全部控件。先做能端到端跑通的最小单元：
+契约 §4.4–§4.6 先冻结，再实现。
+
+### 已落地
+
+- `internal/compiler/codegen`：`Generate(*analyzer.VerifiedDoc, Options) ([]byte, error)`
+- 支持 `<Page>` + 单个静态 `<Text>`
+- 保护头、`Goxml<Path>View` / `NewGoxml<Path>View` / `Layout(gtx, th)` 均按契约生成
+- import 由 `importSet` 按需收集、去重、冲突时按路径字典序分配别名
+- 一律经 `go/format.Source`
+- 失败返回 error 且**不返回部分代码**
+
+### 契约上解决的一个冲突
+
+原 §4.3 的 `Layout` 签名没有主题参数，但渲染文本必须经由 `material.Body1(th, ...)`，
+而 `字体与文本渲染策略.md` §6.2 又规定生成代码「通过主题引用字体：`th.Fonts.Family`」——
+`th` 不在作用域，两份冻结文档互相矛盾。
+
+已新增 §4.3.1/§4.3.2：`Layout` 增加 `th *material.Theme` 参数，并说明为何用 Gio 的
+`material.Theme` 而非项目主题封装（避免项目主题演进反向改动已生成代码）。
+
+### 验证
+
+```text
+$ go test ./internal/compiler/codegen/
+ok  coverage: 92.6%   （26 个测试）
+
+$ go test ./...
+ok  （全仓 496 个测试）
+```
+
+`TestGeneratedCompiles` 在临时模块中复制仓库 `go.sum`、以 `GOPROXY=off` 执行
+`go build`，证明生成代码在真实 Gio v0.10.3 下可编译，且测试不依赖网络。
+
+### 仍未完成
+
+- 子任务 6（编排层门禁）：编排层不存在，第 20 条验收项仍**不可执行**
+- 绑定、事件、`<For>`、Grid、多控件：后续切片
+
+## 4. 首个纵向切片的后续扩展
+
+最小切片（静态 `<Page>` + `<Text>`）已完成。后续按此顺序扩展：
 
 1. 只生成一个静态页面（`<Page>` + 一个 `<Text>`），不含绑定、事件、`<For>`
 2. 验证包名、import、保护头、`gofmt` 通过、`go build` 通过
