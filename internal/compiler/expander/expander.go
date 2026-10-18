@@ -23,6 +23,11 @@ const (
 	CodeEventSyntax = contracts.CodePrefixEvent + "-002"
 	// CodeEventArg 事件实参不是允许的字面量或绑定路径。
 	CodeEventArg = contracts.CodePrefixEvent + "-005"
+	// CodeNilDocument 内部不变式违反：调用方传入 nil 文档。
+	//
+	// 这不是用户可触发的错误——正常流程的文档由 Parser 产出，不会为 nil。
+	// 出现它说明编译器自身的调用有缺陷，而非用户源码有问题。
+	CodeNilDocument = contracts.CodePrefixDef + "-000"
 )
 
 // expander 是单次展开的状态。
@@ -51,8 +56,7 @@ type Result struct {
 func Expand(file string, doc *contracts.DocumentIR) Result {
 	if doc == nil {
 		return Result{Diags: []contracts.CompilerError{
-			contracts.NewError(file, contracts.SourceSpan{}, contracts.CodePrefixDef+"-000",
-				"nil document"),
+			contracts.NewError(file, contracts.SourceSpan{}, CodeNilDocument, "nil document"),
 		}}
 	}
 
