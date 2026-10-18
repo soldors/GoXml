@@ -1,12 +1,21 @@
 // Package diagdoc 校验诊断码目录与代码实现的一致性。
 //
-// 这是「文档与实现不脱节」的自动门禁。它检查三件事：
+// 这是「文档与实现不脱节」的自动门禁。它检查四件事：
 //
 //  1. 代码中定义的每个码，目录里都有一行记录；
-//  2. 目录里记录的每个码，代码中确实存在（不留幻像码）；
-//  3. 目录中声明的激活码总数与实际一致。
+//  2. 目录里记录的每个码，要么有实现、要么标记为「已定稿未实现」、要么空置；
+//  3. 目录声明的各类计数与实际一致；
+//  4. 同一个码不被两个常量占用。
 //
-// 任何一项失败都说明需要同步文档或代码，而不是修改本测试来「让它过」。
+// 三态划分很重要：
+//
+//	实现态   —— 代码里有常量且被发射
+//	定稿态   —— 目录里已定稿语义，但实现属于尚未开始的阶段（如 Analyzer）
+//	空置态   —— 保留号码，禁止重新分配
+//
+// 定稿态是本次引入的：Analyzer 的诊断码在契约评审中已定稿，
+// 但 Analyzer 尚未实现。若把它们混入「实现态」，门禁会误报；
+// 若标为「空置」，又会丢掉「语义已定、只是没实现」这个事实。
 package diagdoc
 
 import (
@@ -29,12 +38,8 @@ type codeEntry struct {
 	Name string
 }
 
-// activeCodes 是代码中实际定义的全部激活码。
-//
-// 这份清单必须与源码常量保持同步：新增常量却忘了加到这里，
-// TestCatalogCoversAllCodes 不会发现，因此此处也由
-// TestEveryListedCodeIsUsed 反向校验每个码确实被发射。
-func activeCodes() []codeEntry {
+// implementedCodes 是代码中**已实现且会发射**的码。
+func implementedCodes() []codeEntry {
 	return []codeEntry{
 		// Parser
 		{"GXML-ROOT-001", "parser.CodeRoot"},
@@ -64,9 +69,36 @@ func activeCodes() []codeEntry {
 	}
 }
 
+// frozenCodes 是**已定稿但尚未实现**的码。
+//
+// 它们属于 Analyzer 阶段（尚未开始）。目录已记录其语义，
+// 但代码中没有常量、也不会发射。
+//
+// 实现 Analyzer 时：把这些条目从 frozenCodes 移到 implementedCodes，
+// 并补上常量与测试。门禁会在两边都不匹配时报错，因此不会漏掉。
+var frozenCodes = []codeEntry{
+	{"GXML-ROOT-002", "analyzer.CodeViewModelType"},
+	{"GXML-BIND-001", "analyzer.CodePathRoot"},
+	{"GXML-BIND-002", "analyzer.CodePathField"},
+	{"GXML-BIND-003", "analyzer.CodePathUnexported"},
+	{"GXML-BIND-004", "analyzer.CodeBindTypeMismatch"},
+	{"GXML-BIND-005", "analyzer.CodeBindUnsupported"},
+	{"GXML-EVENT-003", "analyzer.CodeMethodNotFound"},
+	{"GXML-EVENT-004", "analyzer.CodeMethodArity"},
+	{"GXML-EVENT-006", "analyzer.CodeMethodArgType"},
+	{"GXML-SCOPE-004", "analyzer.CodeNotIterable"},
+}
+
+// vacantCodes 是目录中明确记录为「空置」的码：保留号码，禁止重新分配。
+var vacantCodes = map[string]bool{
+	"GXML-SYNTAX-003": true, // 原 CodeTag，从未被发射
+	"GXML-ATTR-002":   true, // 规范曾误用该号，从未定义常量
+	"GXML-EVENT-001":  true, // 原 CodeEventName，从未被发射
+	"GXML-SCOPE-001":  true, // 原 CodeScope，从未被发射
+}
+
 var codePattern = regexp.MustCompile("GXML-[A-Z]+-[0-9]{3}")
 
-// readCatalog 读取目录文件。
 func readCatalog(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Clean(catalogPath))
@@ -76,7 +108,6 @@ func readCatalog(t *testing.T) string {
 	return string(b)
 }
 
-// codesIn 提取文本中出现的全部码（去重）。
 func codesIn(s string) map[string]bool {
 	out := make(map[string]bool)
 	for _, m := range codePattern.FindAllString(s, -1) {
@@ -89,42 +120,44 @@ func codesIn(s string) map[string]bool {
 // 正向：代码里的每个码都要在目录里
 // ---------------------------------------------------------------------------
 
-func TestCatalogCoversAllCodes(t *testing.T) {
+func TestCatalogCoversImplementedCodes(t *testing.T) {
 	catalog := codesIn(readCatalog(t))
-	for _, c := range activeCodes() {
+	for _, c := range implementedCodes() {
 		if !catalog[c.Code] {
-			t.Errorf("码 %s（%s）在代码中激活，但目录未记录", c.Code, c.Name)
+			t.Errorf("码 %s（%s）已实现，但目录未记录", c.Code, c.Name)
 		}
 	}
 }
 
-// vacantCodes 是在目录中被明确记录为「空置」或「预留」的码。
-//
-// 它们出现在目录里是合法的——目录需要保留这些号码，说明「不要重新分配」
-// 以及为什么。但它们不得有对应的激活检测。
-var vacantCodes = map[string]bool{
-	"GXML-SYNTAX-003": true, // 原 CodeTag，从未被发射
-	"GXML-ATTR-002":   true, // 规范曾误用该号，从未定义常量
-	"GXML-EVENT-001":  true, // 原 CodeEventName，从未被发射
-	"GXML-SCOPE-001":  true, // 原 CodeScope，从未被发射
-	"GXML-BIND-001":   true, // Analyzer 阶段预留
+func TestCatalogCoversFrozenCodes(t *testing.T) {
+	catalog := codesIn(readCatalog(t))
+	for _, c := range frozenCodes {
+		if !catalog[c.Code] {
+			t.Errorf("码 %s（%s）已定稿，但目录未记录", c.Code, c.Name)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
-// 反向：目录里提到的每个码都要在代码里，或明确记为空置
+// 反向：目录里提到的每个码都要有归属
 // ---------------------------------------------------------------------------
 
 func TestNoPhantomCodesInCatalog(t *testing.T) {
-	known := make(map[string]bool, len(activeCodes()))
-	for _, c := range activeCodes() {
+	known := make(map[string]bool)
+	for _, c := range implementedCodes() {
 		known[c.Code] = true
+	}
+	for _, c := range frozenCodes {
+		known[c.Code] = true
+	}
+	for c := range vacantCodes {
+		known[c] = true
 	}
 
 	for code := range codesIn(readCatalog(t)) {
-		if known[code] || vacantCodes[code] {
-			continue
+		if !known[code] {
+			t.Errorf("目录中出现幻像码 %s：既未实现、未定稿，也未标记为空置", code)
 		}
-		t.Errorf("目录中出现幻像码 %s：代码里没有对应的激活检测，也未标记为空置", code)
 	}
 }
 
@@ -138,44 +171,58 @@ func TestVacantCodesAreDocumented(t *testing.T) {
 	}
 }
 
-// TestVacantCodesHaveNoDetection 确认空置码确实没有激活检测。
-func TestVacantCodesHaveNoDetection(t *testing.T) {
-	for _, c := range activeCodes() {
-		if vacantCodes[c.Code] {
-			t.Errorf("%s 被标记为空置，却出现在激活清单（%s）", c.Code, c.Name)
+// TestFrozenCodesHaveNoImplementation 确认定稿码确实还没实现。
+func TestFrozenCodesHaveNoImplementation(t *testing.T) {
+	impl := make(map[string]bool)
+	for _, c := range implementedCodes() {
+		impl[c.Code] = true
+	}
+	for _, c := range frozenCodes {
+		if impl[c.Code] {
+			t.Errorf("%s 已被标记为定稿，却出现在实现清单（%s）", c.Code, c.Name)
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 计数：目录声明 23 个，代码必须也是 23 个
+// 计数
 // ---------------------------------------------------------------------------
 
-func TestActiveCodeCount(t *testing.T) {
-	const want = 23
-	if got := len(activeCodes()); got != want {
-		t.Errorf("激活码数量 = %d, 目录声明为 %d", got, want)
+func TestCodeCounts(t *testing.T) {
+	const (
+		wantImpl   = 23
+		wantFrozen = 10
+		wantTotal  = wantImpl + wantFrozen
+	)
+	if got := len(implementedCodes()); got != wantImpl {
+		t.Errorf("已实现码 = %d, 期望 %d", got, wantImpl)
+	}
+	if got := len(frozenCodes); got != wantFrozen {
+		t.Errorf("已定稿码 = %d, 期望 %d", got, wantFrozen)
 	}
 
-	// 目录正文应当出现「共 **23 个**激活码」这类声明。
 	body := readCatalog(t)
-	if !strings.Contains(body, "共 **23 个**激活码") {
-		t.Error("目录未声明激活码数量为 23，或声明与实际不符")
+	if !strings.Contains(body, "共 **33 个**激活码。") {
+		t.Errorf("目录未声明激活码总数为 %d", wantTotal)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 唯一性：同一个码不得被两处记录
+// 唯一性
 // ---------------------------------------------------------------------------
 
-func TestActiveCodesUnique(t *testing.T) {
-	seen := make(map[string]string, len(activeCodes()))
-	for _, c := range activeCodes() {
-		if prev, dup := seen[c.Code]; dup {
-			t.Errorf("码 %s 被 %s 与 %s 同时占用", c.Code, prev, c.Name)
+func TestCodesUnique(t *testing.T) {
+	seen := make(map[string]string)
+	check := func(list []codeEntry, kind string) {
+		for _, c := range list {
+			if prev, dup := seen[c.Code]; dup {
+				t.Errorf("码 %s 同时被 %s 与 %s 占用", c.Code, prev, c.Name)
+			}
+			seen[c.Code] = kind + ":" + c.Name
 		}
-		seen[c.Code] = c.Name
 	}
+	check(implementedCodes(), "impl")
+	check(frozenCodes, "frozen")
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +230,6 @@ func TestActiveCodesUnique(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConstantValuesMatchCatalog(t *testing.T) {
-	// 显式列出，防止常量值与清单文字脱节。
 	actual := map[string]string{
 		"GXML-ROOT-001":   parser.CodeRoot,
 		"GXML-SYNTAX-001": parser.CodeSyntax,
@@ -218,68 +264,71 @@ func TestConstantValuesMatchCatalog(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 归集码与空置号约定
+// 归集码与空置约定
 // ---------------------------------------------------------------------------
 
 func TestAttr002StaysVacant(t *testing.T) {
-	// GXML-ATTR-002 历史上被文档误用，从未定义常量。
-	// 目录明确记为「空置」，此处防止它被悄悄启用。
-	for _, c := range activeCodes() {
+	for _, c := range implementedCodes() {
 		if c.Code == "GXML-ATTR-002" {
 			t.Error("GXML-ATTR-002 应为空置；若确需启用，先更新目录 §2.3 与 §4")
 		}
 	}
-	// 但目录里必须解释它为什么空置。
-	body := readCatalog(t)
-	if !strings.Contains(body, "`GXML-ATTR-002` **空置**") {
+	if !strings.Contains(readCatalog(t), "`GXML-ATTR-002` **空置**") {
 		t.Error("目录未说明 GXML-ATTR-002 为空置")
 	}
 }
 
-func TestBindCategoryHasNoActiveCode(t *testing.T) {
-	for _, c := range activeCodes() {
+func TestBindCodesAreFrozenNotImplemented(t *testing.T) {
+	// GXML-BIND 的 5 个码已定稿但未实现；不能出现在实现清单里。
+	for _, c := range implementedCodes() {
 		if strings.HasPrefix(c.Code, "GXML-BIND-") {
-			t.Errorf("%s 已激活，但 Analyzer 尚未实现；需同步目录 §2.7", c.Code)
+			t.Errorf("%s 已实现，但 Analyzer 尚未开始；需同步目录 §2.7", c.Code)
 		}
 	}
-	if !strings.Contains(readCatalog(t), "当前没有任何激活码") {
-		t.Error("目录未声明 GXML-BIND 当前无激活码")
+	// 且必须都出现在定稿清单里。
+	frozen := make(map[string]bool)
+	for _, c := range frozenCodes {
+		frozen[c.Code] = true
+	}
+	for _, code := range []string{
+		"GXML-BIND-001", "GXML-BIND-002", "GXML-BIND-003",
+		"GXML-BIND-004", "GXML-BIND-005",
+	} {
+		if !frozen[code] {
+			t.Errorf("%s 应在定稿清单中", code)
+		}
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 目录必须记录每个码的阶段
-// ---------------------------------------------------------------------------
-
 func TestCatalogDeclaresStage(t *testing.T) {
 	body := readCatalog(t)
-	stages := []string{"Parser", "Expander"}
-	for _, s := range stages {
+	for _, s := range []string{"Parser", "Expander", "Analyzer"} {
 		if !strings.Contains(body, s) {
 			t.Errorf("目录未提及阶段 %s", s)
 		}
 	}
-	if !strings.Contains(body, "Analyzer") {
-		t.Error("目录未提及 Analyzer 阶段（GXML-BIND 预留说明需要）")
-	}
 }
 
 // ---------------------------------------------------------------------------
-// 排序自检：确保清单本身可读
+// 分组计数
 // ---------------------------------------------------------------------------
 
 func TestCodesAreGrouped(t *testing.T) {
-	// 按前缀分组后检查每组数量，帮助发现漏项。
 	groups := make(map[string]int)
-	for _, c := range activeCodes() {
-		parts := strings.SplitN(c.Code, "-", 3)
-		if len(parts) != 3 {
-			t.Fatalf("码格式异常: %s", c.Code)
+	count := func(list []codeEntry) {
+		for _, c := range list {
+			parts := strings.SplitN(c.Code, "-", 3)
+			if len(parts) != 3 {
+				t.Fatalf("码格式异常: %s", c.Code)
+			}
+			groups[parts[1]]++
 		}
-		groups[parts[1]]++
 	}
+	count(implementedCodes())
+	count(frozenCodes)
+
 	want := map[string]int{
-		"ROOT": 1, "SYNTAX": 3, "ATTR": 4, "EVENT": 2, "DEF": 11, "SCOPE": 2,
+		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 5, "DEF": 11, "SCOPE": 3, "BIND": 5,
 	}
 	var keys []string
 	for k := range want {
@@ -288,7 +337,7 @@ func TestCodesAreGrouped(t *testing.T) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if groups[k] != want[k] {
-			t.Errorf("GXML-%s 激活码 = %d, 目录声明 %d", k, groups[k], want[k])
+			t.Errorf("GXML-%s 码数 = %d, 目录声明 %d", k, groups[k], want[k])
 		}
 	}
 }
