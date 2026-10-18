@@ -6,8 +6,9 @@
 | TASK-PARSER-001 | parser | 实现带行列号的 GXML 语法分析与控制流解析 | TASK-CONTRACT-001 | go test -v ./internal/compiler/parser/... |
 | TASK-PARSER-002 | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding) | TASK-PARSER-001 | go test -v -run TestAttrUnmarshal ./internal/compiler/parser/... |
 | TASK-EXPANDER-001 | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | go test -v ./internal/compiler/expander/... |
-| TASK-ANALYZER-001 | analyzer | 实现 ViewModel AST 静态扫描与校验 | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
+| TASK-ANALYZER-001 | analyzer | 实现语义校验（绑定路径、事件签名、For 作用域） | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
 | TASK-CODEGEN-001 | codegen | 实现 Gio 布局（含 Align/Justify/Gap/尺寸/Grid）与控件代码生成器 | TASK-ANALYZER-001 | go test -v ./internal/compiler/codegen/... |
+| TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen | 实现编译期 AOT 浅对比 Diff 与 MacroOp 缓存 | TASK-CODEGEN-001 | go test -v -run TestAOTStateDiff ./internal/compiler/codegen/... |
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开 | TASK-CODEGEN-001 | go test -v ./internal/compiler/macro/... ./pkg/runtime/theme/... |
 | TASK-FONT-001 | theme/font | 实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收 | TASK-STYLE-001 | go test -v ./pkg/runtime/theme/... |
@@ -18,9 +19,62 @@
 | TASK-OS-001 | platform | 实现 Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | CGO_ENABLED=0 go test -v ./pkg/platform/clipboard/... ./pkg/platform/dialog/... |
 | TASK-OS-002 | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macOS 允许 CGO） | TASK-OS-001 | make build-windows && make build-linux |
 | TASK-WIDGET-001 | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | go test -v ./pkg/widgets/... |
-| TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | TASK-CONTRACT-001, TASK-PARSER-001, TASK-PARSER-002, TASK-EXPANDER-001, TASK-ANALYZER-001, TASK-CODEGEN-001, TASK-STATE-001, TASK-STYLE-001, TASK-FONT-001, TASK-ROUTER-001, TASK-LIFE-001, TASK-DEVX-001, TASK-DEVX-002, TASK-OS-001, TASK-OS-002, TASK-WIDGET-001 | go test -bench=. -benchmem ./benchmarks/... |
+| TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | go test -bench . -benchmem ./benchmarks/... |
+
+## 开发流程与契约治理
+
+本表只列**交付物与依赖**，不规定执行顺序。实际推进方式是契约驱动，四条规则如下。
+
+### 规则 1：契约先行
+
+涉及以下任一改动的，**先更新契约与对应测试，再写实现**：
+
+- 跨阶段的数据结构（`contracts` 类型、语义 IR 字段）
+- 诊断码的语义或编号
+- 语言语法或已冻结的行为语义
+- 阶段之间的职责边界
+
+理由：这类改动一旦先落代码，后续会被实现细节反向绑架——契约变成对已写代码的追认，而不是设计。
+
+### 规则 2：实现分步
+
+一个大任务可拆成多个可独立验收的步骤。
+
+- **WBS 负责列出交付物**（做什么）；
+- **任务卡负责记录实际进度**（做到哪了、还剩什么）。
+
+因此 WBS 的顺序与实际执行顺序可以不同。例如 `TASK-ANALYZER-001` 实际拆成五步，且先做类型加载再做绑定解析——因为后者依赖前者。
+
+### 规则 3：状态一致
+
+WBS、任务卡、契约状态、开发日志与实际代码必须能相互对应。发现偏差**及时修正**，不要留在那里等下次审计。
+
+已发生的漂移案例（均已修正）：
+
+| 漂移 | 表现 |
+|---|---|
+| 契约状态过期 | 文档索引标「Q7 待确认」，而 Q7 早已冻结 |
+| 任务卡滞后 | `TASK-PARSER-002` 标 Todo，但属性解析已实现且有测试 |
+| 缺卡 | `TASK-EXPANDER-001` 在 WBS 中却无任务卡 |
+| 文件损坏 | `测试报告.md` 每个字符前被插入 `\| 性能 \|`，且在首次提交前就已损坏 |
+
+### 规则 4：证据闭环
+
+「通过」必须有真实的测试或检查结果支持。
+
+**未验证项必须明确标记**，不得因接口存在或单元测试通过就推断整条管线已验证。
+
+### 两条容易产生误解的区别
+
+| 说法 | 实际含义 |
+|---|---|
+| **契约冻结 ≠ 实现完成** | 契约描述「应当如何」，实现是「是否做到了」。`ROOT-002` 等 10 个码的语义已定稿，但其中只有 1 个已能发射 |
+| **单元测试通过 ≠ 端到端门禁已验证** | `Verified()` 拒绝非 OK 结果已有测试，但「编排层确实阻止了 Codegen 执行」无法验证——Codegen 与编排层尚不存在（契约 §6.13） |
+
+这两条正是本项目最容易产生状态漂移的地方：把「设计已定」误读成「功能可用」，或把「组件测试通过」误读成「管线可用」。
 
 ## 说明
 
 - `TASK-FONT-001` 为本次补充新增：此前 WBS 缺失字体与 IME 相关工作项，而 Gio 默认字体不含 CJK 字形（实测 `GlyphIndex('中') == 0`），中文界面会渲染为空白。依据见 `docs/03-架构/字体与文本渲染策略.md`。
+- `TASK-SEC-001` 为本次补充新增：框架会加载 Go 类型并执行代码生成，需要明确信任边界与输入审查，详见任务卡。
 - 性能相关不变量与阈值见 `docs/03-架构/性能预算与优化策略.md`；列表虚拟化与静态子树固化的决策见 `ADR-0006`。
