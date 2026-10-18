@@ -321,8 +321,15 @@ const (
 	ValueUnknown ValueKind = iota
 	ValueString
 	ValueBool
-	ValueInt   // 所有整数类型
-	ValueFloat // float32 / float64
+	// ValueInt 有符号整数：int、int8~int64。
+	ValueInt
+	// ValueUint 无符号整数：uint、uint8~uint64、uintptr。
+	//
+	// 与 ValueInt 分开是必要的：`int` 属性只接受有符号整数
+	// （契约 §11.2）——无符号需要范围检查，属于值转换而非类型兼容。
+	ValueUint
+	// ValueFloat float32 / float64。
+	ValueFloat
 	ValueStruct
 	ValueSlice
 	ValueMap
@@ -340,6 +347,8 @@ func (k ValueKind) String() string {
 		return "bool"
 	case ValueInt:
 		return "int"
+	case ValueUint:
+		return "uint"
 	case ValueFloat:
 		return "float"
 	case ValueStruct:

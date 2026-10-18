@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"go/types"
 	"path/filepath"
 	"testing"
 
@@ -570,7 +571,27 @@ func TestTypeInfoNamedStringer(t *testing.T) {
 }
 
 func TestTypeInfoKinds(t *testing.T) {
-	cases := map[string]ValueKind{
+	// 直接检查字段类型的换算结果，而不是走绑定管线。
+	//
+	// 原因：走管线时 `{Count}`(int) 绑到 Text.Value(string) 会被
+	// BIND-004 正确拒绝，无法据以观察 TypeInfo。类型换算本身是独立
+	// 的可测试单元。
+	env := newTestEnv(t, ".")
+	named, err := env.LookupNamed(fixturePkgPath, []string{"ViewModel"})
+	if err != nil {
+		t.Fatalf("加载 ViewModel: %v", err)
+	}
+	st, ok := named[0].Underlying().(*types.Struct)
+	if !ok {
+		t.Fatal("ViewModel 不是结构体")
+	}
+	got := make(map[string]ValueKind, st.NumFields())
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		got[f.Name()] = valueKind(f.Type())
+	}
+
+	want := map[string]ValueKind{
 		"Count":  ValueInt,
 		"Dirty":  ValueBool,
 		"Title":  ValueString,
@@ -578,16 +599,12 @@ func TestTypeInfoKinds(t *testing.T) {
 		"Lookup": ValueMap,
 		"User":   ValueStruct,
 		"Owner":  ValuePointer,
+		"Codes":  ValueOther, // 数组：v1 无专门类别
+		"State":  ValueString,
 	}
-	for field, want := range cases {
-		r := analyzeSrc(t, vmSrc(`<Text Value="{`+field+`}"/>`))
-		if r.Status != StatusOK {
-			t.Errorf("%s: Status = %v（%v）", field, r.Status, r.Diags)
-			continue
-		}
-		got := onlyFacts(t, r).Attrs()[0].Path.Type.Kind
-		if got != want {
-			t.Errorf("%s: Kind = %v, want %v", field, got, want)
+	for field, w := range want {
+		if got[field] != w {
+			t.Errorf("%s: Kind = %v, want %v", field, got[field], w)
 		}
 	}
 }
@@ -603,3 +620,6 @@ func TestSameSpanSameCodeReportedOnce(t *testing.T) {
 		t.Errorf("诊断数 = %d, 期望 1: %v", len(r.Diags), codesOf(r))
 	}
 }
+
+// fixturePkgPath 是夹具 ViewModel 包的导入路径。
+const fixturePkgPath = "github.com/goxml/goxml/internal/compiler/analyzer/testdata/fixture"

@@ -1,7 +1,7 @@
 # TASK-ANALYZER-001：实现语义校验（绑定路径、事件签名、For 作用域）
 
 ## 元信息
-- 状态：**进行中**（2/5 完成）| 优先级：P0 | 预计：5h
+- 状态：**进行中**（3/5 完成）| 优先级：P0 | 预计：5h
 - 依赖：TASK-EXPANDER-001
 - 契约：`docs/03-架构/Analyzer输入输出契约.md`（已全部冻结）
 
@@ -25,11 +25,25 @@
 |---|---|---|---|
 | 1 | Go 类型加载 + `ViewModel` 解析 | `ROOT-002` | ✅ 完成 |
 | 2 | 绑定路径解析（首段/中间段/未导出） | `BIND-001`/`002`/`003` | ✅ 完成 |
-| 3 | 类型匹配（含 `{!Path}` 只作用于 bool） | `BIND-004`/`005` | ⬜ |
+| 3 | 类型匹配（含 `{!Path}` 只作用于 bool） | `BIND-004` | ✅ 完成 |
 | 4 | 事件签名（载荷 + 实参拼接） | `EVENT-003`/`004`/`006` | ⬜ |
 | 5 | `<For>` 可迭代性与循环变量作用域 | `SCOPE-004` | ✅ 完成（随步骤 2 一并实现） |
 | — | `Analyze` 总入口与 `Status` 判定 | — | ✅ 完成 |
 | — | 编排层门禁（`StatusOK` 才发凭证） | — | ⬜ |
+
+### 第 3 步已完成的内容
+
+- **契约 §11「类型兼容契约」已冻结**：拆成三层（类型兼容 / 特殊表达式约束 / 值转换），
+  矩阵覆盖 6 种 `PropType` × 10 种 `Kind`
+- `compat.go`：`checkCompat` 三态（允许/拒绝/Schema 缺类型），
+  `negatable` 处理 `{!Path}`，`propTypeName` 供诊断消息
+- `ValueKind` 新增 `ValueUint`：无符号整数必须与有符号区分，
+  否则 `int` 属性会误接受 `uint`
+- 前置修复：**内置 Schema 的属性此前未声明 `Type`**（全为 `PropUnknown`），
+  已补齐 Text/Button/Input/Image 的全部属性类型
+- `color` / `insets` 按**精确类型身份**判定（`types.Identical`），
+  不接受「结构相似」的结构体
+- 夹具启用 `type-mismatch`、`negate-non-bool`
 
 ### 第 2 步已完成的内容
 
@@ -64,7 +78,7 @@
 
 ```text
 $ go test ./internal/compiler/analyzer/
-ok  coverage: 90.6%   （91 个测试）
+ok  coverage: 88.9%   （103 个测试）
 
 $ go test ./internal/compiler/diagdoc/
 ok  （诊断码目录一致性门禁）

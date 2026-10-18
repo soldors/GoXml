@@ -141,16 +141,24 @@ func (a *analyzer) analyzeElement(n *contracts.NodeIR) {
 		if !attr.Value.IsBinding {
 			continue // 静态字面量无需解析
 		}
-		path, _, ok := a.resolveBinding(attr.Value, attr.Span, attr.Name)
+		path, raw, ok := a.resolveBinding(attr.Value, attr.Span, attr.Name)
 		if !ok {
 			continue // 失败只产诊断，不进事实
 		}
+
+		// 类型兼容（契约 §11）。路径通过但类型不符仍属失败，
+		// 不进入事实表。
+		target := a.targetType(n.Tag, attr.Name)
+		if !a.checkBindingType(path, raw, target, attr.Span, attr.Name) {
+			continue
+		}
+
 		if nf == nil {
 			nf = &NodeFacts{}
 		}
 		nf.attrs = append(nf.attrs, ResolvedAttr{
 			Name:   attr.Name,
-			Target: a.targetType(n.Tag, attr.Name),
+			Target: target,
 			Path:   path,
 			Span:   attr.Span,
 		})
@@ -180,8 +188,11 @@ func (a *analyzer) analyzeIf(n *contracts.NodeIR) {
 	if n.If == nil || !n.If.Condition.IsBinding {
 		return
 	}
-	path, _, ok := a.resolveBinding(n.If.Condition, n.Span, "Condition")
+	path, raw, ok := a.resolveBinding(n.If.Condition, n.Span, "Condition")
 	if !ok {
+		return
+	}
+	if !a.checkBindingType(path, raw, contracts.PropBool, n.Span, "Condition") {
 		return
 	}
 	nf, _ := a.facts.Lookup(n)
@@ -467,9 +478,10 @@ func valueKind(t types.Type) ValueKind {
 			return ValueString
 		case types.Bool:
 			return ValueBool
-		case types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
-			types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64:
+		case types.Int, types.Int8, types.Int16, types.Int32, types.Int64:
 			return ValueInt
+		case types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64, types.Uintptr:
+			return ValueUint
 		case types.Float32, types.Float64:
 			return ValueFloat
 		}
@@ -529,4 +541,72 @@ func hasMembers(t types.Type) bool {
 		return true
 	}
 	return types.NewMethodSet(t).Len() > 0
+}
+
+// checkBindingType 判定路径结果类型能否赋给目标属性类型。
+//
+// 两层检查（契约 §11）：
+//  1. `{!Path}` 的操作数必须是布尔（§11.6），不复用兼容矩阵；
+//  2. 普通绑定按兼容矩阵判定（§11.2）。
+//
+// 返回 false 表示不通过，此时不产生语义事实。
+func (a *analyzer) checkBindingType(
+	path *ResolvedPath,
+	raw types.Type,
+	target contracts.PropType,
+	span contracts.SourceSpan,
+	what string,
+) bool {
+	// 取反是独立的表达式约束，先判。
+	if path.Negated {
+		if !negatable(raw) {
+			a.report(span, CodeBindTypeMismatch,
+				"%s: cannot negate %q: type %s is not bool",
+				what, pathString(path), typeInfo(raw).Display)
+			return false
+		}
+		// 取反结果恒为 bool，因此要求目标属性是 bool。
+		if target == contracts.PropUnknown {
+			return false // Schema 缺类型，不产生事实（§11.7）
+		}
+		if target != contracts.PropBool {
+			a.report(span, CodeBindTypeMismatch,
+				"%s: negated expression is bool, but the attribute expects %s",
+				what, propTypeName(target))
+			return false
+		}
+		return true
+	}
+
+	switch checkCompat(raw, target, a.env) {
+	case compatUnknown:
+		return false
+	case compatMismatch:
+		a.report(span, CodeBindTypeMismatch,
+			"%s: binding %q has type %s, but the attribute expects %s",
+			what, pathString(path), typeInfo(raw).Display, propTypeName(target))
+		return false
+	}
+	return true
+}
+
+// pathString 还原文本形式，用于诊断。
+func pathString(p *ResolvedPath) string {
+	if p == nil {
+		return ""
+	}
+	s := ""
+	if p.Root != "" {
+		s = p.Root
+	}
+	for _, st := range p.Steps {
+		if s != "" {
+			s += "."
+		}
+		s += st.Name
+	}
+	if p.RootKind == RootViewModel && p.Root == "" {
+		return "{" + s + "}"
+	}
+	return "{" + s + "}"
 }

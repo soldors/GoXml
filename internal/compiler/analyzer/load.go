@@ -356,3 +356,28 @@ func (e *TypeEnv) load(importPath string) (*packages.Package, error) {
 	e.loaded[importPath] = p
 	return p, nil
 }
+
+// LookupNamed 返回包中指定名字的命名类型，用于类型身份比较。
+//
+// 用途：`color` / `insets` 属性必须按**精确类型**判定（契约 §11.5），
+// 而 `types.Identical` 需要拿到对方包的 types.Type 对象。
+//
+// 结果按「包路径 + 名字」缓存，避免每次比较都重新加载。
+func (e *TypeEnv) LookupNamed(pkgPath string, names []string) ([]types.Type, error) {
+	pkg, err := e.load(pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]types.Type, 0, len(names))
+	for _, n := range names {
+		obj := pkg.Types.Scope().Lookup(n)
+		if obj == nil {
+			continue
+		}
+		out = append(out, obj.Type())
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("analyzer: none of %v found in package %q", names, pkgPath)
+	}
+	return out, nil
+}

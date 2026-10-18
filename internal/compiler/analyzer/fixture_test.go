@@ -290,11 +290,14 @@ var implementedByStep = map[string]bool{
 	"for-var-binding":      true,
 	"blocked-viewmodel":    true,
 
-	// 以下依赖后续步骤，暂不启用：
-	//   type-mismatch / negate-non-bool   → 步骤 3（BIND-004）
-	//   valid-event-* / invalid-event-*   → 步骤 4（事件签名）
-	//   valid-event-combined              → 步骤 4
-	//   invalid-method-returns            → 步骤 4
+	// 步骤 3：类型兼容（BIND-004）
+	"type-mismatch":   true,
+	"negate-non-bool": true,
+
+	// 以下依赖步骤 4（事件签名），暂不启用：
+	//   valid-event-payload / valid-event-args / valid-event-combined
+	//   invalid-event-arity / invalid-event-type
+	//   invalid-method-missing / invalid-method-returns
 }
 
 // TestAnalyzeBehavior 对已实现步骤覆盖的夹具做完整断言。
@@ -362,9 +365,8 @@ func TestPendingStepsAreDocumented(t *testing.T) {
 			pending[name] = true
 		}
 	}
-	// 当前应恰好剩下依赖步骤 3/4 的夹具。
+	// 当前应恰好剩下依赖步骤 4（事件签名）的夹具。
 	want := []string{
-		"type-mismatch", "negate-non-bool",
 		"valid-event-payload", "valid-event-args", "valid-event-combined",
 		"invalid-event-arity", "invalid-event-type",
 		"invalid-method-missing", "invalid-method-returns",

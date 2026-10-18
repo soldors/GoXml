@@ -73,7 +73,11 @@ func (a LayoutAttr) appliesTo(tag string) bool {
 // PropertySchema 组件属性声明。
 type PropertySchema struct {
 	Name string
-	// Type 是该属性的值类型；PropUnknown 表示由组件自行解释。
+	// Type 是该属性的值类型。
+	//
+	// 必须显式声明：Analyzer 的 BIND-004 依赖它判定类型兼容
+	// （契约 §11）。留空会得到 PropUnknown，该属性的绑定将无法被
+	// 验证——这是 Schema 完整性缺陷，不是用户错误。
 	Type contracts.PropType
 	// Required 表示该属性必须出现。
 	Required bool
@@ -123,15 +127,15 @@ var builtinSchemas = map[string]*ComponentSchema{
 		Tag: "Text",
 		Properties: []PropertySchema{
 			// 规范 §3.2：Text 的 Value 为必选属性。
-			{Name: "Value", Required: true},
-			{Name: "Color"},
+			{Name: "Value", Type: contracts.PropString, Required: true},
+			{Name: "Color", Type: contracts.PropColor},
 		},
 	},
 	"Button": {
 		Tag: "Button",
 		Properties: []PropertySchema{
-			{Name: "Text"},
-			{Name: "Enabled"},
+			{Name: "Text", Type: contracts.PropString},
+			{Name: "Enabled", Type: contracts.PropBool},
 		},
 		Events: []contracts.EventSchema{
 			{Name: "Click"},
@@ -140,8 +144,8 @@ var builtinSchemas = map[string]*ComponentSchema{
 	"Input": {
 		Tag: "Input",
 		Properties: []PropertySchema{
-			{Name: "Value"},
-			{Name: "Enabled"},
+			{Name: "Value", Type: contracts.PropString},
+			{Name: "Enabled", Type: contracts.PropBool},
 		},
 		// Input 是受控或非受控控件，回写由事件完成；v1 不引入双向绑定。
 		Events: []contracts.EventSchema{
@@ -151,7 +155,7 @@ var builtinSchemas = map[string]*ComponentSchema{
 	"Image": {
 		Tag: "Image",
 		Properties: []PropertySchema{
-			{Name: "Src"},
+			{Name: "Src", Type: contracts.PropString},
 		},
 	},
 }

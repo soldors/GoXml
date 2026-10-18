@@ -820,7 +820,123 @@ Q7 确认后，`SchemaRegistry` 的接口形态已经明确：它必须能提供
 | 4. 语义 IR 类型 | 能编译；`contracts` 仍不依赖 `go/types`；`Verified()` 在非 OK 时返回 error；类型定义有注释说明「消费者不得解析 `Display`」 |
 | 5. 夹具骨架 | 15 个夹具目录齐全，每个含 `.gxml` 与期望状态/诊断码；夹具 Go 类型包可被 `go/packages` 加载 |
 
-## 11. 版本演进边界
+## 11. 类型兼容契约（Go 类型 → `PropType`）
+
+本节是 Analyzer 与组件 Schema 之间的类型契约。`BIND-004` 只按本节判定。
+
+### 11.1 三层不能合并
+
+| 层 | 问题 | 归属 |
+|---|---|---|
+| **类型兼容** | 绑定值的 Go 类型能否赋给该属性？ | Analyzer（本节） |
+| **特殊表达式约束** | `{!Path}` 这类形式对类型有额外要求 | Analyzer（§11.6） |
+| **值转换** | 兼容的值如何变成 Gio 调用参数 | **Codegen**（不在本节） |
+
+把三者合成一张映射表会让「兼容」与「如何生成」纠缠：同一个 `int` 属性可能因为控件不同而需要不同的格式化方式，那是 Codegen 的事，不是类型契约。
+
+### 11.2 兼容矩阵
+
+`TypeInfo.Kind` 是**底层类别**（命名类型已剥壳）。参数 `PropType` 见 `contracts.PropType`。
+
+| 绑定值 `Kind` | `string` | `bool` | `int` | `float` | `color` | `insets` |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `ValueString` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ValueBool` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `ValueInt`（有符号） | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `ValueUint`（无符号） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ValueFloat` | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| `ValueStruct` | ❌ | ❌ | ❌ | ❌ | 见 §11.5 | 见 §11.5 |
+| `ValuePointer` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ValueSlice` / `ValueMap` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ValueInterface` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ValueOther` / `ValueUnknown` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+三条关键决定：
+
+| 决定 | 理由 |
+|---|---|
+| **`int` → `string` 拒绝** | 规范 §4.5 已规定「不进行隐式类型转换」。若允许，同一个绑定在不同属性上可能触发不同格式化，Analyzer 与 Codegen 的语义就会分叉。需要格式化时应在 ViewModel 中提供计算字段。 |
+| **`int` → `float` 拒绝** | 同上。虽然数值上无损扩展，但会开启「哪些转换算无损」的连锁判断。 |
+| **`ValueUint` 一律拒绝** | 无符号类型需要显式的范围检查（`uint64` 可能超出 `int`），这属于值转换而非类型兼容。v1 要求 ViewModel 使用有符号类型或先在自身代码里转换。 |
+
+### 11.3 命名类型与别名
+
+| 情形 | 处理 |
+|---|---|
+| `type Status string` | `Kind = ValueString`、`Named = true` → **兼容 `string`** |
+| `type Enabled bool` | `Kind = ValueBool`、`Named = true` → **兼容 `bool`** |
+| `type Count int` | `Kind = ValueInt`、`Named = true` → **兼容 `int`** |
+| `type StatusAlias = string` | 别名：`Kind = ValueString`、`Named = false` → **兼容 `string`** |
+
+**兼容按底层类别判定，但 `Named` 必须保留。** 类型身份可能影响 Codegen 的生成（例如需要调用 `String()`），不能在判定兼容后就丢弃。
+
+别名与定义类型在兼容上等价，但 `go/types` 对它们的表示不同（别名可能是 `*types.Alias`）。测试必须同时覆盖两者，避免表示差异造成意外。
+
+### 11.4 整数与浮点范围
+
+| 类别 | 接受的 Go 类型 |
+|---|---|
+| `int` | `int`、`int8`、`int16`、`int32`、`int64` |
+| `float` | `float32`、`float64` |
+| `int` **不**接受 | `uint`、`uint8`~`uint64`、`uintptr` |
+
+接受全部有符号宽度是因为它们在**语言层面**都是整数语义，宽度差异属于 Codegen 的取值处理（`int8` → `int` 是保值的扩展）。无符号被排除，理由见 §11.2。
+
+⚠️ 已知边界：`int64` → `int` 在 32 位平台上可能溢出。这是 Codegen 的责任，Analyzer 不做范围检查（值在编译期通常未知）。
+
+### 11.5 `color` 与 `insets`：精确类型身份
+
+这两类**不能按 `Kind` 判定**——`ValueStruct` 太宽，任何含 RGBA 字段或四个 float 字段的结构体都会被误接受。
+
+因此按**类型身份**（`types.Identical`）匹配：
+
+| `PropType` | 接受的 Go 类型 | 来源 |
+|---|---|---|
+| `color` | `color.NRGBA` 或 `color.RGBA` | 标准库 `image/color` |
+| `insets` | `contracts.EdgeInsets` | 本项目 `github.com/goxml/goxml/contracts` |
+
+理由与限定：
+
+- **只用标准库与本项目自有类型**，不引入 Gio 类型：编译器当前不依赖 `gioui.org`（`go.mod` 只有 `golang.org/x/tools`），让 `contracts`/Analyzer 引用 Gio 会把渲染库拖进编译器依赖图。
+- **主题引用是静态的**：`$Theme.Primary` 在编译期解析为具体颜色，不是运行时绑定。因此绑定到 `color` 属性的值只可能是具体颜色，不需要 `IsThemeRef` 那种表示。
+- **`contracts.NRGBAColor` 不作为绑定的目标类型**：它是静态字面量与主题引用的编译期表示（含 `IsThemeRef`/`ThemeField`），语义是「已经确定的颜色」，与「运行时取值的绑定」不同。把它作为绑定类型会让两套表示混在一起。
+
+### 11.6 `{!Path}` 的独立规则
+
+`{!Path}` **不复用**上面的兼容矩阵，先做表达式自身的合法性检查：
+
+| 路径解析结果 | `{!Path}` |
+|---|---|
+| `ValueBool` | ✅ 允许 |
+| 命名布尔类型（`Kind = ValueBool`） | ✅ 允许 |
+| `ValueString` / `ValueInt` / `ValueFloat` / 其他 | ❌ `BIND-004` |
+| 路径本身失败（不存在/不可访问） | 沿用 `BIND-001`/`002`/`003`，**不再额外报类型不匹配** |
+
+最后一条是为了避免级联诊断：一条路径解析失败后，再报「不能取反」会让用户以为有两个问题。
+
+**不得把未知类型推断为 `bool`。** 若类型信息不完整，按 `StatusBlocked` 处理，而不是猜。
+
+### 11.7 `PropUnknown` 是内部契约错误
+
+`Target == PropUnknown` 表示 Schema 没有声明该属性的类型。这**不是**用户错误，也不得默认放行。
+
+处理方式：该绑定不进入 `Facts`（视为未验证），且不产生用户诊断。原因是 Schema 完整性是编译器自身的责任，不该让用户看到一条他们无法修复的错误。
+
+> **前置条件**：内置 Schema 必须为所有属性声明 `Type`。此前 `Text`/`Button`/`Input`/`Image` 的属性只写了 `Name`，`Type` 全为 `PropUnknown`——这是本契约落地前必须补齐的缺口（见 `TASK-EXPANDER-001` 的 Schema 补全）。
+
+### 11.8 Analyzer 与 Codegen 的分工
+
+| 职责 | 归属 |
+|---|---|
+| 判定「这个 Go 类型能否赋给这个属性」 | Analyzer |
+| 判定 `{!Path}` 是否合法 | Analyzer |
+| 生成取值表达式（字段链） | Codegen |
+| `int8` → `int` 的宽度处理、`int` → 显示字符串的格式化、`color.NRGBA` → Gio 参数的转换 | **Codegen** |
+| 范围检查（`int64` 溢出、`uint64` 越界） | Codegen（编译期未知值时不做） |
+
+Codegen **不得**重新判断兼容性——它只消费 Analyzer 已验证的事实。
+
+## 12. 版本演进边界
 
 - 引入表达式求值 → 推翻 ADR-0002，需新 ADR。
 - 允许第三方模块类型或完整导入路径 → 修改 §4.2，需评审。

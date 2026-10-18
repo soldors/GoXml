@@ -73,6 +73,14 @@ type SchemaRegistry interface {
 - 布局标签返回 `(nil, false)`；
 - 内置控件名无法被覆盖（Parser 以 `GXML-DEF-002` 拒绝同名 `<Def>`）。
 
+## 6.1 后续补正：属性类型声明
+
+初次实现时 `PropertySchema` 只写了 `Name`，`Type` 全为空（`PropUnknown`）。
+
+这是 Analyzer `BIND-004` 的前置缺口：没有目标类型就无法判定兼容。
+已在 `TASK-ANALYZER-001` 第 3 步中补齐 Text/Button/Input/Image
+的全部属性类型，并在 `PropertySchema.Type` 注释中写明「必须显式声明」。
+
 ## 7. 遗留
 
 - 自定义组件事件转发属 v2。
