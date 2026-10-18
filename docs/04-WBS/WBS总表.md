@@ -8,6 +8,7 @@
 | TASK-EXPANDER-001 | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | go test -v ./internal/compiler/expander/... |
 | TASK-ANALYZER-001 | analyzer | 实现语义校验（绑定路径、事件签名、For 作用域） | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
 | TASK-CODEGEN-001 | codegen | 实现 Gio 布局（含 Align/Justify/Gap/尺寸/Grid）与控件代码生成器 | TASK-ANALYZER-001 | go test -v ./internal/compiler/codegen/... |
+| TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen | 实现编译期 AOT 浅对比 Diff 与 MacroOp 缓存 | TASK-CODEGEN-001 | go test -v -run TestAOTStateDiff ./internal/compiler/codegen/... |
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开 | TASK-CODEGEN-001 | go test -v ./internal/compiler/macro/... ./pkg/runtime/theme/... |

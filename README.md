@@ -24,15 +24,16 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
   → Expander    组件 Schema 分类 + <Def>/<Slot> 宏展开    [已实现]
   → Analyzer    绑定路径 / 类型兼容 / 事件签名校验         [已实现]
   → VerifiedDoc 仅在 StatusOK 且无诊断时产出              [已实现]
-  → Codegen     生成 Go 源码                             [未实现]
-  → 编排层      提交产物；失败不写任何文件                [未实现]
+  → Codegen     生成 Go 源码                             [已实现·最小切片]
+  → 编排层      门禁 + 原子提交；失败不写任何文件         [已实现]
 ```
 
 **这张图描述的是目标管线，不是已实现的端到端能力。** 当前状态：
 
 - 前端三阶段（Parser / Expander / Analyzer）已实现并有测试；
-- **Codegen 与编排层不存在**，因此**还不能把 `.gxml` 编译成可运行程序**；
-- 仓库没有 CLI；`examples/demo` 只演示 Parser + Expander 并打印展开后的树。
+- 管线四阶段已串联，失败门禁有实测证据（Codegen 未被调用、不产生文件）；
+- 但 Codegen 只支持 `<Page>` + 单个静态 `<Text>`，**还不能把 `.gxml` 编译成可运行程序**；
+- 仓库没有 CLI，也没有窗口运行入口；`examples/demo` 只演示 Parser + Expander。
 
 各阶段的实现进度与验收证据，以任务卡为唯一权威来源（见下方导航）。
 
@@ -109,8 +110,8 @@ go run ./examples/demo
 
 | 限制 | 说明 |
 |---|---|
-| 无 Codegen | 无法生成可运行的 Go 界面代码 |
-| 无编排层 | 尚无「失败不产生产物」的端到端门禁验证 |
+| Codegen 覆盖极小 | 仅 `<Page>` + 单个静态 `<Text>`；绑定、事件、布局、`<For>` 均未支持 |
+| 无窗口运行入口 | 无 `goui.App` 主循环，生成代码尚不能显示在窗口中 |
 | 无 CLI | 只能以库或示例方式使用前端 |
 | 仅 Windows 验证 | 未在 macOS / Linux 上运行过测试 |
 | `<Def Events>` 不传播事件 | v1 只做契约声明，调用点处理器签名不被校验 |
