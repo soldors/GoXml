@@ -74,7 +74,7 @@
 - `ir.go`：语义 IR 类型（`Result`/`Facts`/`Resolved*`/`TypeInfo`/`VerifiedDoc`）
 - `codes.go`：10 个已定稿诊断码常量
 - 17 个夹具 + 期望表（Go 结构体字面量，无 `want.txt`）
-- 56 个测试，93.0% 覆盖
+- 阶段性数据见下方各步；最终数据见本节末尾
 
 ## 4. 关键约束（来自契约）
 
@@ -92,7 +92,11 @@
 
 ```text
 $ go test ./internal/compiler/analyzer/
-ok  coverage: 92.6%   （137 个测试）
+ok  coverage: 92.1%   （141 个测试）
+
+# 整体验收（2026-10-18，提交 9381542）
+$ go test ./...                              # 全仓 470 测试
+$ go test ./internal/compiler/diagdoc/       # 诊断码门禁（AST）
 
 $ go test ./internal/compiler/diagdoc/
 ok  （诊断码目录一致性门禁）

@@ -2,8 +2,8 @@
 
 ## 元信息
 - 状态：Todo | 优先级：P0 | 预计：6h
-- 依赖：TASK-ANALYZER-001
-- 输出契约：`docs/03-架构/代码生成输出契约.md`
+- 依赖：TASK-ANALYZER-001（已完成并整体验收）
+- 输出契约：`docs/03-架构/代码生成输出契约.md`（§2.1–§2.3 入口与门禁，§13 验收项）
 
 ## 1. 目标
 
@@ -102,12 +102,68 @@ main, cross := sizelayout.ResolveMainCross(width, height, mainIsHorizontal, avai
 - 禁止在 `Layout` 内做字符串拼接或 `fmt.Sprintf`（文本需预计算或使用 `text.Shaper` 缓存）。
 - 列表非虚拟化时不得逐项新建闭包；虚拟化路径见 ADR-0006。
 
+## 1.7 入口与门禁（契约 §2.1–§2.3）
+
+Codegen 的公开入口**只接受已验证的语义 IR**：
+
+```go
+func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error)
+```
+
+不接收 `*contracts.DocumentIR`、`*analyzer.Result` 或任何未经验证的结构。
+
+门禁由两层共同承担，缺一不可：
+
+| 层 | 职责 | 本轮能否验证 |
+|---|---|---|
+| 类型入口 | `VerifiedDoc` 只能由 `StatusOK` 且无诊断的 `Result` 构造，编译期挡住未验证 IR | ✅ 可验证 |
+| 编排层 | 失败时**不调用 Codegen、不写任何文件** | ⚠️ 需先有编排层 |
+
+**不能只凭 `VerifiedDoc` 这个类型就宣称编排层门禁已验证。** 两者是不同的事实：
+前者是「传不进去」，后者是「失败时什么都没产生」。
+
+### 失败语义
+
+| 情况 | 行为 |
+|---|---|
+| 未取得 `VerifiedDoc` | 不调用 Codegen，不写文件 |
+| Codegen 内部出错 | 返回 error，**不返回部分代码** |
+| 格式化或包一致性校验失败 | 丢弃本次结果，旧文件不变 |
+
 ## 2. Subtask 清单与验收命令
 | 子任务ID | 内容 | 验收命令 |
 |---|---|---|
 | TASK-CODEGEN-001-1 | 将 `<Column>`/`<Row>`/`<Grid>`/`<Spacer>` 映射为 Gio Flex 代码 | go test -v -run TestGenerateLayout ./internal/compiler/codegen |
 | TASK-CODEGEN-001-2 | 生成基础控件与 Shadow Struct 状态定义 | go test -v -run TestGenerateWidgets ./internal/compiler/codegen |
 | TASK-CODEGEN-001-3 | 跑通 Golden 编译测试集 | go test -v -run TestGoldenCodegen ./internal/compiler/codegen |
+| TASK-CODEGEN-001-4 | 入口只接受 `*analyzer.VerifiedDoc`，并拒绝未经校验的 IR | go test -v -run TestGenerateRequiresVerified ./internal/compiler/codegen |
+| TASK-CODEGEN-001-5 | 生成结果能被 Go 工具链编译（临时模块 `go build`） | go test -v -run TestGeneratedCompiles ./internal/compiler/codegen |
+| TASK-CODEGEN-001-6 | 编排层门禁：`Partial`/`Blocked` 不调用 Codegen、不产生任何文件 | go test -v -run TestPipelineGate ./internal/compiler |
+
+## 3. 验收要求（必须全部满足）
+
+| # | 要求 | 验证方式 |
+|---|---|---|
+| 1 | `StatusOK` 且验证通过，才允许调用 Codegen | 类型入口 + 测试 |
+| 2 | `StatusPartial`、`StatusBlocked` 均不得调用 Codegen | 子任务 4 |
+| 3 | 失败流程不生成文件、不留部分产物 | 子任务 6 |
+| 4 | 测试验证**实际编排行为**，而非只测 `Verified()` 的拒绝逻辑 | 子任务 6 必须经编排层，不能直接调 `Verified()` |
+| 5 | 临时 Go 模块 `go build` 通过，证明最小切片生成了可编译代码 | 子任务 5 |
+| 6 | 满足 `代码生成输出契约.md` §13 的全部 20 条 | Golden + E2E |
+
+> 第 6 条中的第 20 条（编排层门禁）在编排层落地前无法执行。
+> 在此之前，任务状态只能是「设计已定义、实现待完成」，**不得标记为通过**。
+
+## 4. 建议的首个纵向切片
+
+不要一次实现全部控件。先做能端到端跑通的最小单元：
+
+1. 只生成一个静态页面（`<Page>` + 一个 `<Text>`），不含绑定、事件、`<For>`
+2. 验证包名、import、保护头、`gofmt` 通过、`go build` 通过
+3. 再接布局 → 属性绑定 → 事件 → `<For>`
+
+理由：IR 或编排接口若不适用，越早发现越好；等全部控件写完再验证，
+返工代价高得多。
 | TASK-CODEGEN-001-4 | 静态子树识别与 `CallOp` 固化（生成源码含缓存字段） | go test -v -run TestStaticSubtreeMacro ./internal/compiler/codegen |
 | TASK-CODEGEN-001-5 | `<For Virtualize>` 语法解析与虚拟化代码生成 | go test -v -run TestGenerateVirtualizedFor ./internal/compiler/codegen |
 | TASK-CODEGEN-001-6 | 稳定帧零分配断言（静态页面 allocs/op == 0） | go test -bench=BenchStaticStable -benchmem ./internal/compiler/codegen |

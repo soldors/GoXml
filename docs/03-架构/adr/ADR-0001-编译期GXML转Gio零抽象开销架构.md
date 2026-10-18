@@ -110,17 +110,21 @@ Linux 上穷举 5 种构建标签组合均失败；`CGO_ENABLED=1` 可构建（1
 
 ### 3.3 已实现的代码现状
 
+> **本表是 2026-10-18 的历史快照，不维护实时状态。**
+> 覆盖率与测试数会随实现推进变化；权威来源是各任务的验收报告与任务卡。
+> 表中只保留「某包是否已存在」这一稳定事实。
+
 【项目证据】当前仓库已具备前端管线：
 
 | 包 | 作用 | 状态 |
 |---|---|---|
-| `contracts` | IR 契约、`CompilerError` | 已实现，92.9% 覆盖 |
-| `internal/compiler/parser` | `.gxml` → `DocumentIR` + 精确行列号 | 已实现，87.5% 覆盖 |
-| `internal/compiler/expander` | 组件分类、`<Def>`/`<Slot>` 宏展开 | 已实现，91.6% 覆盖 |
+| `contracts` | IR 契约、`CompilerError` | 已实现（快照值） |
+| `internal/compiler/parser` | `.gxml` → `DocumentIR` + 精确行列号 | 已实现（快照值） |
+| `internal/compiler/expander` | 组件分类、`<Def>`/`<Slot>` 宏展开 | 已实现（快照值） |
 | `internal/compiler/grid` | Grid 列宽计算（规范 oracle） | 已实现，100% 覆盖 |
 | `internal/compiler/sizelayout` | 尺寸决策表 | 已实现，94.4% 覆盖 |
 | `internal/compiler/diagdoc` | 诊断码目录一致性门禁 | 已实现 |
-| `internal/compiler/analyzer` | 绑定路径与事件签名校验 | **未实现** |
+| `internal/compiler/analyzer` | 绑定路径、类型兼容与事件签名校验 | 已实现（本表为 2026-10-18 的快照，**当前状态以 `TASK-ANALYZER-001` 任务卡为准**） |
 | `internal/compiler/codegen` | 生成 Go 源码 | **未实现** |
 
 `examples/gxml/` 下有 13 个示例（6 合法 + 7 诊断），由测试自动校验与编译器一致。
@@ -215,7 +219,7 @@ Linux 上穷举 5 种构建标签组合均失败；`CGO_ENABLED=1` 可构建（1
 
 | 代价 | 具体表现 |
 |---|---|
-| **复杂度从运行时转移到编译期** | 编译器必须自行承担语法校验、语义分类、绑定路径检查、代码生成、诊断与位置报告。当前已实现 6 个前端包约 3,700 行生产代码，Analyzer 与 Codegen 尚未开始 |
+| **复杂度从运行时转移到编译期** | 编译器必须自行承担语法校验、语义分类、绑定路径检查、代码生成、诊断与位置报告。当前已实现 7 个前端包（含 `contracts`）约 5,600 行生产代码，Codegen 尚未开始 |
 | **诊断质量成为核心责任** | 运行时框架可「先跑起来再说」，AOT 不行——未被静态检查覆盖的错误会变成生成代码里的类型错误。诊断码体系因此需专门维护（`诊断码目录.md`） |
 | **布局语义必须自己定义** | Gio 只给原语，`Fill` 的轴向、Grid 的补位、Baseline 的适用面都须在语言层定义（ADR-0008） |
 | **平台依赖不由本项目决定** | Linux/macOS 必须 CGO，放弃一键三端交叉编译（ADR-0007） |
