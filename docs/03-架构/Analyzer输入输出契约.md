@@ -233,94 +233,321 @@ const (
 除此之外不得消费。
 
 
-## 6. Analyzer 输出
+## 6. Analyzer 输出（语义 IR）
 
-### 6.1 输出形态
+### 6.1 三个层次的职责
 
-```go
-// 位于 internal/compiler/analyzer
-type Result struct {
-    Doc    *contracts.DocumentIR   // 原地补充了已解析的绑定信息
-    Status Status
-    Diags  []contracts.CompilerError
-}
-```
+| 层次 | 产出 | 是否可变 | 消费者 |
+|---|---|---|---|
+| **结构 IR** | `contracts.DocumentIR`：节点树、已分类属性与事件、源码位置、宏展开后的结构 | Parser/Expander 产出后**不再改动** | Analyzer、IDE、诊断 |
+| **语义 IR** | 本文定义的 `Facts` 与 `Resolved*`：已解析的绑定路径、已解析的类型、已验证的事件映射 | Analyzer 产出 | Codegen、IDE |
+| **代码** | Go 源码 | Codegen 产出 | 编译器 |
 
-### 6.2 Codegen 需要的、Analyzer 必须提供的语义
+**关键约束：Analyzer 不修改结构 IR。**
 
-| 信息 | 当前状态 | Analyzer 产出 |
-|---|---|---|
-| 绑定路径的字段链 | `BindingVal.Segments` 只有字符串，未验证 | 每段标注所属类型与是否导出 |
-| 绑定值的 Go 类型 | ❌ 无 | 最终类型（如 `string`、`int`、`demo.Status`） |
-| 绑定类型 → 目标 `PropType` 的匹配结论 | ❌ 无 | 直接给出匹配结果；Codegen 不重新判断 |
-| 循环变量类型 | ❌ 无 | `<For>` 内 `item` 的类型 |
-| 事件处理方法的签名 | ❌ 无 | 参数类型、返回值、是否可调用 |
-| 事件实参的类型 | ❌ 无 | 每个实参解析后的类型 |
-| **事件载荷参数的解析结果** | ❌ 无 | 按 §8.4 从 Schema 取得，标注为「载荷」 |
-| **方法形参与两类参数的对应关系** | ❌ 无 | 逐项标注该项来自载荷还是实参 |
+分析结果以**旁表**形式保存（`Facts` 按节点指针索引），而不是往 `NodeIR` 里塞字段。理由：
+
+- 结构 IR 是 Parser/Expander 的产物，被诊断与 IDE 消费；混入语义字段会让「谁负责填这个字段」变得含混。
+- 旁表让增量分析与后续扩展有干净的边界——新增一类语义事实只需扩表，不动节点结构。
+- 失败时结构 IR 仍完整可用，便于 IDE 显示未校验的原始结构。
+
+### 6.2 Codegen 需要的语义事实
+
+| 事实 | 说明 |
+|---|---|
+| 绑定路径的字段链 | 每一段的字段名与其所属类型，全部来自真实类型检查 |
+| 绑定值的类型 | 含底层类别（string/int/bool/…）与是否实现 `fmt.Stringer` |
+| 绑定 → 目标 `PropType` 的匹配结论 | **只产出通过的**：失败的会进诊断，不会出现在 `Facts` 里 |
+| `<For>` 循环变量的类型 | 元素类型，供循环体内的绑定解析 |
+| 事件形参与两类参数的对应关系 | 逐项标注「来自载荷」还是「来自调用点实参」 |
+| 事件方法签名 | 真实形参类型、是否有返回值 |
 
 ### 6.3 边界：Analyzer 不做的事
 
 | 不做 | 归属 |
 |---|---|
 | 生成任何 Go 语句或表达式文本 | Codegen |
-| 决定属性的渲染方式（如 `Color` 如何转 `color.NRGBA`） | Codegen |
+| 决定属性如何渲染（`Color` → `color.NRGBA`、`int` → 字符串格式） | Codegen |
 | 判断静态子树能否固化、如何缓存 `op.CallOp` | Codegen |
-| 重新判断属性名是否合法、事件是否已声明 | Expander（已完成） |
-| 重新解析 `<Defs>` | Expander（已完成） |
+| 重判属性名是否合法、事件是否已声明 | Expander（已完成） |
+| 重新解析 `<Defs>` | Expander（已完成，经 `Schemas` 提供） |
 | 解析 `.gxml` 语法、位置、属性值形态 | Parser（已完成） |
 
-### 6.4 表示方式约束
-
-`contracts` 包**不得依赖 `go/types`**。因此 Analyzer 的解析结果用字符串与枚举表达，实际 `types.Type` 保留在 Analyzer 内部：
+### 6.4 分析结果
 
 ```go
-// 建议形态（待细化）
+// 位于 internal/compiler/analyzer
+type Status uint8
+
+const (
+    StatusOK      Status = iota // 全部通过
+    StatusPartial               // 有可恢复错误
+    StatusBlocked               // 关键输入不可用
+)
+
+type Result struct {
+    // Doc 是**原样**的结构 IR，未做任何修改。
+    Doc *contracts.DocumentIR
+    // Facts 是语义 IR；仅当 Status == StatusOK 时完整可用。
+    Facts *Facts
+    Status Status
+    // Diags 用项目既有的诊断类型，不另造一套。
+    Diags []contracts.CompilerError
+}
+```
+
+`Doc` 保持原样这一点是刻意的：`StatusPartial` 时 IDE 仍能基于完整结构 IR 展示界面并标注部分错误。
+
+### 6.5 语义事实容器
+
+```go
+// Facts 是按节点索引的语义事实旁表。只读。
+type Facts struct {
+    nodes map[*contracts.NodeIR]*NodeFacts
+}
+
+// Lookup 返回某个节点的语义事实。未校验的节点返回 (nil, false)。
+func (f *Facts) Lookup(n *contracts.NodeIR) (*NodeFacts, bool)
+
+type NodeFacts struct {
+    // Attrs 是已解析的属性绑定（不含静态字面量属性）。
+    Attrs []ResolvedAttr
+    // Events 是已验证的事件绑定。
+    Events []ResolvedEvent
+    // For 仅在节点是 KindFor 时非 nil。
+    For *ResolvedFor
+}
+```
+
+**只记录已通过校验的事实。** 失败的属性不在 `Attrs` 里，而是对应一条诊断——避免出现「有事实但已被判定失败」的矛盾状态。
+
+### 6.6 绑定路径
+
+```go
+// RootKind 标识路径的起点。
+type RootKind uint8
+
+const (
+    // RootViewModel 起点是 ViewModel 根对象。
+    RootViewModel RootKind = iota + 1
+    // RootForVar 起点是 <For> 引入的循环变量。
+    RootForVar
+)
+
 type ResolvedPath struct {
-    Steps  []PathStep      // 逐段
-    Type   string          // 最终类型的可打印形式，如 "string" / "demo.Status"
+    // Root 是起点名称：ViewModel 时为空；循环变量时为变量名（如 "item"）。
+    Root     string
+    RootKind RootKind
+    // Steps 按访问顺序记录字段。
+    Steps []PathStep
+    // Type 是整条路径解析后的类型。
+    Type TypeInfo
+    // Negated 对应 {!Path}。仅当 Type.Kind 为 ValueBool 时允许存在。
+    Negated bool
 }
 
 type PathStep struct {
-    Name     string
-    Type     string
-    Exported bool
+    Name string
+    // Type 是访问该字段后的类型。
+    Type TypeInfo
 }
 ```
 
-这样可以满足 Codegen 的需要，同时不把 `go/types` 泄漏进 `contracts`。
+**不设计的部分**：索引访问（`Items[0]`）、Map 取值、方法调用、任意表达式。这些都不在已冻结的点分字段路径语法内，等语法扩展时再设计对应 IR。
 
-### 6.5 Codegen 准入门禁（编译管线契约）
+### 6.7 类型表示
 
-`Status` 不能只是调用方「自觉判断」的标记。**编译管线必须在进入 Codegen 之前检查状态并中止**。
+`contracts` 不得依赖 `go/types`，但 Codegen 也不能拿到一个字符串再自己解析。因此语义 IR 提供**结构化的类型事实**：
 
-```text
-Analyzer.Result
-   │
-   ├─ StatusOK      ──► Codegen
-   ├─ StatusPartial ──► ✗ 中止（输出诊断，不生成代码）
-   └─ StatusBlocked ──► ✗ 中止（输出诊断，不生成代码）
+```go
+// ValueKind 是类型的底层类别（已剥离命名类型的外壳）。
+type ValueKind uint8
+
+const (
+    ValueUnknown ValueKind = iota
+    ValueString
+    ValueBool
+    ValueInt      // 所有整数类型
+    ValueFloat    // float32 / float64
+    ValueStruct
+    ValueSlice
+    ValueMap
+    ValuePointer
+    ValueInterface
+    ValueOther
+)
+
+// TypeInfo 描述一个已通过类型检查的类型。
+type TypeInfo struct {
+    // Display 是可打印形式（如 "demo.User"）。**仅用于诊断与日志**，
+    // 消费者不得解析它来推断语义。
+    Display string
+    // Kind 是底层类别。对 `type Status string`，Kind 为 ValueString。
+    Kind ValueKind
+    // Named 表示是否为命名类型（有包限定）。
+    Named bool
+    // Stringer 表示是否实现 fmt.Stringer。
+    Stringer bool
+}
 ```
 
-**三项强制要求：**
+**为什么 `Display` 不能作为 Codegen 的输入**：字符串是给人和诊断用的，解析它等于让 Codegen 重做类型检查。Codegen 需要判断时看 `Kind` / `Named` / `Stringer`。
 
-1. **管线的唯一入口检查**：由编译流程的编排层（而非 Codegen 自己）在调用 Codegen 前检查 `Status`。Codegen 不应收到非 `StatusOK` 的输入。
-2. **`StatusPartial` 不得降级为「尽力生成」**：部分有效的 IR 意味着某些节点未被校验，生成出的代码可能引用不存在的字段或方法，表现为编译期或运行期错误——这比直接报诊断差得多。
-3. **测试必须覆盖门禁**：`StatusPartial` 与 `StatusBlocked` 两种情况下，必须有测试断言「没有产生任何生成产物」。
+这也回答了「`Type string` 是否足够稳定」：不够，所以 `Display` 只是附带信息，**语义由结构化字段承载**。
 
-最后一项是本节的重点：**门禁本身需要测试**，否则它只是一句注释。
+### 6.8 事件绑定
 
-### 6.6 为什么保留三个全局状态而非节点级状态
+必须保留三类独立信息，不能只存拼接后的参数列表——否则无法区分某个参数来自事件载荷还是 XML 实参，也无法生成准确的诊断。
 
-现有决策（原 Q5）：**只用三个全局 `Status`，不引入节点级状态**。
+```go
+type ParamOrigin uint8
+
+const (
+    // FromPayload 参数来自组件 Schema 的事件声明。
+    FromPayload ParamOrigin = iota + 1
+    // FromCallArg 参数来自 XML 中显式写出的调用点实参。
+    FromCallArg
+)
+
+type ResolvedParam struct {
+    Name string
+    Type TypeInfo
+    Span contracts.SourceSpan
+}
+
+type ResolvedMethod struct {
+    Name   string
+    Params []ResolvedParam
+    // HasReturn 记录方法是否有返回值。
+    // Q4 规定不允许返回值，此事实用于产出 EVENT 类诊断。
+    HasReturn bool
+}
+
+type ResolvedEvent struct {
+    // Name 是事件名，如 "ValueChanged"。
+    Name string
+    // Payload 来自 ComponentSchema.Events[i].Params。
+    Payload []ResolvedParam
+    // CallArgs 来自 XML 的 EventBinding.Args。
+    CallArgs []ResolvedParam
+    // Method 来自 go/types 的真实签名。
+    Method ResolvedMethod
+    // Mapping 与 Method.Params 一一对应，标注每个形参的来源。
+    Mapping []ParamOrigin
+}
+```
+
+**`Mapping` 的作用**：Codegen 按它生成调用，无需推断「这个参数从哪来」。
+
+**`ResolvedEvent` 与契约 §8.4 的对应**：
+
+| 字段 | 对应 §8.4 |
+|---|---|
+| `Payload` | R1 的「事件声明参数」 |
+| `CallArgs` | R1 的「调用点实参」 |
+| `Method.Params` | 目标 Go 方法的真实签名 |
+| `Mapping` | 拼接后的对应关系；逐项标注 R1 的顺序 |
+
+`Mapping` 的长度必然等于 `Method.Params` 的长度（R2 已校验）。若不等，说明 Analyzer 有实现缺陷，不是用户错误。
+
+### 6.9 `<For>` 作用域
+
+```go
+type ResolvedFor struct {
+    // Each 是循环变量名（如 "item"）。
+    Each string
+    // Elem 是元素类型（可迭代体已被校验）。
+    Elem TypeInfo
+    // Index 是索引变量名，可为空。
+    Index string
+    // IndexType 仅在 Index 非空时有效。
+    IndexType TypeInfo
+    // Key 是已解析的 Key 路径，可为 nil（无状态循环可不提供）。
+    Key *ResolvedPath
+}
+```
+
+循环体内的绑定以 `RootKind == RootForVar`、`Root == Each` 指向它。
+
+### 6.10 准入门禁：用类型系统而非约定
+
+§6.5 的「编排层检查状态」仍依赖调用方自觉。更可靠的做法是让**绕过门禁在类型上不可能**：
+
+```go
+// VerifiedDoc 是「已通过全部校验」的凭证。
+//
+// 字段全部未导出，且只能由 Result.Verified 构造，
+// 因此包外无法伪造。
+type VerifiedDoc struct {
+    doc   *contracts.DocumentIR
+    facts *Facts
+}
+
+// Verified 仅在 Status == StatusOK 时返回非 nil。
+func (r *Result) Verified() (*VerifiedDoc, error)
+
+func (v *VerifiedDoc) Document() *contracts.DocumentIR
+func (v *VerifiedDoc) Facts() *Facts
+```
+
+Codegen 的入口签名接收 `*analyzer.VerifiedDoc`：
+
+```go
+// 位于 internal/compiler/codegen
+func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error)
+```
+
+**这样 `StatusPartial` / `StatusBlocked` 的 IR 在编译期就无法传进 Codegen**——不需要运行时检查，也不依赖任何人「记得检查」。
+
+门禁测试因此可以断言「无法构造出 VerifiedDoc」这一类型层面的事实，而不只是「某个状态存在」。
+
+### 6.11 为什么保留三个全局状态
 
 | 理由 | 说明 |
 |---|---|
 | 当前只需要一个判定 | 编译器只关心「能否进入 Codegen」，这是文档级的二值问题 |
-| 节点级状态服务于 IDE | 精确到节点的可诊断性、增量重分析属于 IDE/增量场景，当前没有这个消费者 |
+| 节点级状态服务于 IDE | 精确到节点的可诊断性、增量重分析属于 IDE 场景，当前没有这个消费者 |
 | 过早引入会固化错误的粒度 | 一旦 `NodeIR` 携带状态，所有下游都要处理它，而实际用途尚未明确 |
 
-节点级状态留待将来由 IDE 集成或增量分析的真实需求驱动，而不是现在预设。
+节点级状态留待将来由 IDE 集成或增量分析的真实需求驱动。
+
+### 6.12 最小契约测试夹具
+
+夹具的目标是**固定边界行为**，不是搭一个大而全的集成框架。
+
+**目录结构**（每个夹具一个子目录，含 `.gxml` 与可被 `go/packages` 加载的 Go 类型）：
+
+```text
+internal/compiler/analyzer/testdata/
+├── fixture/            # 共享的 ViewModel 类型包
+│   └── vm.go
+└── cases/
+    ├── valid-binding/
+    │   ├── case.gxml
+    │   └── want.txt    # 期望状态 + 诊断码
+    └── ...
+```
+
+| 夹具 | 输入 | 期望 |
+|---|---|---|
+| `valid-binding` | `{User.Name}`，字段存在且可访问 | `StatusOK`；`Steps` 与 `Type` 正确；`Mapping` 无关 |
+| `invalid-root` | 绑定首段不存在 | `StatusPartial`；`GXML-BIND-001`；该属性**不在** `Facts` 中 |
+| `invalid-nested-field` | 中间字段不存在 | `GXML-BIND-002`；不伪造成功路径 |
+| `unexported-field` | 字段存在但未导出 | `GXML-BIND-003` |
+| `type-mismatch` | 绑定类型与属性目标不符 | `GXML-BIND-004` |
+| `negate-non-bool` | `{!Count}`，`Count` 为 `int` | `GXML-BIND-004`（Q6） |
+| `valid-event-payload` | `ValueChanged="OnNameChanged"` | `StatusOK`；`Payload` 1 项；`Mapping = [FromPayload]` |
+| `valid-event-args` | `Click="Delete(item.ID)"` | `StatusOK`；`CallArgs` 1 项；`Mapping = [FromCallArg]` |
+| `valid-event-combined` | 自定义事件 `Open(id:string)` + `item.ID` | `Mapping = [FromPayload, FromCallArg]` |
+| `invalid-event-arity` | 形参数量与拼接结果不符 | `GXML-EVENT-004` |
+| `invalid-event-type` | 形参类型不兼容 | `GXML-EVENT-006` |
+| `invalid-method-missing` | 方法不存在 | `GXML-EVENT-003` |
+| `for-not-iterable` | `<For In>` 非可迭代类型 | `GXML-SCOPE-004` |
+| `blocked-viewmodel` | `ViewModel` 无法解析 | `StatusBlocked`；`GXML-ROOT-002`；只报一条（不产生派生错误） |
+| `codegen-gate` | 取 `StatusPartial` / `StatusBlocked` 的 `Result` | **`Verified()` 返回 error，无法取得 `VerifiedDoc`** |
+
+最后一个夹具是门禁的实证：它验证的不是「某个状态存在」，而是「**拿不到进入 Codegen 的凭证**」。
+
 
 ## 7. 诊断码增补方案
 
@@ -496,7 +723,7 @@ Analyzer 必须**分别构建并校验**三项独立信息：
 | §3 输入 A（Expander 输出） | ✅ 已定稿 |
 | §4 输入 B（Go 类型环境） | ✅ 已定稿（Q1/Q2 已决） |
 | §5 Analyzer 行为 | ✅ 已定稿 |
-| §6 输出与门禁 | ✅ 已定稿（Q5 已决） |
+| §6 语义 IR（输出与门禁） | ✅ 已定稿（本次细化：§6.4–§6.10 字段级设计） |
 | §7 诊断码增补 | ✅ 已定稿（Q7 已决，`EVENT-004`/`006` 规则见 §8.4） |
 | §8.2 事件方法形态 | ✅ 已定稿（Q4 已决） |
 | §8.3 取反类型要求 | ✅ 已定稿（Q6 已决） |
@@ -516,8 +743,10 @@ Q7 确认后，`SchemaRegistry` 的接口形态已经明确：它必须能提供
 | 1 | `Result` 增加 `Schemas` | `internal/compiler/expander/expander.go` | 导出 `ComponentSchema` 与只读查询接口；合并 `builtinSchemas` |
 | 2 | `DocumentIR` 记录 `ViewModel` 位置 | `contracts/ir_schema.go` | 现在只有 `ViewModel string`，报 `ROOT-002` 时无法指向属性。改为 `ViewModelDecl{Value string; Span SourceSpan}` |
 | 3 | 诊断码定稿 | `docs/03-架构/诊断码目录.md` + 各包常量 | 按 §7 定稿后再实现，避免实现中反复改号 |
+| 4 | 语义 IR 类型定义 | 新建 `internal/compiler/analyzer/ir.go` | 按 §6.4–§6.9 定义 `Status`/`Result`/`Facts`/`Resolved*`/`TypeInfo` 等类型，**暂不实现校验逻辑** |
+| 5 | 契约测试夹具 | `internal/compiler/analyzer/testdata/` | 按 §6.12 建 15 个夹具的目录骨架与期望文件，先不实现 Analyzer |
 
-**提交前的前置条件**：§8.4 的 Q7 必须先确认。第 1 项直接服务于事件签名校验，而 Q7 决定该校验的规则。
+**提交顺序**：第 1–3 项已完成（见 Git 提交 `5e71510`、`ef92216`、`f203443`）。第 4–5 项是**纯结构定义**，不含校验逻辑——先固定类型与夹具，再实现，避免临时 IR 被推翻。
 
 每项的验收要求：
 
@@ -526,6 +755,8 @@ Q7 确认后，`SchemaRegistry` 的接口形态已经明确：它必须能提供
 | 1. `Schemas` | 能查询到内置控件与用户组件的契约；布局标签返回 nil；现有测试全绿 |
 | 2. `ViewModelDecl` | 合法与非法 `ViewModel` 声明都能定位到属性列；`ROOT-002` 的 Span 非零 |
 | 3. 诊断码 | 目录与代码一致性门禁通过；`GXML-BIND-001` 的既有承诺调整有明确记录 |
+| 4. 语义 IR 类型 | 能编译；`contracts` 仍不依赖 `go/types`；`Verified()` 在非 OK 时返回 error；类型定义有注释说明「消费者不得解析 `Display`」 |
+| 5. 夹具骨架 | 15 个夹具目录齐全，每个含 `.gxml` 与期望状态/诊断码；夹具 Go 类型包可被 `go/packages` 加载 |
 
 ## 11. 版本演进边界
 
