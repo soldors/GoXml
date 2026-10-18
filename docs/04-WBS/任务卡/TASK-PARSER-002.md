@@ -1,7 +1,7 @@
 # TASK-PARSER-002：实现强类型属性解析器
 
 ## 元信息
-- 状态：Todo | 优先级：P0 | 预计：3h
+- 状态：**Done**（2026-10-18）| 优先级：P0 | 预计：3h
 - 分支：feature/TASK-PARSER-002
 - 依赖：TASK-PARSER-001
 

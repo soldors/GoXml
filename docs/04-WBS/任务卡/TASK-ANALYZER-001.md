@@ -1,16 +1,74 @@
-# TASK-ANALYZER-001：实现 ViewModel AST 静态扫描与校验
+# TASK-ANALYZER-001：实现语义校验（绑定路径、事件签名、For 作用域）
 
 ## 元信息
-- 状态：Todo | 优先级：P0 | 预计：5h
-- 分支：feature/TASK-ANALYZER-001
-- 依赖：TASK-PARSER-002
+- 状态：**进行中**（1/5 完成）| 优先级：P0 | 预计：5h
+- 依赖：TASK-EXPANDER-001
+- 契约：`docs/03-架构/Analyzer输入输出契约.md`（已全部冻结）
 
 ## 1. 目标
-在编译期检查 GXML 中的绑定路径、事件处理器和 ViewModel 声明，发现的问题以统一的源码位置诊断返回。
 
-## 2. Subtask 清单与验收命令
-| 子任务ID | 内容 | 验收命令 |
-|---|---|---|
-| TASK-ANALYZER-001-1 | 使用 Go AST/类型信息加载 ViewModel 包及声明 | go test -v ./internal/compiler/analyzer/... |
-| TASK-ANALYZER-001-2 | 校验 Binding 路径存在且可访问 | go test -v -run TestBinding ./internal/compiler/analyzer/... |
-| TASK-ANALYZER-001-3 | 校验事件方法签名并验证诊断源码位置 | go test -v -run TestEvent ./internal/compiler/analyzer/... |
+在编译期用 Go 类型信息校验 Expander 输出的语义，产出**已验证的语义 IR** 供 Codegen 消费。
+
+它是第一个需要 `go/packages` 的阶段——绑定路径是否存在、事件方法签名是否匹配、循环值是否可迭代，都只能靠真实类型信息判断。
+
+## 2. 执行顺序（与常见直觉不同）
+
+原计划「先做静态属性校验，再做 Go 类型解析」。实际调整为**先做类型加载**，原因：
+
+- 未知属性名已由 Expander 检出（`GXML-ATTR-004`），Analyzer 不需要重复检查；
+- 绑定路径、类型匹配、事件签名、`For` 可迭代性**全部**依赖类型信息；
+- 没有可靠的类型来源时，后续每一步都建立在假定之上。
+
+## 3. 五步与进度
+
+| 步骤 | 内容 | 诊断码 | 状态 |
+|---|---|---|---|
+| 1 | Go 类型加载 + `ViewModel` 解析 | `ROOT-002` | ✅ 完成 |
+| 2 | 绑定路径解析（首段/中间段/未导出） | `BIND-001`/`002`/`003` | ⬜ |
+| 3 | 类型匹配（含 `{!Path}` 只作用于 bool） | `BIND-004`/`005` | ⬜ |
+| 4 | 事件签名（载荷 + 实参拼接） | `EVENT-003`/`004`/`006` | ⬜ |
+| 5 | `<For>` 可迭代性与循环变量作用域 | `SCOPE-004` | ⬜ |
+| — | `Analyze` 总入口与 `Status` 判定 | — | ⬜ |
+| — | 编排层门禁（`StatusOK` 才发凭证） | — | ⬜ |
+
+### 第 1 步已完成的内容
+
+- `load.go`：`ParseTypeExpr`（冻结文法）、`TypeEnv`（包缓存）、`ResolveViewModel`
+- `ir.go`：语义 IR 类型（`Result`/`Facts`/`Resolved*`/`TypeInfo`/`VerifiedDoc`）
+- `codes.go`：10 个已定稿诊断码常量
+- 17 个夹具 + 期望表（Go 结构体字面量，无 `want.txt`）
+- 56 个测试，93.0% 覆盖
+
+## 4. 关键约束（来自契约）
+
+| 约束 | 说明 |
+|---|---|
+| 不修改结构 IR | 语义事实存 `Facts` 旁表 |
+| `contracts` 不依赖 `go/types` | 解析结果用字符串与枚举表达 |
+| 只记录已验证的事实 | 失败项只产诊断，不进 `Facts` |
+| 不生成 Go 代码 | 表达式生成归 Codegen |
+| 不允许伪造成功 | `ViewModel` 无法解析时 `StatusBlocked`，不得跳过检查当通过 |
+
+## 5. 验收要求
+
+### 现在已可验收
+
+```text
+$ go test ./internal/compiler/analyzer/
+ok  coverage: 93.0%   （56 个测试）
+
+$ go test ./internal/compiler/diagdoc/
+ok  （诊断码目录一致性门禁）
+```
+
+### 完成全部 5 步后必须补齐
+
+- 夹具期望表全部启用（`TestAnalyzeBehavior` 从 `t.Skip` 改为实际断言）
+- `Partial`/`Blocked` 情形下 `Verified()` 拒绝发放凭证
+- **编排层实测**：用失败输入跑完整管线，断言没有产生任何生成产物
+  （需要 Codegen 与编排层存在，当前无法验证——已记入契约 §6.13）
+
+## 6. 遗留
+
+- 编排层尚不存在；`StatusBlocked` 目前只在 `ResolveViewModel` 层面表达，未接到总入口。
+- 索引访问、Map 取值、方法调用等表达式形式未设计（语法未冻结）。
