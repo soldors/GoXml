@@ -1,0 +1,53 @@
+# ---- Goxml 生成产物 ----
+# 生成代码默认与 .gxml 同目录，文件名固定为 <source-base>_gen.go。
+# 是否纳入版本控制由各项目自行决定；Goxml 自身仓库不提交。
+*_gen.go
+
+# ---- Goxml 工具链工作目录 ----
+.goxml/
+.goxml_state.json
+
+# ---- Go 构建产物 ----
+# 可执行文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# 测试与覆盖率
+coverage.txt
+coverage.html
+coverage.out
+*.prof
+*.cov
+
+# vendor（本仓库不使用 vendor）
+/vendor/
+
+# 二进制输出目录
+/bin/
+/dist/
+
+# ---- 编辑器与 IDE ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 临时与本地环境 ----
+*.log
+tmp/
+.tmp/
+
+# ---- AI 工具本地状态 ----
+# 助手工具的长期记忆目录，属本地环境而非项目源码。
+.workbuddy/

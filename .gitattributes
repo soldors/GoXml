@@ -1,0 +1,26 @@
+# 统一行尾为 LF，避免 Windows/macOS 协作时产生整文件伪改动。
+* text=auto eol=lf
+
+# Go 源码与文档均为文本。
+*.go text eol=lf
+*.md text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+Makefile text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# 字体为二进制资源，不得做行尾转换。
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+
+# 图片与归档。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
