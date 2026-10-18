@@ -1,0 +1,6 @@
+<!-- 期望：StatusOK；ViewModel="AppState" 为同包形式 -->
+<Goxml Version="1" ViewModel="AppState">
+  <Page Route="/">
+    <Text Value="{Name}"/>
+  </Page>
+</Goxml>
