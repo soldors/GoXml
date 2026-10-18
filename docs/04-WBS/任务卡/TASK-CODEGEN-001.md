@@ -74,7 +74,26 @@ Column{ Gap: rowGap }
 - **子项 `Width` 不进入 Codegen**：Parser 已报 `GXML-ATTR-002`；若在 Codegen 收到带 `Width` 的 Grid 子项，属于上游缺陷，应断言失败。
 - **不自行计算像素宽度**：列宽全部交给 `Rigid`/`Flexed`，由 Gio 分配。取整规则见规范 §3.1.6；其中「可能留下未分配像素」是**非保证项**，**不得补偿**（补偿会让生成代码与规范描述不一致）。
 
-## 1.5 性能约束
+## 1.5 尺寸解析（规范 §3.1.7 / ADR-0008 §2.8）
+
+`Width`/`Height` 的决策**必须调用 `internal/compiler/sizelayout`**，不得在 Codegen 内重新实现判断：
+
+```go
+main, cross := sizelayout.ResolveMainCross(width, height, mainIsHorizontal, availW, availH)
+```
+
+| 指令 | 生成 |
+|---|---|
+| `DirectiveNatural` | 不施加额外约束 |
+| `DirectiveFlex` | `layout.Flexed(1, ...)` |
+| `DirectiveFillCross` | 把交叉轴 `Min` 抬到 `Max` 后布局 |
+| `DirectiveExact` | `layout.Constraints.Exact`（允许溢出父容器） |
+
+- `<Page>` 按**垂直 Flex** 生成（等价于没有 `Gap`/`Padding` 的 `<Column>`，ADR-0008 §2.8.1）。
+- 交叉轴无界时 `Fill` 已由 `sizelayout` 退化为 `Natural`，Codegen **不得**再自行判断无界。
+- `<Grid>` 单元格内的 `Height="Fill"` 同样退化为自然高度（规范 §3.1.7）。
+
+## 1.6 性能约束
 
 依据 `代码生成输出契约.md` §15 与 `性能预算与优化策略.md`：
 
@@ -111,3 +130,13 @@ Column{ Gap: rowGap }
 | TASK-CODEGEN-001-18 | 非保证项：116px 五等分实测合计 115，断言**不自行补偿** | go test -v -run TestGridNoPixelCompensation ./internal/compiler/codegen |
 | TASK-CODEGEN-001-19 | 约束：`Gap` 同时作用于行列两个轴向 | go test -v -run TestGridGapBothAxes ./internal/compiler/codegen |
 | TASK-CODEGEN-001-20 | Grid 性能回归：多行 Grid 的静态子树仍可 `CallOp` 固化，稳定帧 `allocs/op == 0` | go test -bench . -run xxx ./benchmarks/... |
+
+### 尺寸解析专项（规范 §3.1.7 / ADR-0008 §2.8）
+
+| 子任务ID | 内容 | 验收命令 |
+|---|---|---|
+| TASK-CODEGEN-001-21 | `<Page>` 按垂直 Flex 生成（等价无 `Gap`/`Padding` 的 `<Column>`） | go test -v -run TestPageVerticalStack ./internal/compiler/codegen |
+| TASK-CODEGEN-001-22 | 尺寸决策统一走 `sizelayout.ResolveMainCross`（AST 断言无自行判断轴向的代码） | go test -v -run TestSizeUsesResolver ./internal/compiler/codegen |
+| TASK-CODEGEN-001-23 | 交叉轴 `Fill` 生成「抬 `Min` 到 `Max`」，且无界时不生成（由 resolver 已退化） | go test -v -run TestCrossFillGeneration ./internal/compiler/codegen |
+| TASK-CODEGEN-001-24 | 嵌套约束：`<Column><Row Height="Fill"><Text Width="Fill"/>` 的两级 `Fill` 各走主轴 | go test -v -run TestNestedFill ./internal/compiler/codegen |
+| TASK-CODEGEN-001-25 | 固定尺寸溢出：父 `Max=150`、子 `Width="200"` 生成 `Exact(200)`，不裁剪 | go test -v -run TestFixedOverflow ./internal/compiler/codegen |
