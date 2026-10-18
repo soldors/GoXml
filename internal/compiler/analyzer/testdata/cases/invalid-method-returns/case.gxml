@@ -1,0 +1,6 @@
+<!-- 期望：StatusPartial + GXML-EVENT-*；事件方法不得有返回值（Q4） -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <Button Text="保存" Click="OnWithReturn"/>
+  </Page>
+</Goxml>

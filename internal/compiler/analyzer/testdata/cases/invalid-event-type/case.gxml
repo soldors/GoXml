@@ -1,0 +1,6 @@
+<!-- 期望：StatusPartial + GXML-EVENT-006；载荷 string 但形参 int -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <Input Value="{User.Name}" ValueChanged="OnWrongType"/>
+  </Page>
+</Goxml>

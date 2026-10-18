@@ -546,7 +546,31 @@ internal/compiler/analyzer/testdata/
 | `blocked-viewmodel` | `ViewModel` 无法解析 | `StatusBlocked`；`GXML-ROOT-002`；只报一条（不产生派生错误） |
 | `codegen-gate` | 取 `StatusPartial` / `StatusBlocked` 的 `Result` | **`Verified()` 返回 error，无法取得 `VerifiedDoc`** |
 
-最后一个夹具是门禁的实证：它验证的不是「某个状态存在」，而是「**拿不到进入 Codegen 的凭证**」。
+`codegen-gate` 是门禁的实证：它验证的不是「某个状态存在」，而是「**拿不到进入 Codegen 的凭证**」。
+
+### 6.13 已实现与待验证
+
+| 项目 | 状态 |
+|---|---|
+| `ir.go` 类型定义（§6.4–§6.9） | ✅ 已实现 |
+| `Verified()` 凭证发放与拒绝 | ✅ 已实现并测试 |
+| `VerifiedDoc` 防伪（字段未导出） | ✅ 已实现，反射测试锁定 |
+| `Facts` 冻结（发放凭证后写入 panic） | ✅ 已实现并测试 |
+| `NodeFacts` 访问器返回副本 | ✅ 已实现，通过「修改返回值不影响内部」验证 |
+| 16 个夹具目录 + 期望表 | ✅ 已建，且已验证全部通过 Parser/Expander |
+| **Analyzer 校验逻辑** | ⬜ 未实现 |
+| **编排层门禁的实际路径** | ⬜ **待验证** |
+
+最后一项需要特别说明：当前只能验证「`Verified()` 在非 OK 时拒绝发放凭证」，**不能**验证「编排层确实阻止了 Codegen 执行」。
+
+完整验证需要两个前提：
+
+1. Codegen 存在，且其入口签名为 `Generate(*analyzer.VerifiedDoc, ...)`；
+2. 存在编排层（编译管线驱动），负责串联 Parser → Expander → Analyzer → Codegen。
+
+届时必须补一条测试：**用 `StatusPartial` / `StatusBlocked` 的输入跑完整编排流程，断言没有产生任何生成产物**。这不能用手动调用 `Verified()` 代替——它验证的是管线而不是 API。
+
+在此之前，`TestAnalyzeBehavior` 以 `t.Skip` 显式标记该状态，避免被误认为已覆盖。
 
 
 ## 7. 诊断码增补方案

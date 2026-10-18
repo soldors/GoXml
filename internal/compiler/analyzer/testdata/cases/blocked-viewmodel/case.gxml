@@ -1,0 +1,6 @@
+<!-- 期望：StatusBlocked + GXML-ROOT-002；包不存在 -->
+<Goxml Version="1" ViewModel="nosuch.Pkg">
+  <Page Route="/">
+    <Text Value="{User.Name}"/>
+  </Page>
+</Goxml>

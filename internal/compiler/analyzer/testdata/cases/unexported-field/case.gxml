@@ -1,0 +1,6 @@
+<!-- 期望：StatusPartial + GXML-BIND-003；note 存在但未导出 -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <Text Value="{User.note}"/>
+  </Page>
+</Goxml>

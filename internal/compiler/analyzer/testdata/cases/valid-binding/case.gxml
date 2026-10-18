@@ -1,0 +1,6 @@
+<!-- 期望：StatusOK；{User.Name} 解析为 string -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <Text Value="{User.Name}"/>
+  </Page>
+</Goxml>

@@ -1,0 +1,8 @@
+<!-- 期望：StatusPartial + GXML-BIND-004；Count 是 int，不能取反 -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <If Condition="{!Count}">
+      <Then><Text Value="a"/></Then>
+    </If>
+  </Page>
+</Goxml>

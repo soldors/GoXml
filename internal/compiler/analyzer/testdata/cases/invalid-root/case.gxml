@@ -1,0 +1,6 @@
+<!-- 期望：StatusPartial + GXML-BIND-001；首段 Nope 不是 ViewModel 字段 -->
+<Goxml Version="1" ViewModel="fixture.ViewModel">
+  <Page Route="/">
+    <Text Value="{Nope.Name}"/>
+  </Page>
+</Goxml>
