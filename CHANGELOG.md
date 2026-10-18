@@ -57,7 +57,7 @@ All notable changes to this project will be documented in this file.
 - `AOT状态Diff语义.md`：Dirty 传播表将 `Spacing` 改为 `Gap`，并新增 `Align`/`Justify`→`DirtyLayout`、`Width`/`Height`/`Columns`→`DirtyLayout|DirtyChildren`。
 - `TASK-CODEGEN-001`：新增 §1.3 布局契约与 6 个子任务（TASK-CODEGEN-001-8~13），重点标注 `Center→Middle` 与 `Start→SpaceEnd` 两处反向映射。
 - `contracts/ir_schema.go` 全面重构**，落实 `GXML语言规范.md` §10 的全部要求：新增 `NodeKind` 枚举（含 `IsStructural()`）、`Position`/`SourceSpan`、结构化 `IfClause`/`ForClause`/`DefClause`、分段绑定路径 `BindingVal.Segments`、`DefProp`+`PropType`、带 `Span` 的 `EventBinding`/`EventArg`。
-  - **修复 `ForKey` 缺失**：新增 `ForClause.Key` 与 `HasKey`（Key 零值无法区分「未提供」），此缺陷会导致 BUG-001 状态串位原样复现。
+  - **修复 `ForKey` 缺失**：新增 `ForClause.Key` 与 `HasKey`（Key 零值无法区分「未提供」），此缺陷会导致循环内控件状态串位原样复现（机理见 `AOT状态Diff语义.md` §5.1）。
   - **修复绑定路径不可分段**：`BindingVal` 由单个 `Path string` 改为 `Segments []string` + `Path()` 回显。
   - `CompilerError` 增加 `Code`（对齐 §8 的 `GXML-BIND-001` 格式）、`EndLine`/`EndCol`、`Span()`、`NewError()`；新增 7 个诊断码前缀常量。
 - **Go 版本要求修正为 1.24+**：原文档写 1.23+，但 `gioui.org v0.10.3` 的 `go.mod` 明确要求 `go 1.24.0`，按原文档安装会导致构建直接失败。项目基线取 1.26。

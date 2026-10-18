@@ -24,7 +24,7 @@
 
 ### 修复的两个关键缺陷
 
-1. **`ForKey` 完全缺失**：原 `NodeIR` 只有 `ForEach`/`ForIndex`/`ForIn`，无处存放 Key。而 `AOT状态Diff语义.md` §5 整章依赖 Key，缺失会导致 BUG-001（循环内控件状态串位）原样复现。现由 `ForClause.Key` + `ForClause.HasKey` 承载（`Key` 零值无法区分「未提供」，故必须配 `HasKey`）。
+1. **`ForKey` 完全缺失**：原 `NodeIR` 只有 `ForEach`/`ForIndex`/`ForIn`，无处存放 Key。而 `AOT状态Diff语义.md` §5 整章依赖 Key，缺失会导致循环内控件状态串位原样复现（机理见 `AOT状态Diff语义.md` §5.1）。现由 `ForClause.Key` + `ForClause.HasKey` 承载（`Key` 零值无法区分「未提供」，故必须配 `HasKey`）。
 2. **`BindingVal.Path` 是不可再切分的整串**：Analyzer 每次都要重新解析。现改为 `Segments []string`，`Path()` 只负责回显。
 
 ## 3. 验收命令与结果

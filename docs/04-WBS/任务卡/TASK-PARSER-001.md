@@ -65,7 +65,7 @@ $ go test ./...               → PASS
 - 属性值：静态字面量 / 完整绑定 `{Path}` / 取反 `{!Path}`；禁止混合。
 - 布局属性：`EdgeInsets` 1/2/4 参数、`Color` 的 `#RRGGBB`/`#RRGGBBAA`/`$Theme.Field`、`Align`、`Justify`、`Gap`、`Width`/`Height`、`Columns`。
 - 控制流：`<If>` 必须含 `<Then>`、可选 `<Else>`；`<For>` 的 `Each`/`In`/`Index`/`Key`/`Virtualize`/`ItemExtent`。
-- 有状态循环缺 `Key` 时编译失败（防 BUG-001 状态串位）。
+- 有状态循环缺 `Key` 时编译失败（防循环内控件状态串位，机理见 `AOT状态Diff语义.md` §5.1）。
 - `<Def>`：`Name`/`Props`/`Events`，单一渲染根节点，最多一个 `<Slot/>`，保留名检查（含内置控件名）。
 - 文本节点、处理指令、指令节点一律拒绝并给出精确位置。
 
