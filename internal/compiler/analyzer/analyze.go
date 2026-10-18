@@ -216,30 +216,31 @@ func (a *analyzer) analyzeFor(n *contracts.NodeIR) {
 		return
 	}
 
-	var elem, index types.Type
-	iterable := false
-
-	if f.In.IsBinding {
-		// In 在**外层**作用域中解析（不能引用自身变量）。
-		if _, raw, ok := a.resolveBinding(f.In, n.Span, "In"); ok {
-			var err error
-			elem, index, err = iterableElemType(raw)
-			if err != nil {
-				// 无法建立作用域。提前报 SCOPE-004——否则循环体内的
-				// {item.X} 会被误报成「首段无法解析」，掩盖真正原因。
-				a.report(n.Span, CodeNotIterable, "<For In> %s", err.Error())
-			} else {
-				iterable = true
-			}
-		}
+	// In 在**外层**作用域中解析（不能引用自身变量）。
+	if !f.In.IsBinding {
+		a.report(n.Span, CodeNotIterable,
+			"<For In> must be a binding like {Items}; got %q", f.In.Raw)
+		return
+	}
+	_, raw, ok := a.resolveBinding(f.In, n.Span, "In")
+	if !ok {
+		// In 自身解析失败，诊断已产出。**跳过整个子树**：
+		// 继续遍历会让循环体里的 {item.X} 被误报成「首段无法解析」，
+		// 把「In 写错了」掩盖成「item 写错了」。
+		return
+	}
+	elem, index, err := iterableElemType(raw)
+	if err != nil {
+		// 同上：无法建立作用域时只报这一条，不继续分析循环体。
+		a.report(n.Span, CodeNotIterable, "<For In> %s", err.Error())
+		return
 	}
 
-	// 推入作用域。即使 elem 为 nil 也推入空表，避免内层误用外层同名变量。
 	scope := make(map[string]types.Type, 2)
-	if f.Each != "" && elem != nil {
+	if f.Each != "" {
 		scope[f.Each] = elem
 	}
-	if f.Index != "" && index != nil {
+	if f.Index != "" {
 		scope[f.Index] = index
 	}
 	a.scopes = append(a.scopes, scope)
@@ -252,15 +253,13 @@ func (a *analyzer) analyzeFor(n *contracts.NodeIR) {
 		}
 	}
 
-	if iterable {
-		a.facts.set(n, &NodeFacts{forCl: &ResolvedFor{
-			Each:      f.Each,
-			Elem:      typeInfo(elem),
-			Index:     f.Index,
-			IndexType: typeInfo(index),
-			Key:       keyPath,
-		}})
-	}
+	a.facts.set(n, &NodeFacts{forCl: &ResolvedFor{
+		Each:      f.Each,
+		Elem:      typeInfo(elem),
+		Index:     f.Index,
+		IndexType: typeInfo(index),
+		Key:       keyPath,
+	}})
 
 	for _, c := range n.Children {
 		a.walk(c)

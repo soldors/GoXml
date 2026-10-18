@@ -41,6 +41,19 @@ type codeEntry struct {
 // implementedCodes 是代码中**已实现且会发射**的码。
 func implementedCodes() []codeEntry {
 	return []codeEntry{
+		// Analyzer
+		{"GXML-ROOT-002", "analyzer.CodeViewModelType"},
+		{"GXML-BIND-001", "analyzer.CodePathRoot"},
+		{"GXML-BIND-002", "analyzer.CodePathField"},
+		{"GXML-BIND-003", "analyzer.CodePathUnexported"},
+		{"GXML-BIND-004", "analyzer.CodeBindTypeMismatch"},
+		{"GXML-BIND-005", "analyzer.CodeBindUnsupported"},
+		{"GXML-EVENT-003", "analyzer.CodeMethodNotFound"},
+		{"GXML-EVENT-004", "analyzer.CodeMethodArity"},
+		{"GXML-EVENT-006", "analyzer.CodeMethodArgType"},
+		{"GXML-EVENT-007", "analyzer.CodeMethodReturns"},
+		{"GXML-SCOPE-004", "analyzer.CodeNotIterable"},
+
 		// Parser
 		{"GXML-ROOT-001", "parser.CodeRoot"},
 		{"GXML-SYNTAX-001", "parser.CodeSyntax"},
@@ -77,17 +90,12 @@ func implementedCodes() []codeEntry {
 // 实现 Analyzer 时：把这些条目从 frozenCodes 移到 implementedCodes，
 // 并补上常量与测试。门禁会在两边都不匹配时报错，因此不会漏掉。
 var frozenCodes = []codeEntry{
-	{"GXML-ROOT-002", "analyzer.CodeViewModelType"},
-	{"GXML-BIND-001", "analyzer.CodePathRoot"},
-	{"GXML-BIND-002", "analyzer.CodePathField"},
-	{"GXML-BIND-003", "analyzer.CodePathUnexported"},
-	{"GXML-BIND-004", "analyzer.CodeBindTypeMismatch"},
-	{"GXML-BIND-005", "analyzer.CodeBindUnsupported"},
-	{"GXML-EVENT-003", "analyzer.CodeMethodNotFound"},
-	{"GXML-EVENT-004", "analyzer.CodeMethodArity"},
-	{"GXML-EVENT-006", "analyzer.CodeMethodArgType"},
-	{"GXML-EVENT-007", "analyzer.CodeMethodReturns"},
-	{"GXML-SCOPE-004", "analyzer.CodeNotIterable"},
+	// 当前没有「已定稿但未实现」的码：Analyzer 的 11 个码已全部实现。
+	//
+	// 这个清单会随阶段推进而清空，但**不能只靠维护它来保证正确性**——
+	// 它曾经声称 Analyzer 未实现，而实际早已发射（因为旧门禁只校验
+	// 两个手写清单互不重叠，从不校验真实代码）。
+	// 真正的约束见 emission_test.go 的 AST 校验。
 }
 
 // vacantCodes 是目录中明确记录为「空置」的码：保留号码，禁止重新分配。
@@ -191,8 +199,8 @@ func TestFrozenCodesHaveNoImplementation(t *testing.T) {
 
 func TestCodeCounts(t *testing.T) {
 	const (
-		wantImpl   = 23
-		wantFrozen = 11
+		wantImpl   = 34
+		wantFrozen = 0
 		wantTotal  = wantImpl + wantFrozen
 	)
 	if got := len(implementedCodes()); got != wantImpl {
@@ -279,24 +287,22 @@ func TestAttr002StaysVacant(t *testing.T) {
 	}
 }
 
-func TestBindCodesAreFrozenNotImplemented(t *testing.T) {
-	// GXML-BIND 的 5 个码已定稿但未实现；不能出现在实现清单里。
+func TestBindCodesAreImplemented(t *testing.T) {
+	// GXML-BIND 的 5 个码已实现。
+	//
+	// 这条测试曾经断言相反的内容（「已定稿但未实现」）。Analyzer 落地后
+	// 它仍在守着旧事实——说明「靠人工维护断言」本身就会滞后。
+	// 现在的真实约束由 emission_test.go 的 AST 校验保证。
+	impl := make(map[string]bool)
 	for _, c := range implementedCodes() {
-		if strings.HasPrefix(c.Code, "GXML-BIND-") {
-			t.Errorf("%s 已实现，但 Analyzer 尚未开始；需同步目录 §2.7", c.Code)
-		}
-	}
-	// 且必须都出现在定稿清单里。
-	frozen := make(map[string]bool)
-	for _, c := range frozenCodes {
-		frozen[c.Code] = true
+		impl[c.Code] = true
 	}
 	for _, code := range []string{
 		"GXML-BIND-001", "GXML-BIND-002", "GXML-BIND-003",
 		"GXML-BIND-004", "GXML-BIND-005",
 	} {
-		if !frozen[code] {
-			t.Errorf("%s 应在定稿清单中", code)
+		if !impl[code] {
+			t.Errorf("%s 应在实现清单中", code)
 		}
 	}
 }
