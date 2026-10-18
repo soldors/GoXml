@@ -73,9 +73,13 @@ goxml/
 ├── contracts/             # [核心契约] 编译器 IR、Theme、Lifecycle 接口（全库唯一中立公共依赖）
 ├── internal/compiler/     # [AOT 编译器] 仅供 CLI 工具链调用，最终用户二进制不包含此目录
 │   ├── parser/            # 带行列号的词法/语法分析器，EdgeInsets/Color 强类型转换
-│   ├── analyzer/          # ViewModel AST 静态扫描，校验 {Binding} 路径合法性
-│   ├── macro/             # <Def> 模板注册与 <Slot> 编译期宏内联展开
-│   └── codegen/           # Gio 布局映射、AOT 状态 Diff、//go:embed 注入
+│   ├── expander/          # 组件 Schema 分类、属性/事件区分、<Def>/<Slot> 宏内联展开
+│   ├── analyzer/          # go/types 语义校验：绑定路径、类型兼容、事件签名、For 作用域
+│   ├── codegen/           # Gio 布局映射、AOT 状态 Diff、//go:embed 注入
+│   ├── pipeline/          # 阶段串联与失败门禁：分析未通过不调 Codegen，失败不写文件
+│   ├── grid/              # Grid 列宽计算的规范参考实现（oracle）
+│   ├── sizelayout/        # 尺寸决策的可执行形式（主轴/交叉轴、无界判断）
+│   └── diagdoc/           # 诊断码目录一致性门禁（AST 发射校验）
 ├── pkg/runtime/           # [运行时底座] 生成代码所依赖的轻量级运行时库
 │   ├── router/            # 单窗口虚拟路由，MacroOp 转场快照动画器，OSWindow 逃生舱
 │   ├── theme/             # 强类型 Theme 结构体，指针切换与暗色模式
@@ -91,6 +95,12 @@ goxml/
   - 允许：`cmd/goxml` -> `internal/compiler/*` -> `contracts`
   - 允许：生成代码 `*_gen.go` -> `pkg/runtime/*` -> `pkg/platform/*` -> `contracts`
   - **严禁**：`pkg/runtime` 或 `pkg/platform` 反向依赖 `internal/compiler`。
+
+- **Codegen 入口红线**：`codegen.Generate` 只接受 `*analyzer.VerifiedDoc`。
+  该凭证字段全未导出，只能由 `analyzer.Result.Verified()` 在 `StatusOK` 且无诊断时构造。
+  **禁止**为「方便调试」给它加导出字段或旁路构造——那会让未验证的 IR 流进生成器。
+- **产物边界**：Codegen **不写盘**，只返回 `[]byte`；写入与原子替换归 `pipeline.Commit`。
+  `pipeline.Artifact` 存在只表示「允许提交」，不代表已落盘。失败时不得产生任何文件。
 
 ## 4. 多 AI 标准协同工作流 (SOP 七步闭环)
 
@@ -118,7 +128,9 @@ goxml/
 
 1. **命令实测为准**：Subtask 是否完成以约定的单行 CLI 验证命令返回退出码 `0` 为唯一判定标准，严禁“脑内推演”。
 2. **测试不降级**：修改已有功能绝不允许直接注释或删除报错单测，必须保持行覆盖率 >= 85%。
-3. **交接文档闭环**：会话结束前必须在 `docs/05-开发/交接包/TASK-xxx-交接.md` 完整填写当前断点状态、验证命令与下一步指引。
+3. **交接文档按需编写**：仅当任务在会话结束时**处于未完成 / 中断状态**（需要跨会话续接断点）时，必须在 `docs/05-开发/交接包/TASK-xxx-交接.md` 填写当前断点、验证命令与下一步指引。
+   - 若任务在单次会话内**已完整闭环并通过验收**，以 Git 提交、`CHANGELOG.md` 与对应验收报告为准，**无需**额外生成交接包。
+   - 事后补写交接包属于形式主义：提交记录与验收报告已提供可追溯的证据链。
 
 ## 5. 关键验证命令速查 (Tooling Cheatsheet)
 

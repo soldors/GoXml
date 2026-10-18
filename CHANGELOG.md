@@ -52,6 +52,27 @@ All notable changes to this project will be documented in this file.
 - 新增 `TASK-FONT-001`：CJK 字体与 IME 工作项（此前 WBS 完全缺失）。
 - 新增踩坑记录 PIT-005（大列表全量渲染）、PIT-006（每帧拼接文本）、PIT-007（默认字体缺 CJK）。
 
+- **`internal/compiler/analyzer`**：语义校验层，第一个需要 `go/types` 的阶段。
+  - 类型加载：`go/packages` 加载模块内包；`ViewModel` 声明按冻结文法解析（`Ident` 或 `<pkg-dir>.<Type>`，最后一个 `.` 分界）。
+  - 绑定路径：逐段基于上一段的真实类型解析；支持字段、零参单返回值方法与指针解引用。
+  - 类型兼容契约（§11）：三层分离——类型兼容 / 特殊表达式约束 / 值转换。`int→string`、`int→float`、无符号整数一律拒绝；命名类型按底层类别兼容；`color`/`insets` 按**精确类型身份**判定。
+  - 事件签名：严格按「方法形参 = 事件载荷 ++ 调用点实参」；载荷与实参**分开保存**，`Mapping` 逐项标注来源。
+  - 语义 IR：`Result` / `Facts` 旁表 / `ResolvedPath` / `ResolvedEvent` / `TypeInfo` / `VerifiedDoc`；**不修改**结构 IR。
+  - **`VerifiedDoc` 凭证门禁**：字段全未导出，只能由 `Result.Verified()` 在 `StatusOK` 且无诊断时构造，未验证 IR 在编译期传不进 Codegen。
+- **`internal/compiler/codegen`**：代码生成，入口 `Generate(*analyzer.VerifiedDoc, Options) ([]byte, error)`。
+  - 当前范围：`<Page>` + 单个静态 `<Text>`（最小纵向切片）。
+  - 保护头、符号推导（`Goxml<Path>View`）、import 按需收集与冲突别名、一律经 `go/format.Source`。
+  - 失败返回 error 且**不返回部分代码**；不写盘。
+- **`internal/compiler/pipeline`**：编译编排层与失败门禁。
+  - `Run` 串联四阶段，任一失败即中止；`Commit` 做临时文件 → 复读校验 → 原子替换。
+  - **产物与提交分开建模**：`Artifact` 存在只表示「允许提交」，不代表已写盘。
+  - 关闭 Codegen 契约 §13 第 20 条：`Partial`/`Blocked` 下 Codegen 调用计数为 0 且不产生任何文件。
+- **依赖**：加入 `gioui.org v0.10.3`（Codegen 产物的目标依赖）。此前约定的「仅在 Codegen 接入时加入」即此时点。
+- 新增文档：`docs/03-架构/编译编排契约.md`、`docs/06-测试/Analyzer验收报告.md`、`TASK-ORCH-001`、仓库根 `README.md`。
+- 新增开发日志 `2026-10-19.md`；补记 `2026-10-18.md` §3（Analyzer 第 2–4 步与整体验收）。
+- 新增门禁：`diagdoc` 的 AST 发射校验（每个 `Code*` 常量必须有发射点、必须登记、登记的符号必须存在）；`pipeline` 的编排层门禁。
+
+
 ### Changed
 - **布局语义扩展（ADR-0008）**：`GXML语言规范.md` §3.1 重写为 4 个子节（通用属性/对齐分布/尺寸/Grid），新增轴向感知默认值表（`<Row>`→`Center`、`<Column>`→`Start`）；`Spacing` 属性更名为 `Gap`；§9 增补不支持项；§11 增加变更记录表。
 - `AOT状态Diff语义.md`：Dirty 传播表将 `Spacing` 改为 `Gap`，并新增 `Align`/`Justify`→`DirtyLayout`、`Width`/`Height`/`Columns`→`DirtyLayout|DirtyChildren`。
