@@ -1,5 +1,5 @@
 <!-- 期望：StatusPartial + GXML-EVENT-004；载荷 1 个但方法 0 个形参 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <Input Value="{User.Name}" ValueChanged="OnWrongArity"/>
   </Page>

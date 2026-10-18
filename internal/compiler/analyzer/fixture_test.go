@@ -270,16 +270,119 @@ func TestPartialAndBlockedCasesHaveCodes(t *testing.T) {
 // 待实现的断言
 // ============================================================================
 
-// TestAnalyzeBehavior 在 Analyzer 实现后启用。
+// ---------------------------------------------------------------------------
+// 分步启用：只跑已实现步骤覆盖的夹具
 //
-// 保留此测试是为了让「期望表已固定、实现尚未接入」这一状态显式可见，
-// 而不是被遗忘。它现在只验证期望表本身可读取，不假装验证 Analyzer 行为。
-func TestAnalyzeBehavior(t *testing.T) {
-	t.Skip("Analyzer 尚未实现（TASK-ANALYZER-001）；期望表已固定，实现后启用此测试")
+// Analyzer 分五步实现。夹具期望表已完整固定，但只能逐步启用——
+// 否则未实现步骤的夹具会「失败」，把「还没做」误报成「做错了」。
+//
+// 已实现：步骤 1（ViewModel 解析）、步骤 2（绑定路径解析）
+// ---------------------------------------------------------------------------
 
-	// 实现后这里应：
-	//   1. 对每个夹具调用 Analyze
-	//   2. 断言 Status == expect.status
-	//   3. 断言诊断码集合 == expect.codes（逐项比对，不只比数量）
-	//   4. 对 StatusOK 的夹具，断言 Facts 中确有期望的事实（路径步骤、Mapping 等）
+// implementedByStep 列出当前已能被正确判定的夹具。
+var implementedByStep = map[string]bool{
+	// 步骤 2：绑定路径
+	"valid-binding":        true,
+	"invalid-root":         true,
+	"invalid-nested-field": true,
+	"unexported-field":     true,
+	"for-not-iterable":     true,
+	"for-var-binding":      true,
+	"blocked-viewmodel":    true,
+
+	// 以下依赖后续步骤，暂不启用：
+	//   type-mismatch / negate-non-bool   → 步骤 3（BIND-004）
+	//   valid-event-* / invalid-event-*   → 步骤 4（事件签名）
+	//   valid-event-combined              → 步骤 4
+	//   invalid-method-returns            → 步骤 4
+}
+
+// TestAnalyzeBehavior 对已实现步骤覆盖的夹具做完整断言。
+func TestAnalyzeBehavior(t *testing.T) {
+	env := newTestEnv(t, ".")
+
+	for name, want := range expectationByCase {
+		if !implementedByStep[name] {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			src := readCase(t, name)
+
+			doc, pdiags := parser.Parse(name+".gxml", src)
+			if len(pdiags) > 0 {
+				t.Fatalf("Parser 诊断: %s", pdiags[0].Error())
+			}
+			er := expander.Expand(name+".gxml", doc)
+			if len(er.Diags) > 0 {
+				t.Fatalf("Expander 诊断: %s", er.Diags[0].Error())
+			}
+
+			r := Analyze(name+".gxml", er.Doc, er.Schemas, env)
+
+			// 1. 状态
+			if r.Status != want.status {
+				t.Errorf("Status = %v, 期望 %v", r.Status, want.status)
+			}
+
+			// 2. 诊断码：逐项比对（数量 + 每个期望码都出现）
+			got := make(map[string]int)
+			for _, d := range r.Diags {
+				got[d.Code]++
+			}
+			for _, c := range want.codes {
+				if got[c] == 0 {
+					t.Errorf("缺少期望诊断 %s（实际 %v）", c, got)
+				}
+			}
+			if len(want.codes) == 0 && len(got) > 0 {
+				t.Errorf("期望无诊断，实际 %v", got)
+			}
+
+			// 3. StatusOK 的夹具：验证凭证可取，且事实非空
+			if r.Status == StatusOK {
+				if _, err := r.Verified(); err != nil {
+					t.Errorf("StatusOK 应可取得凭证: %v", err)
+				}
+				if len(want.codes) == 0 && r.Facts.Len() == 0 {
+					t.Errorf("%s 期望产生语义事实，实际为空", name)
+				}
+			} else if _, err := r.Verified(); err == nil {
+				t.Errorf("%s 状态为 %v，不应取得凭证", name, r.Status)
+			}
+		})
+	}
+}
+
+// TestPendingStepsAreDocumented 确认未启用的夹具都有明确归属，
+// 不会因为「忘了启用」而长期沉默。
+func TestPendingStepsAreDocumented(t *testing.T) {
+	pending := make(map[string]bool)
+	for name := range expectationByCase {
+		if !implementedByStep[name] {
+			pending[name] = true
+		}
+	}
+	// 当前应恰好剩下依赖步骤 3/4 的夹具。
+	want := []string{
+		"type-mismatch", "negate-non-bool",
+		"valid-event-payload", "valid-event-args", "valid-event-combined",
+		"invalid-event-arity", "invalid-event-type",
+		"invalid-method-missing", "invalid-method-returns",
+	}
+	for _, n := range want {
+		if !pending[n] {
+			t.Errorf("%s 应在待启用清单中（当前步骤未覆盖）", n)
+		}
+	}
+	for n := range pending {
+		found := false
+		for _, w := range want {
+			if n == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s 未在待启用清单中说明，可能是遗漏", n)
+		}
+	}
 }

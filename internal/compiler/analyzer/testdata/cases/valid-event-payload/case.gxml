@@ -1,5 +1,5 @@
 <!-- 期望：StatusOK；载荷 value:string 映射到方法首个形参 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <Input Value="{User.Name}" ValueChanged="OnNameChanged"/>
   </Page>

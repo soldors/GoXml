@@ -1,5 +1,5 @@
 <!-- 期望：StatusOK；载荷 id:string 在前、实参 User.Age 在后 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Defs>
     <Def Name="Card" Props="Title:string" Events="Open(id:string)">
       <Text Value="{Title}"/>

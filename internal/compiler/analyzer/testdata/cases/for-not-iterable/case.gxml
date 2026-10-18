@@ -1,5 +1,5 @@
 <!-- 期望：StatusPartial + GXML-SCOPE-004；Title 是 string，不可迭代 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <For Each="ch" In="{Title}">
       <Text Value="{ch}"/>

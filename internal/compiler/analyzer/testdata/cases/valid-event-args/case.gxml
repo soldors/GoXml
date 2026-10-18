@@ -1,5 +1,5 @@
 <!-- 期望：StatusOK；调用点实参 User.Age 映射到 Delete(id int) -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <Button Text="删除" Click="Delete(User.Age)"/>
   </Page>

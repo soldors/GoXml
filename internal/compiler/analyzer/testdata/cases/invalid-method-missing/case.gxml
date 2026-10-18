@@ -1,5 +1,5 @@
 <!-- 期望：StatusPartial + GXML-EVENT-003；方法不存在 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <Button Text="保存" Click="NoSuchMethod"/>
   </Page>

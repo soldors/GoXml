@@ -1,5 +1,5 @@
 <!-- 期望：StatusOK；item 来自 For 作用域，不是 ViewModel 字段 -->
-<Goxml Version="1" ViewModel="fixture.ViewModel">
+<Goxml Version="1" ViewModel="internal/compiler/analyzer/testdata/fixture.ViewModel">
   <Page Route="/">
     <For Each="item" In="{Items}" Key="{item.ID}">
       <Text Value="{item.Name}"/>

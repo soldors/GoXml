@@ -5,18 +5,37 @@
 // 夹具 .gxml 通过这些类型固定绑定解析与事件校验的期望行为。
 package fixture
 
+// Profile 是二级嵌套，用于验证三段路径 {User.Profile.Name}。
+type Profile struct {
+	Name string
+	Age  int
+	Note string
+}
+
 // User 是嵌套结构，用于验证多段路径。
 type User struct {
-	Name  string
-	Email string
-	Age   int
-	note  string // 不可导出：用于 BIND-003
+	Name    string
+	Email   string
+	Age     int
+	Profile Profile // 三段路径的中转
+	note    string  // 不可导出：用于 BIND-003
 }
 
 // Item 是循环元素类型。
 type Item struct {
 	ID   int
 	Name string
+}
+
+// Status 是命名类型且实现 fmt.Stringer。
+type Status string
+
+// String 实现 fmt.Stringer。
+func (s Status) String() string { return string(s) }
+
+// Meta 用于验证嵌入字段的提升访问。
+type Meta struct {
+	Version string
 }
 
 // ViewModel 是夹具使用的根类型。
@@ -27,7 +46,24 @@ type ViewModel struct {
 	Dirty  bool
 	Title  string
 	Lookup map[string]int
+	Codes  [3]int // 数组：可迭代
+	Owner  *User  // 指针：字段访问需解引用
+	State  Status // 命名类型 + Stringer
+	secret string // 根级未导出字段：用于 BIND-003
+	Meta          // 嵌入：验证提升字段
 }
+
+// Display 是零参单返回值方法，可作为路径段。
+func (vm *ViewModel) Display() string { return vm.Title }
+
+// Format 有参数，不能作为路径段。
+func (vm *ViewModel) Format(prefix string) string { return prefix }
+
+// Pair 有多个返回值，不能作为路径段。
+func (vm *ViewModel) Pair() (string, int) { return "", 0 }
+
+// hiddenGetter 未导出，不可访问。
+func (vm *ViewModel) hiddenGetter() string { return "" }
 
 // ---- 事件处理方法：签名刻意覆盖各条校验规则 ----
 
