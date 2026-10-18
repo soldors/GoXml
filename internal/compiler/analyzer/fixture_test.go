@@ -93,7 +93,8 @@ var expectationByCase = map[string]expect{
 	},
 	"invalid-method-returns": {
 		status: StatusPartial,
-		note:   "事件方法不得有返回值（Q4）；具体码在实现时定",
+		codes:  []string{CodeMethodReturns},
+		note:   "事件方法不得有返回值（Q4）→ EVENT-007",
 	},
 	"for-not-iterable": {
 		status: StatusPartial,
@@ -215,6 +216,7 @@ func TestExpectationsUseKnownCodes(t *testing.T) {
 		CodeMethodNotFound:   true,
 		CodeMethodArity:      true,
 		CodeMethodArgType:    true,
+		CodeMethodReturns:    true,
 		CodeNotIterable:      true,
 	}
 	for name, e := range expectationByCase {
@@ -253,9 +255,7 @@ func TestStatusDistribution(t *testing.T) {
 // 例外：invalid-method-returns 的具体码待实现时定（目录尚未为
 // 「事件方法有返回值」分配号码），因此允许为空但需在 note 中说明。
 func TestPartialAndBlockedCasesHaveCodes(t *testing.T) {
-	allowNoCode := map[string]bool{
-		"invalid-method-returns": true,
-	}
+	allowNoCode := map[string]bool{}
 	for name, e := range expectationByCase {
 		if e.status == StatusOK || allowNoCode[name] {
 			continue
@@ -294,10 +294,17 @@ var implementedByStep = map[string]bool{
 	"type-mismatch":   true,
 	"negate-non-bool": true,
 
-	// 以下依赖步骤 4（事件签名），暂不启用：
-	//   valid-event-payload / valid-event-args / valid-event-combined
-	//   invalid-event-arity / invalid-event-type
-	//   invalid-method-missing / invalid-method-returns
+	// 步骤 4：事件签名
+	"valid-event-payload":    true,
+	"valid-event-args":       true,
+	"invalid-event-arity":    true,
+	"invalid-event-type":     true,
+	"invalid-method-missing": true,
+	"invalid-method-returns": true,
+
+	// 仍待启用：valid-event-combined
+	//   依赖 <Def Events> 的事件传播，v1 不实现（规范 §7.2.3）。
+	//   展开后事件不保留，无法校验签名——见 TestDefEventNotSignatureChecked。
 }
 
 // TestAnalyzeBehavior 对已实现步骤覆盖的夹具做完整断言。
@@ -365,11 +372,9 @@ func TestPendingStepsAreDocumented(t *testing.T) {
 			pending[name] = true
 		}
 	}
-	// 当前应恰好剩下依赖步骤 4（事件签名）的夹具。
+	// 当前应只剩下因 v1 限制而无法校验的夹具。
 	want := []string{
-		"valid-event-payload", "valid-event-args", "valid-event-combined",
-		"invalid-event-arity", "invalid-event-type",
-		"invalid-method-missing", "invalid-method-returns",
+		"valid-event-combined",
 	}
 	for _, n := range want {
 		if !pending[n] {

@@ -51,6 +51,13 @@ const (
 	// CodeMethodArgType 按「载荷在前、实参在后」的顺序，某项类型不兼容。
 	CodeMethodArgType = contracts.CodePrefixEvent + "-006"
 
+	// CodeMethodReturns 事件处理方法有返回值。
+	//
+	// 契约 §8.2（Q4）规定事件方法不得有返回值：一旦允许，就必须定义
+	// 「返回值怎么处理」——忽略？记录？传播为运行时错误？这些都是额外
+	// 语义，v1 不引入。
+	CodeMethodReturns = contracts.CodePrefixEvent + "-007"
+
 	// CodeNotIterable `<For In>` 的值不是可迭代类型。
 	CodeNotIterable = contracts.CodePrefixScope + "-004"
 )

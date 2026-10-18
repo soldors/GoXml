@@ -410,8 +410,12 @@ func (e *expander) parseEventArg(s string, ra contracts.RawAttr) (contracts.Even
 		return contracts.EventArg{Kind: contracts.ArgLiteral, Literal: s}, nil
 	}
 	// 带引号的字符串字面量。
+	//
+	// **保留引号**：EventArg.Literal 的契约是「保留原始字面量文本」。
+	// 早期实现剥掉了引号，导致 Analyzer 无法区分 '42'（字符串）与
+	// 42（整数）——两者剥引号后都是 "42"。
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
-		return contracts.EventArg{Kind: contracts.ArgLiteral, Literal: s[1 : len(s)-1]}, nil
+		return contracts.EventArg{Kind: contracts.ArgLiteral, Literal: s}, nil
 	}
 	// 数字字面量。
 	if isNumberLiteral(s) {

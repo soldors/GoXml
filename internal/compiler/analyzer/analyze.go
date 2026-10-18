@@ -163,6 +163,7 @@ func (a *analyzer) analyzeElement(n *contracts.NodeIR) {
 			Span:   attr.Span,
 		})
 	}
+	nf = a.analyzeEvents(n, nf)
 	if nf != nil {
 		a.facts.set(n, nf)
 	}

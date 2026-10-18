@@ -168,8 +168,12 @@ const (
 
 // EventArg 单个事件实参。GXML v1 不允许表达式，只允许字面量与绑定路径。
 type EventArg struct {
-	Kind    EventArgKind
-	Literal string     // Kind == ArgLiteral 时有效，保留原始字面量文本
+	Kind EventArgKind
+	// Literal 在 Kind == ArgLiteral 时有效，保留**原始**字面量文本。
+	//
+	// 字符串字面量保留单引号（如 `'ok'`），否则无法与数字区分：
+	// '42' 是字符串，42 是整数。消费者据此判断字面量类型。
+	Literal string
 	Binding BindingVal // Kind == ArgBinding 时有效
 }
 

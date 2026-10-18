@@ -86,6 +86,7 @@ var frozenCodes = []codeEntry{
 	{"GXML-EVENT-003", "analyzer.CodeMethodNotFound"},
 	{"GXML-EVENT-004", "analyzer.CodeMethodArity"},
 	{"GXML-EVENT-006", "analyzer.CodeMethodArgType"},
+	{"GXML-EVENT-007", "analyzer.CodeMethodReturns"},
 	{"GXML-SCOPE-004", "analyzer.CodeNotIterable"},
 }
 
@@ -191,7 +192,7 @@ func TestFrozenCodesHaveNoImplementation(t *testing.T) {
 func TestCodeCounts(t *testing.T) {
 	const (
 		wantImpl   = 23
-		wantFrozen = 10
+		wantFrozen = 11
 		wantTotal  = wantImpl + wantFrozen
 	)
 	if got := len(implementedCodes()); got != wantImpl {
@@ -202,7 +203,7 @@ func TestCodeCounts(t *testing.T) {
 	}
 
 	body := readCatalog(t)
-	if !strings.Contains(body, "共 **33 个**激活码。") {
+	if !strings.Contains(body, "共 **34 个**激活码。") {
 		t.Errorf("目录未声明激活码总数为 %d", wantTotal)
 	}
 }
@@ -328,7 +329,7 @@ func TestCodesAreGrouped(t *testing.T) {
 	count(frozenCodes)
 
 	want := map[string]int{
-		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 5, "DEF": 11, "SCOPE": 3, "BIND": 5,
+		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 6, "DEF": 11, "SCOPE": 3, "BIND": 5,
 	}
 	var keys []string
 	for k := range want {

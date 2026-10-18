@@ -84,3 +84,12 @@ func (vm *ViewModel) OnWrongType(n int) {}
 
 // OnWithReturn 有返回值 → 违反 Q4，用于事件方法形态校验。
 func (vm *ViewModel) OnWithReturn() error { return nil }
+
+// OnLiteral 接收调用点字面量实参。
+func (vm *ViewModel) OnLiteral(n int) {}
+
+// OnEcho 接收字符串实参。
+func (vm *ViewModel) OnEcho(s string) {}
+
+// OnToggle 接收布尔实参。
+func (vm *ViewModel) OnToggle(b bool) {}
