@@ -691,7 +691,27 @@ EventName(ParamName:Type, ParamName:Type)
 </For>
 ```
 
-反之，声明了事件参数也不代表任意处理器调用都合法：实参数量与类型必须与**处理方法签名**匹配，由 Analyzer 校验。
+反之，声明了事件参数也不代表任意处理器调用都合法。
+
+**方法形参由两部分按序拼接而成**：
+
+```text
+方法形参 = 事件声明参数 ++ 调用点实参
+```
+
+| XML | 事件载荷 | 调用点实参 | 处理方法签名 |
+|---|---|---|---|
+| `Click="Delete(item.ID)"` | 无 | `item.ID` | `Delete(id int)` |
+| `ValueChanged="OnNameChanged"` | `value string` | 无 | `OnNameChanged(value string)` |
+
+规则（由 Analyzer 校验）：
+
+- **顺序固定**：载荷在前，实参在后；不根据方法签名反向猜测归属。
+- **数量精确**：两部分之和恰好等于方法形参数量，不忽略载荷、不自动补参、不丢弃多余参数。
+- **类型逐项**：先按事件声明顺序校验载荷类型，再按实参顺序校验实参类型；不做隐式转换。
+- **载荷属于组件契约**：内置事件与自定义组件事件统一适用。
+
+注意 `ValueChanged="OnNameChanged"` 不写任何实参，但方法仍必须接收 `value string`——事件触发时由组件提供载荷。完整论证见 [`Analyzer输入输出契约.md`](Analyzer输入输出契约.md) §8.4。
 
 事件回调可以修改 ViewModel，但渲染刷新由生成代码和运行时生命周期负责；GXML 不定义隐式双向绑定。
 
