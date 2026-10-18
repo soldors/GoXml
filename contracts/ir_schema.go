@@ -775,14 +775,46 @@ func (n *NodeIR) Event(name string) (EventBinding, bool) {
 //
 // 文档结构固定为：<Goxml Version="1" [ViewModel="..."]> → [<Defs>] → <Page>。
 // 见 GXML 语言规范 §2.2。
+// ViewModelDecl 是根节点 ViewModel 属性的原始声明。
+//
+// 它只承载「用户写了什么、写在哪」，不承载「它解析成哪个 Go 类型」。
+// 这个分界是刻意的：
+//
+//   - Parser 不引入 Go 类型系统依赖，只做语法；
+//   - 包定位与类型查找由 Analyzer 完成（Analyzer输入输出契约 §4.2）；
+//   - Span 让类型解析错误能定位到该属性，而不是笼统地指向文档根。
+type ViewModelDecl struct {
+	// Value 是属性的原始文本，如 "demo.ViewModel"。
+	// 其合法文法由 Analyzer 校验，Parser 只保证它是静态字面量。
+	Value string
+	// Span 覆盖整个属性（名称与值），用于诊断定位。
+	Span SourceSpan
+}
+
+// IsZero 报告该声明是否缺省。
+//
+// 缺省表示纯静态页面：允许存在绑定，但绑定只能是循环变量等非 ViewModel 路径；
+// 具体语义由 Analyzer 判定。
+func (d ViewModelDecl) IsZero() bool {
+	return d.Value == "" && d.Span.IsZero()
+}
+
+// String 返回原始文本，便于日志与测试输出。
+func (d ViewModelDecl) String() string {
+	return d.Value
+}
+
 type DocumentIR struct {
 	// FilePath 是项目相对路径，统一使用 "/"。
 	FilePath string
 	// Package 只是生成上下文，不是 GXML 语义字段。
 	// Go 包名由目标目录或 CLI 参数确定，不得从 GXML 推导。
 	Package string
-	// ViewModel 是绑定类型的 Go 类型路径；纯静态页面可为空。
-	ViewModel string
+	// ViewModel 是 <Goxml ViewModel="..."> 的原始声明；纯静态页面为零值。
+	//
+	// Parser 只保留原始文本与位置，**不解析为 Go 类型**：
+	// 包定位与类型查找属于 Analyzer 的职责（Analyzer输入输出契约 §4.2）。
+	ViewModel ViewModelDecl
 	// Version 对应根节点 Version 属性，v1 必须为 "1"。
 	Version string
 	// Defs 是 <Defs> 下定义的组件，保持声明顺序。

@@ -138,12 +138,16 @@ func (p *parser) parseGoxml(tok token, se xml.StartElement) (*contracts.Document
 	doc.Version = ver.Value.Raw
 
 	// ViewModel 可选，纯静态页面可省略。
+	//
+	// 这里只保留原始文本与位置：把 "demo.ViewModel" 解析为包与类型
+	// 属于 Analyzer 的职责（Analyzer输入输出契约 §4.2），Parser 不引入
+	// Go 类型系统依赖。
 	if vm, ok := attrs.Lookup("ViewModel"); ok {
 		if vm.Value.IsBinding {
 			e := p.diag(vm.Span, CodeAttrCall, "ViewModel must be a static Go type path, not a binding")
 			return nil, &e
 		}
-		doc.ViewModel = vm.Value.Raw
+		doc.ViewModel = contracts.ViewModelDecl{Value: vm.Value.Raw, Span: vm.Span}
 	}
 
 	// 校验未声明的根属性。

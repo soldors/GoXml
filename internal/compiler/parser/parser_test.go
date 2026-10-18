@@ -77,8 +77,15 @@ func TestParseMinimalDocument(t *testing.T) {
 
 func TestParseViewModel(t *testing.T) {
 	doc := mustParse(t, `<Goxml Version="1" ViewModel="demo.ViewModel"><Page><Text Value="a"/></Page></Goxml>`)
-	if doc.ViewModel != "demo.ViewModel" {
-		t.Errorf("ViewModel = %q", doc.ViewModel)
+	if doc.ViewModel.Value != "demo.ViewModel" {
+		t.Errorf("ViewModel.Value = %q", doc.ViewModel.Value)
+	}
+	// 必须保留源码位置：Analyzer 报类型解析错误时要指向该属性。
+	if doc.ViewModel.Span.IsZero() {
+		t.Error("ViewModel.Span 不应为零值")
+	}
+	if doc.ViewModel.Span.Start.Line != 1 {
+		t.Errorf("Span 起始行 = %d, 期望 1", doc.ViewModel.Span.Start.Line)
 	}
 }
 
