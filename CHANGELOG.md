@@ -106,7 +106,7 @@ All notable changes to this project will be documented in this file.
 ### Known Issues
 - **macOS 完全未验证**：无 Apple 硬件，v1 仅保证功能与设计层面的正确性，不承诺运行验证通过。
 - **Linux 运行 smoke test 未执行**：编译路径已在 WSL2 Debian 13 验证通过，但窗口实际渲染、剪贴板、文件弹窗、托盘尚未在真实桌面会话中测试。
-- **`pkg/` 与 `cmd/` 尚未创建**：`internal/compiler/` 下已有 parser、expander、analyzer、codegen、pipeline、grid、sizelayout、diagdoc 八个包；但运行时（`pkg/runtime`）、平台层（`pkg/platform`）、组件库（`pkg/widgets`）与 CLI（`cmd/goxml`）仍全部待开发。**无窗口运行入口**，生成代码还不能显示在窗口中。
+- **`pkg/` 仅起步，`cmd/` 仍未创建**：`internal/compiler/` 已有 8 个包，`pkg/runtime/app` 已提供最小运行入口（`TASK-DEMO-001`，`eb8a7b2`），`examples/demo` 已打通 `.gxml → 窗口` 的端到端链路；但 `pkg/platform`、`pkg/widgets`、`pkg/runtime` 的 router/lifecycle/theme/hydration 与 CLI（`cmd/goxml`）仍全部待开发。
 - **Codegen 覆盖极小**：仅 `<Page>` + 单个静态 `<Text>`。布局（Column/Row/Grid/Spacer）、属性绑定、事件、`<For>`、多控件、静态子树 `CallOp` 固化与虚拟化均未实现。
 - **`-race` 在本机不可用**：Windows 缺少 C 工具链；需在 Linux 或安装 MinGW 后执行。
 - **布局语法已定义、Codegen 尚未映射**：ADR-0008 已补入 `Align`/`Justify`/`Gap`/`Width`/`Height`/`Columns` 六个属性与 `<Grid>` 标签，语法层与尺寸/列宽决策（`sizelayout`、`grid`）均已落地；但 GXML → Gio 的映射仍属 `TASK-CODEGEN-001` 未完成子任务，因此"固定 + 弹性 + 固定"这类组合**目前还生成不出来**。

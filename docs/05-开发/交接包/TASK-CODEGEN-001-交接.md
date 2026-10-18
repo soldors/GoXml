@@ -1,5 +1,9 @@
 # 交接包：TASK-CODEGEN-001（进行中）
 
+> **事后补齐**：本任务已在单次会话内闭环（有 Git 提交与验收报告）。
+> 此文件按 `AGENT.md` §4 第 3 条「可以写」的情形补写，用于沉淀关键决策与易被误解的边界，
+> 不作为跨会话续接的必需品。
+
 ## 1. 任务状态
 
 - 状态：**进行中**（最小纵向切片已于 2026-10-19 完成）| 优先级：P0
@@ -56,5 +60,5 @@ go test ./internal/compiler/pipeline/                             # 门禁归属
 | 已完成子任务 | 子任务 4（入口拒绝未验证 IR）、5（生成结果可被 `go build` 编译）、6（编排层门禁，由 ORCH-001 完成）；最小切片：`<Page>` + 静态 `<Text>`、保护头、import 收集、格式化 |
 | 未完成子任务 | 子任务 1–3（布局映射、控件与 Shadow Struct、Golden 集）与 4–25 的布局/Grid/尺寸专项全部未做 |
 | 已运行命令及结果 | `go test ./internal/compiler/codegen/` → ok，coverage **92.6%**（26 个测试，含 `TestGeneratedCompiles`）；切片落地时点全仓 496 个测试 |
-| 已知失败或风险 | ① **生成代码尚不能运行**：无 `goui.App` 主循环、无 CLI，从 `.gxml` 到窗口的链路未打通；② `gioui.org v0.10.3` 已进 `go.mod`，`TestGeneratedCompiles` 依赖本地模块缓存（`GOPROXY=off`），换机需先 `go mod download`；③ 契约 §4.3 的 `Layout` 曾与字体策略文档冲突（主题参数缺失），已新增 §4.3.1/§4.3.2——改动 `Layout` 签名前先读这两节；④ 仅 Windows 验证 |
+| 已知失败或风险 | ① 无 CLI：只能以库或 `examples/demo` 方式驱动（运行入口已由 `pkg/runtime/app` + `TASK-DEMO-001`（`eb8a7b2`）打通，本卡落地时点尚无）；② `gioui.org v0.10.3` 已进 `go.mod`，`TestGeneratedCompiles` 依赖本地模块缓存（`GOPROXY=off`），换机需先 `go mod download`；③ 契约 §4.3 的 `Layout` 曾与字体策略文档冲突（主题参数缺失），已新增 §4.3.1/§4.3.2——改动 `Layout` 签名前先读这两节；④ 仅 Windows 验证 |
 | 下一位接手人 | 继续扩展 Codegen（布局 → 绑定 → 事件 → `<For>`，见任务卡 §4 的扩展顺序理由）；或先补 `TASK-SEC-001` 追平流程偏差 |
