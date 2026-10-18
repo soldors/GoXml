@@ -67,10 +67,14 @@ All notable changes to this project will be documented in this file.
   - `Run` 串联四阶段，任一失败即中止；`Commit` 做临时文件 → 复读校验 → 原子替换。
   - **产物与提交分开建模**：`Artifact` 存在只表示「允许提交」，不代表已写盘。
   - 关闭 Codegen 契约 §13 第 20 条：`Partial`/`Blocked` 下 Codegen 调用计数为 0 且不产生任何文件。
-- **依赖**：加入 `gioui.org v0.10.3`（Codegen 产物的目标依赖）。此前约定的「仅在 Codegen 接入时加入」即此时点。
+- **依赖**：加入 `gioui.org v0.10.3`（Codegen 产物的目标依赖），随后接入 `gioui.org/app` 所需的 `x/sys`、`x/net`、`gioui.org/shader`。此前约定的「仅在 Codegen 接入时加入」即此时点。
 - 新增文档：`docs/03-架构/编译编排契约.md`、`docs/06-测试/Analyzer验收报告.md`、`TASK-ORCH-001`、仓库根 `README.md`。
 - 新增开发日志 `2026-10-19.md`；补记 `2026-10-18.md` §3（Analyzer 第 2–4 步与整体验收）。
 - 新增门禁：`diagdoc` 的 AST 发射校验（每个 `Code*` 常量必须有发射点、必须登记、登记的符号必须存在）；`pipeline` 的编排层门禁。
+- **`pkg/runtime/app`**：把生成视图接入 Gio 主循环的最小运行入口。`View` 接口与生成代码的
+  `Layout(gtx, th)` 签名一致；`Run`/`RunWith` 生产用，`RunWindow` 供测试可控退出。
+- `examples/demo` 改为走完整管线并打开真实窗口（此前只演示 Parser + Expander）。
+- 新增 `docs/03-架构/运行时入口契约.md`、`TASK-DEMO-001`。
 
 
 ### Changed
@@ -102,9 +106,11 @@ All notable changes to this project will be documented in this file.
 ### Known Issues
 - **macOS 完全未验证**：无 Apple 硬件，v1 仅保证功能与设计层面的正确性，不承诺运行验证通过。
 - **Linux 运行 smoke test 未执行**：编译路径已在 WSL2 Debian 13 验证通过，但窗口实际渲染、剪贴板、文件弹窗、托盘尚未在真实桌面会话中测试。
-- **`internal/`、`pkg/`、`cmd/` 尚未创建**：编译器与运行时实现全部待开发，`make test` 目前只覆盖 `contracts/`。
+- **`pkg/` 与 `cmd/` 尚未创建**：`internal/compiler/` 下已有 parser、expander、analyzer、codegen、pipeline、grid、sizelayout、diagdoc 八个包；但运行时（`pkg/runtime`）、平台层（`pkg/platform`）、组件库（`pkg/widgets`）与 CLI（`cmd/goxml`）仍全部待开发。**无窗口运行入口**，生成代码还不能显示在窗口中。
+- **Codegen 覆盖极小**：仅 `<Page>` + 单个静态 `<Text>`。布局（Column/Row/Grid/Spacer）、属性绑定、事件、`<For>`、多控件、静态子树 `CallOp` 固化与虚拟化均未实现。
 - **`-race` 在本机不可用**：Windows 缺少 C 工具链；需在 Linux 或安装 MinGW 后执行。
-- **布局原语不完备**：v1 内置布局标签仅 `Column`/`Row`/`Spacer`/`Expanded`，且未暴露 cross-axis 对齐、main-axis 分布、显式宽高与尺寸约束。Gio 的 `layout.Flex` 本身已提供 `Alignment`、`Spacing`、`Flexed(weight)`，但 GXML 语法尚未映射这些能力，导致无法表达"固定 + 弹性 + 固定"这类组合。这是**框架层**缺口，待决策。
+- **布局语法已定义、Codegen 尚未映射**：ADR-0008 已补入 `Align`/`Justify`/`Gap`/`Width`/`Height`/`Columns` 六个属性与 `<Grid>` 标签，语法层与尺寸/列宽决策（`sizelayout`、`grid`）均已落地；但 GXML → Gio 的映射仍属 `TASK-CODEGEN-001` 未完成子任务，因此"固定 + 弹性 + 固定"这类组合**目前还生成不出来**。
+- **安全审查流程偏差**：`TASK-SEC-001` 要求「Codegen 接入前完成威胁建模」，但 Codegen 已在 `3cd258b` 落地。已作为流程偏差记录在 dev-log 2026-10-19 §5，**未修改历史措辞抹平**。
 - **组件库尚未建立**：`Divider`、`Checkbox`、`Radio`、`Select`、`Table`、`Tabs`、`ProgressBar`、`Scroll` 等属于 `pkg/widgets` 组件层，**不涉及 GXML 语法变更**，不在布局原语讨论范围内。当前 `TASK-WIDGET-001` 仅规划 ContextMenu/Modal/DataGrid。
 - **无双向绑定**：GXML v1 明确不支持，输入控件的回写需手写对应数量的事件处理函数。待决策是否进入 v1.1。
 - **无 CI 配置**：文档描述的 CI 矩阵尚未落地为实际配置文件。
