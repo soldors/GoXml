@@ -176,18 +176,12 @@ type rowClickSlot struct {
 	each string
 	// index 是索引变量名（可为空）。
 	index string
-	// clicks 是该循环内的按钮事件（保持声明顺序）。
-	clicks []rowClick
-	// fieldIndex 是该池在生成结构体里的编号（rowClicks<N>）。
-	fieldIndex int
-}
-
-// rowClick 是循环内一个按钮的事件接线。
-type rowClick struct {
-	// method 是 ViewModel 方法名。
+	// method 是该行按钮的处理器方法名。
 	method string
 	// args 是已渲染的实参。
 	args string
+	// fieldIndex 是该池在生成结构体里的编号（rowClicks<N>）。
+	fieldIndex int
 }
 
 // keyTypeExpr 渲染 map 的键类型；不可比较类型显式报错（契约 §3.2）。
@@ -1060,21 +1054,18 @@ func (g *generator) registerRowClick(rf analyzer.ResolvedFor, method, args, keyE
 		// In 已在 For 展开时用过一次；到这里失败说明事实被破坏。
 		panic("codegen: <For In> path failed on second use: " + err.Error())
 	}
-	// 找已有池（同一 For）。
-	for i := range g.rowClicks {
-		if g.rowClicks[i].keyExpr == keyExpr && g.rowClicks[i].inExpr == inExpr {
-			g.rowClicks[i].clicks = append(g.rowClicks[i].clicks, rowClick{method: method, args: args})
-			return g.rowClicks[i].fieldIndex
-		}
-	}
+	// **每按钮一池**：同一行的两个按钮必须各自持有独立的 Clickable。
+	// 若共享一个 Clickable，两个按钮的悬停/按下状态会互相串，
+	// 且点击只会命中声明顺序里的第一个处理器（实测确认）。
 	g.rowClicks = append(g.rowClicks, rowClickSlot{
 		inExpr:     inExpr,
 		keyExpr:    keyExpr,
 		keyType:    rf.Key.Type,
 		each:       rf.Each,
 		index:      rf.Index,
+		method:     method,
+		args:       args,
 		fieldIndex: len(g.rowClicks),
-		clicks:     []rowClick{{method: method, args: args}},
 	})
 	return len(g.rowClicks) - 1
 }
@@ -1090,12 +1081,10 @@ func (s rowClickSlot) pollCode() string {
 	b.WriteString("\t\tfor _, rowItem := range rowItems {\n")
 	b.WriteString("\t\t\trowItem := rowItem\n")
 	b.WriteString(fmt.Sprintf("\t\t\tif c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
-	for _, ck := range s.clicks {
-		b.WriteString("\t\t\t\tfor c.Clicked(gtx) {\n")
-		b.WriteString("\t\t\t\t\tv.vm." + ck.method + "(" + s.rewriteRoot(ck.args) + ")\n")
-		b.WriteString("\t\t\t\t\tgtx.Execute(op.InvalidateCmd{})\n")
-		b.WriteString("\t\t\t\t}\n")
-	}
+	b.WriteString("\t\t\t\tfor c.Clicked(gtx) {\n")
+	b.WriteString("\t\t\t\t\tv.vm." + s.method + "(" + s.rewriteRoot(s.args) + ")\n")
+	b.WriteString("\t\t\t\t\tgtx.Execute(op.InvalidateCmd{})\n")
+	b.WriteString("\t\t\t\t}\n")
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n")

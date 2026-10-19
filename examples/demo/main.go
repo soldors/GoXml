@@ -1,15 +1,20 @@
-// Command demo 演示 Goxml 的端到端链路：
+// Command demo 演示 Goxml 的端到端链路（旗舰样板）：
 //
 //	.gxml → Parser → Expander → Analyzer → Codegen → 真实窗口
-//	→ 可点击按钮（帧内失效）→ 后台 ticker（帧外失效）
+//	→ 数据绑定 → 行内带参事件 → 帧内失效 → 后台 ticker（帧外失效）
 //
 // 页面由内嵌的 .gxml 源码走完整管线生成，再交给 pkg/runtime/app 渲染。
 //
 // 这是 demo，不是 CLI——没有目录发现、没有写盘、没有 watch。
 //
-// 交互部分（事件切片）：<Button Click="Increment"/> 由生成代码轮询
-// widget.Clickable 并在 Layout 顶部执行处理器，随后请求下一帧。
-// demo 的 demoView 与生成代码**同构**（见其注释）。
+// 交互能力（本切片）：
+//   - 全局按钮：<Button Click="AddItem"/>（无参）
+//   - 列表：<For Each="item" In="{Items}" Key="{item.ID}">
+//   - 行内按钮：<Button Click="Select(item.ID)"/> / <Button Click="Delete(item.ID)"/>
+//     ——带参 + 行状态池（每行独立的 widget.Clickable）
+//
+// demoView 与生成代码**同构**（见其注释），因为生成产物在本进程内只被打印、
+// 不参与编译：解析生成源码再解释执行等于重写一个解释器，会掩盖 Codegen 的职责。
 package main
 
 import (
@@ -28,15 +33,17 @@ import (
 	"github.com/goxml/goxml/pkg/runtime/app"
 )
 
-// page 是演示页面：
-//   - {Title} 由按钮点击更新（帧内事件 + InvalidateCmd）
-//   - {Status} 由后台 ticker 更新（帧外 App.Invalidate）
+// page 是演示页面：全局统计 + 增加按钮 + 行内选中/删除。
 const page = `<Goxml Version="1" ViewModel="demoVM">
   <Page Route="/">
     <Text Value="{Title}"/>
     <Text Value="{Status}"/>
-    <Button Text="点我 +1" Click="Increment"/>
-    <Button Text="加 10" Click="Add(10)"/>
+    <Button Text="增加一行" Click="AddItem"/>
+    <For Each="item" In="{Items}" Key="{item.ID}">
+      <Text Value="{item.Name}"/>
+      <Button Text="选中" Click="Select(item.ID)"/>
+      <Button Text="删除" Click="Delete(item.ID)"/>
+    </For>
   </Page>
 </Goxml>`
 
@@ -47,55 +54,101 @@ func main() {
 	}
 }
 
+// demoItem 是列表元素。ID 是稳定身份（For 的 Key）。
+type demoItem struct {
+	ID   int
+	Name string
+}
+
 // demoVM 是演示 ViewModel。
 //
-// ⚠️ 状态同步由调用方负责（状态更新契约 §2.3）：
-// 失效通知（InvalidateCmd / App.Invalidate）并发安全 ≠ 字段读写并发安全，
-// 因此这里用 mutex 保护；按钮处理器在 UI 线程、ticker 在后台 goroutine，
-// 两者都走锁。
+// ⚠️ 状态同步由调用方负责（状态更新契约 §2.3）：失效通知并发安全 ≠
+// 字段读写并发安全。按钮处理器在 UI 线程、ticker 在后台 goroutine，
+// 因此统一走 mutex。
 type demoVM struct {
-	mu sync.Mutex
+	mu   sync.Mutex
+	next int
 	// 绑定目标必须是**导出**字段（Analyzer 的 BIND-001 要求）。
-	// 读取统一走 snapshot()，避免直接暴露未加锁的字段访问。
-	Title  string
+	Items []demoItem
+	Title string
+
 	Status string
-	count  int
+	// selected 是当前选中行的 ID（0 表示未选中）。
+	// 不参与 .gxml 绑定，仅由 Title 反映。
+	selected int
 }
 
-// Increment 是零参无返回值的合法事件处理器（EVENT-007 要求无返回值）。
-func (m *demoVM) Increment() {
+func (m *demoVM) init() {
+	m.next = 3
+	m.Items = []demoItem{
+		{ID: 1, Name: "第一行"},
+		{ID: 2, Name: "第二行"},
+		{ID: 3, Name: "第三行"},
+	}
+	m.Title = m.summaryLocked()
+	m.Status = "提示：点「增加一行」或行内按钮试试"
+}
+
+// summaryLocked 生成标题文本（调用方须持锁）。
+func (m *demoVM) summaryLocked() string {
+	return fmt.Sprintf("共 %d 行（选中 ID：%d）", len(m.Items), m.selectedLocked())
+}
+
+// selectedLocked 返回当前选中 ID（0 表示未选中）。
+func (m *demoVM) selectedLocked() int { return m.selected }
+
+// AddItem 是零参事件处理器（EVENT-007 要求无返回值）。
+func (m *demoVM) AddItem() {
 	m.mu.Lock()
-	m.count++
-	m.Title = fmt.Sprintf("点击次数：%d", m.count)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.next++
+	m.Items = append(m.Items, demoItem{ID: m.next, Name: fmt.Sprintf("第 %d 行", m.next)})
+	m.Status = fmt.Sprintf("已新增 ID=%d", m.next)
+	m.Title = m.summaryLocked()
 }
 
-// Add 是**带参**事件处理器（契约 v2）：实参 10 由生成代码传入。
-func (m *demoVM) Add(n int) {
+// Select 接收行 ID（带参事件）。
+func (m *demoVM) Select(id int) {
 	m.mu.Lock()
-	m.count += n
-	m.Title = fmt.Sprintf("点击次数：%d", m.count)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.selected = id
+	m.Status = fmt.Sprintf("已选中 ID=%d", id)
+	m.Title = m.summaryLocked()
 }
 
-// SetStatus 由后台 ticker 调用。
+// Delete 接收行 ID；删除后 Key 对应的行状态应被清理。
+func (m *demoVM) Delete(id int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.Items[:0]
+	for _, it := range m.Items {
+		if it.ID != id {
+			out = append(out, it)
+		}
+	}
+	m.Items = out
+	if m.selected == id {
+		m.selected = 0
+	}
+	m.Status = fmt.Sprintf("已删除 ID=%d，剩余 %d 行", id, len(m.Items))
+	m.Title = m.summaryLocked()
+}
+
+// SetStatus 由后台 ticker 调用（帧外失效路径）。
 func (m *demoVM) SetStatus(s string) {
 	m.mu.Lock()
 	m.Status = s
 	m.mu.Unlock()
 }
 
-// snapshot 供 Layout 读取（同一次加锁内取两个字段，避免撕裂）。
-func (m *demoVM) snapshot() (title, status string) {
+// snapshot 供 Layout 读取：一次加锁取全部可见状态，避免同帧内撕裂。
+func (m *demoVM) snapshot() (title string, items []demoItem, selected int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.Title, m.Status
+	return m.Title, append([]demoItem(nil), m.Items...), m.selected
 }
 
 // run 走完整管线并把结果接入窗口。
-//
-// demo 保持单进程、单编译单元：生成代码不写盘再编译（那需要外部 go build），
-// 页面结构由真实管线产出并打印，视图实现与生成器按同一契约手写。
 func run() error {
 	root, err := moduleRoot()
 	if err != nil {
@@ -113,16 +166,17 @@ func run() error {
 		return fmt.Errorf("编译失败:%s", diagSummary(res))
 	}
 
-	// 打印生成结果：证明管线确实产出了源码（含 Button 事件接线）。
+	// 打印生成结果：证明管线确实产出了列表 + 行内事件接线。
 	fmt.Printf("--- 生成 %s ---\n%s\n", res.Artifact.OutputName, res.Artifact.Source)
 
-	vm := &demoVM{Title: "点击次数：0", Status: "等待后台更新…"}
+	vm := &demoVM{}
+	vm.init()
 	view := newDemoView(vm)
 
 	a, err := app.NewApp(view, material.NewTheme(), app.Config{
-		Title:  "Goxml Demo — 可点击",
-		Width:  640,
-		Height: 360,
+		Title:  "Goxml Demo — 可交互动态列表",
+		Width:  720,
+		Height: 520,
 	})
 	if err != nil {
 		return err
@@ -131,7 +185,7 @@ func run() error {
 	// 后台 ticker：帧外失效路径（App.Invalidate）。
 	go func() {
 		start := time.Now()
-		tick := time.NewTicker(time.Second)
+		tick := time.NewTicker(2 * time.Second)
 		defer tick.Stop()
 		for range tick.C {
 			vm.SetStatus(fmt.Sprintf("已运行 %d 秒（后台 goroutine + App.Invalidate）",
@@ -143,54 +197,137 @@ func run() error {
 	return a.Run()
 }
 
-// demoView 与生成代码同构（事件处理输出契约 §1/§2、ADR-0010）：
+// demoView 与生成代码同构（<For> 列表契约 §3/§5、事件处理输出契约 §1/§2）。
 //
-//   - 构造时持有 vm 引用；
-//   - 每个 <Button> 一个 widget.Clickable 字段（跨帧地址不变）；
-//   - Layout 两参，事件轮询在**一切绘制之前**；
-//   - 处理器后请求下一帧（InvalidateCmd 是保险）。
-//
-// 不解析生成源码——那等于再写一个解释器，且会掩盖 Codegen 的真实职责。
+// 逐项对应：
+//   - 全局按钮 → 每按钮一个 Clickable 字段；
+//   - <For> 内每按钮 → 一个 map[K]*widget.Clickable 行状态池（每按钮一池，
+//     同一行的「选中」「删除」各自独立）；
+//   - Layout 顶部数据驱动轮询 → 再绘制。
 type demoView struct {
-	vm     *demoVM
-	click0 widget.Clickable // 对应 Click="Increment"
-	click1 widget.Clickable // 对应 Click="Add(10)"
+	vm *demoVM
+
+	// 全局按钮（Layout 顶部直接轮询）
+	clickAdd widget.Clickable
+
+	// 行状态池：每按钮一池（Key = item.ID）
+	rowSelect map[int]*widget.Clickable
+	rowDelete map[int]*widget.Clickable
 }
 
-// newDemoView 对应生成代码的构造语义：nil vm 明确拒绝（状态更新契约 §4）。
 func newDemoView(vm *demoVM) *demoView {
 	if vm == nil {
-		panic("demo: nil ViewModel") // demo 内直接暴露配置错误
+		panic("demo: nil ViewModel")
 	}
 	return &demoView{vm: vm}
 }
 
+// rowClick 惰性创建行状态（与生成的 rowClick<N> 辅助同构）。
+func rowClick(pool map[int]*widget.Clickable, key int) *widget.Clickable {
+	c := pool[key]
+	if c == nil {
+		c = new(widget.Clickable)
+		pool[key] = c
+	}
+	return c
+}
+
 // Layout 实现 app.View。
 func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	// 事件轮询置于一切绘制之前：保证同帧内所有节点看到同一份最新状态。
-	for v.click0.Clicked(gtx) {
-		v.vm.Increment()
-		gtx.Execute(op.InvalidateCmd{})
-	}
-	for v.click1.Clicked(gtx) {
-		v.vm.Add(10) // 带参事件：实参来自 .gxml 声明
+	// ① 事件轮询：一切绘制之前（同帧强一致）
+	for v.clickAdd.Clicked(gtx) {
+		v.vm.AddItem()
 		gtx.Execute(op.InvalidateCmd{})
 	}
 
-	title, status := v.vm.snapshot()
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	title, items, selected := v.vm.snapshot()
+
+	// 行状态池惰性初始化（首帧）。
+	if v.rowSelect == nil {
+		v.rowSelect = make(map[int]*widget.Clickable)
+		v.rowDelete = make(map[int]*widget.Clickable)
+	}
+
+	// ② 行内轮询：数据驱动，与渲染同源同序
+	for _, item := range items {
+		if c := v.rowSelect[item.ID]; c != nil {
+			for c.Clicked(gtx) {
+				v.vm.Select(item.ID)
+				gtx.Execute(op.InvalidateCmd{})
+			}
+		}
+		if c := v.rowDelete[item.ID]; c != nil {
+			for c.Clicked(gtx) {
+				v.vm.Delete(item.ID)
+				gtx.Execute(op.InvalidateCmd{})
+			}
+		}
+	}
+
+	// ③ 键清理：轮询之后、渲染之前（防无界增长）
+	if len(v.rowSelect) > len(items) {
+		keep := make(map[int]struct{}, len(items))
+		for _, item := range items {
+			keep[item.ID] = struct{}{}
+		}
+		for k := range v.rowSelect {
+			if _, ok := keep[k]; !ok {
+				delete(v.rowSelect, k)
+			}
+		}
+	}
+	if len(v.rowDelete) > len(items) {
+		keep := make(map[int]struct{}, len(items))
+		for _, item := range items {
+			keep[item.ID] = struct{}{}
+		}
+		for k := range v.rowDelete {
+			if _, ok := keep[k]; !ok {
+				delete(v.rowDelete, k)
+			}
+		}
+	}
+
+	// ④ 渲染：内联展开子项（不嵌套 Flex）
+	children := make([]layout.FlexChild, 0, 2+3*len(items))
+	children = append(children,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return material.Body1(th, title).Layout(gtx)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Body2(th, status).Layout(gtx)
+			return material.Body2(th, v.vm.statusText()).Layout(gtx)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Button(th, &v.click0, "点我 +1").Layout(gtx)
+			return material.Button(th, &v.clickAdd, "增加一行").Layout(gtx)
 		}),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Button(th, &v.click1, "加 10").Layout(gtx)
+	)
+
+	for _, item := range items {
+		item := item
+		// 行标题：选中行加标记（不用颜色 API，保持最小依赖）
+		label := item.Name
+		if item.ID == selected {
+			label = "▶ " + item.Name
+		}
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Body1(th, label).Layout(gtx)
 		}))
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Button(th, rowClick(v.rowSelect, item.ID), "选中").Layout(gtx)
+		}))
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Button(th, rowClick(v.rowDelete, item.ID), "删除").Layout(gtx)
+		}))
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// statusText 读状态文本（单独加锁，避免与 snapshot 的锁交织）。
+func (m *demoVM) statusText() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Status
 }
 
 // moduleRoot 返回仓库根目录。

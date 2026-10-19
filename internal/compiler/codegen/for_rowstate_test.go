@@ -230,3 +230,81 @@ func TestProbeStable(t *testing.T) {
 	}
 	t.Log(rtFilter(out))
 }
+
+// TestForTwoButtonsPerRowSeparatePools 同一行的多个按钮必须各持独立 Clickable。
+//
+// 缺陷背景（步骤 5 前发现）：池原先按 <For> 组织，同一行的两个按钮共享
+// 一个 Clickable——点击只命中声明顺序里的第一个处理器，第二个永远收不到；
+// 且两者的悬停/按下状态互相串。
+func TestForTwoButtonsPerRowSeparatePools(t *testing.T) {
+	v := verified(t, `<For Each="item" In="{Items}" Key="{item.ID}"><Button Text="删" Click="Delete(item.ID)"/><Button Text="选" Click="RecordNum(item.ID)"/></For>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		"rowClicks0 map[int]*widget.Clickable",
+		"rowClicks1 map[int]*widget.Clickable",
+		"v.rowClick0(item.ID)",
+		"v.rowClick1(item.ID)",
+		"v.vm.Delete(rowItem.ID)",
+		"v.vm.RecordNum(rowItem.ID)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("生成代码缺 %q:\n%s", want, s)
+		}
+	}
+}
+
+// TestForTwoButtonsClickIndependent 运行时：点行的「选」只触发选，不触发删。
+func TestForTwoButtonsClickIndependent(t *testing.T) {
+	out := rtProbe(t, `<For Each="item" In="{Items}" Key="{item.ID}"><Button Text="删" Click="Delete(item.ID)"/><Button Text="选" Click="RecordNum(item.ID)"/></For>`, `
+func TestProbeTwoButtons(t *testing.T) {
+	th := material.NewTheme()
+	vm := &fixture.ViewModel{Items: []fixture.Item{{ID: 7, Name: "row"}}}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r input.Router
+	gtx := layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(300, 200)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      r.Source(),
+	}
+	frame := func() {
+		gtx.Reset()
+		v.Layout(gtx, th)
+		r.Frame(gtx.Ops)
+	}
+	frame()
+
+	// 竖直 Flex 里两个按钮上下排列：第一个 y≈20，第二个 y≈60。
+	r.Queue(
+		pointer.Event{Position: f32.Pt(20, 20), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(20, 20), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	frame()
+	// 点第一个（删）不应触发第二个（选）的处理器。
+	if vm.LastNum == 7 {
+		t.Fatalf("点「删」却触发了「选」的处理器——两个按钮共享了 Clickable")
+	}
+
+	r.Queue(
+		pointer.Event{Position: f32.Pt(20, 60), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(20, 60), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	frame()
+	if vm.LastNum != 7 {
+		t.Fatalf("点「选」应收到 7, 实际 %d", vm.LastNum)
+	}
+	t.Log("同一行两个按钮各自独立：点「删」不触发「选」，点「选」正确派发")
+}
+`)
+	if !contains(out, "[err=nil]") {
+		t.Fatalf("多按钮独立性验收失败:\n%s", out)
+	}
+	t.Log(rtFilter(out))
+}
