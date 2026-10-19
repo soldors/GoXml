@@ -433,20 +433,27 @@ func iterableElemType(t types.Type) (elem, index types.Type, err error) {
 	if t == nil {
 		return nil, nil, errors.New("has no type")
 	}
+	// 只允许切片与数组（规范 §9：Map 作为 <For In> 数据源属 v1 明确不支持）。
+	//
+	// Map 被排除的原因是**遍历顺序**：Go 的 map 迭代带随机种子，
+	// 允许它会让列表渲染顺序逐帧跳变，摧毁渲染确定性。
 	switch u := t.Underlying().(type) {
 	case *types.Slice:
 		return u.Elem(), types.Typ[types.Int], nil
 	case *types.Array:
 		return u.Elem(), types.Typ[types.Int], nil
 	case *types.Map:
-		return u.Elem(), u.Key(), nil
+		return nil, nil, fmt.Errorf(
+			"expects a slice or array, got %s; map iteration order is unspecified, so maps are not allowed as <For In> sources (spec §9)",
+			typeInfo(t).Display)
 	case *types.Basic:
 		if u.Kind() == types.String {
-			return nil, nil, errors.New(
-				"expects a slice, array or map, got string; iterating runes is not supported in v1")
+			return nil, nil, fmt.Errorf(
+				"expects a slice or array, got %s; iterating runes is not supported in v1",
+				typeInfo(t).Display)
 		}
 	}
-	return nil, nil, fmt.Errorf("expects a slice, array or map, got %s", typeInfo(t).Display)
+	return nil, nil, fmt.Errorf("expects a slice or array, got %s", typeInfo(t).Display)
 }
 
 // ============================================================================

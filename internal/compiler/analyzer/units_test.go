@@ -183,11 +183,10 @@ func TestIterableElemTypeErrors(t *testing.T) {
 	if _, _, err := iterableElemType(types.Typ[types.Int]); err == nil {
 		t.Error("int 不可迭代，应报错")
 	}
-	// slice / array / map 应成功并给出正确的元素类型。
+	// slice / array 应成功并给出正确的元素类型与 int 索引。
 	for _, typ := range []types.Type{
 		types.NewSlice(types.Typ[types.Int]),
 		types.NewArray(types.Typ[types.Int], 3),
-		types.NewMap(types.Typ[types.String], types.Typ[types.Int]),
 	} {
 		elem, index, err := iterableElemType(typ)
 		if err != nil {
@@ -197,6 +196,12 @@ func TestIterableElemTypeErrors(t *testing.T) {
 		if elem == nil || index == nil {
 			t.Errorf("%s 的元素/索引类型不应为 nil", typeInfo(typ).Display)
 		}
+	}
+
+	// Map **不**可迭代（规范 §9：Map 作为 <For In> 数据源属 v1 明确不支持）。
+	m := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
+	if _, _, err := iterableElemType(m); err == nil {
+		t.Error("map 在 v1 不可迭代（规范 §9），应报错")
 	}
 }
 

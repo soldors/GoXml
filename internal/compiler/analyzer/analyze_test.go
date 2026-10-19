@@ -3,6 +3,7 @@ package analyzer
 import (
 	"go/types"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goxml/goxml/contracts"
@@ -42,6 +43,16 @@ func codesOf(r *Result) map[string]int {
 		out[d.Code]++
 	}
 	return out
+}
+
+// msgOf 取某个诊断码的首条报文（用于断言报文内容）。
+func msgOf(r *Result, code string) string {
+	for _, d := range r.Diags {
+		if d.Code == code {
+			return d.Message
+		}
+	}
+	return ""
 }
 
 // vmSrc 用夹具 ViewModel 包构造文档。
@@ -286,15 +297,25 @@ func TestForNotIterable(t *testing.T) {
 	}
 }
 
-func TestForMapIterable(t *testing.T) {
-	// map 也是可迭代的（Lookup map[string]int）。
+func TestForMapRejected(t *testing.T) {
+	// Map **不**可迭代（规范 §9：Map 作为 <For In> 数据源属 v1 明确不支持）。
+	//
+	// 原因：Go 的 map 迭代顺序带随机种子，允许它会让列表渲染顺序逐帧跳变。
+	// 本用例曾断言「map 可迭代」——那是与规范冲突的历史实现漂移，已按规范修正。
 	src := vmSrc(`
     <For Each="v" In="{Lookup}" Index="k">
       <Text Value="{v}"/>
     </For>`)
 	r := analyzeSrc(t, src)
-	if codesOf(r)[CodeNotIterable] != 0 {
-		t.Errorf("map 应可迭代: %v", codesOf(r))
+	if got := codesOf(r)[CodeNotIterable]; got != 1 {
+		t.Errorf("期望 SCOPE-004 拒绝 map，实际计数 = %d: %v", got, codesOf(r))
+	}
+	msg := msgOf(r, CodeNotIterable)
+	if !strings.Contains(msg, "slice or array") {
+		t.Errorf("报文应说明只接受 slice or array: %q", msg)
+	}
+	if !strings.Contains(msg, "map") {
+		t.Errorf("报文应点明 map 不受支持: %q", msg)
 	}
 }
 
