@@ -173,6 +173,11 @@ func hasDynamic(n *contracts.NodeIR) bool {
 	if isInteractiveTag(n.Tag) {
 		return true
 	}
+	// <For> 的内容依赖运行时数据（行数、元素值），必然是动态的。
+	// 若漏判，循环会被冻进整页宏，列表永远显示录制帧的内容。
+	if n.For != nil {
+		return true
+	}
 	if len(n.Events) > 0 {
 		return true
 	}
@@ -289,4 +294,75 @@ func lookupEvent(n *contracts.NodeIR, name string, facts *analyzer.Facts) (analy
 		}
 	}
 	return analyzer.ResolvedEvent{}, false
+}
+
+// lookupFor 在 Facts 中取某个节点的 <For> 作用域信息。
+func lookupFor(n *contracts.NodeIR, facts *analyzer.Facts) (analyzer.ResolvedFor, bool) {
+	if facts == nil {
+		return analyzer.ResolvedFor{}, false
+	}
+	nf, ok := facts.Lookup(n)
+	if !ok {
+		return analyzer.ResolvedFor{}, false
+	}
+	return nf.For()
+}
+
+// forVarUsed 报告循环体是否引用了某个 <For> 变量（Each 或 Index）。
+//
+// 用途：只在被引用时生成索引变量——Go 对未使用的 range 变量会报
+// "declared and not used"。
+func (g *generator) forVarUsed(nodes []*contracts.NodeIR, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		// 属性绑定
+		for _, ra := range g.attrFactsOf(n) {
+			if pathRootsAt(ra.Path, name) {
+				return true
+			}
+		}
+		// 事件实参
+		for _, ev := range g.eventFactsOf(n) {
+			for _, a := range ev.CallArgs {
+				if a.Kind == analyzer.ArgPath && pathRootsAt(a.Path, name) {
+					return true
+				}
+			}
+		}
+		if g.forVarUsed(n.Children, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// attrFactsOf 取节点的属性事实（事实缺失时返回 nil）。
+func (g *generator) attrFactsOf(n *contracts.NodeIR) []analyzer.ResolvedAttr {
+	attrs, _ := propFacts(n, g.facts)
+	return attrs
+}
+
+// eventFactsOf 取节点的已解析事件（事实缺失时返回 nil）。
+func (g *generator) eventFactsOf(n *contracts.NodeIR) []analyzer.ResolvedEvent {
+	if g.facts == nil {
+		return nil
+	}
+	nf, ok := g.facts.Lookup(n)
+	if !ok {
+		return nil
+	}
+	return nf.Events()
+}
+
+// pathRootsAt 报告路径是否以指定循环变量为根。
+func pathRootsAt(p *analyzer.ResolvedPath, name string) bool {
+	if p == nil {
+		return false
+	}
+	return p.RootKind == analyzer.RootForVar && p.Root == name
 }

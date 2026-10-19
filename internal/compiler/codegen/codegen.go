@@ -130,6 +130,11 @@ type generator struct {
 	clickSlots int
 	// clicks 记录需要轮询的事件槽位（事件处理输出契约 §2）。
 	clicks []clickSlot
+	// inFor 表示当前正在生成 <For> 循环体内部。
+	//
+	// 循环体内**不得**分配显示缓存槽位：槽位是按节点分配的，
+	// 每行复用同一槽位会互相覆盖（<For> 列表契约 §6.2）。
+	inFor bool
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -178,8 +183,15 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 // containerExpr 生成一个 Flex 容器的表达式（契约 §4.7.2）。
 //
 // 子节点顺序严格等于声明顺序；每个直接子节点一个 layout.Rigid。
+//
+// 含 <For> 时子项数编译期不可知，必须先运行时组装 `[]layout.FlexChild`
+// （<For> 列表契约 §2：内联展开，不引入嵌套 Flex）。
 func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
 	g.imports.add("gioui.org/layout", "layout")
+
+	if hasForChild(children) {
+		return g.dynamicContainerExpr(children, axis, ops)
+	}
 
 	var b strings.Builder
 	b.WriteString("layout.Flex{Axis: " + axis + "}.Layout(" + ops)
@@ -194,6 +206,155 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string
 	}
 	b.WriteString(")")
 	return b.String(), nil
+}
+
+// dynamicContainerExpr 生成「运行时组装子项」的容器表达式。
+//
+// 形态是立即调用的闭包，因此仍是表达式，可直接放进既有 `return <expr>` 位置：
+//
+//	func() layout.Dimensions {
+//		children := make([]layout.FlexChild, 0, <静态子项数>)
+//		children = append(children, layout.Rigid(...))   // 静态子项
+//		{ items := ...; for _, item := range items { ... } }  // <For> 内联展开
+//		return layout.Flex{Axis: ...}.Layout(gtx, children...)
+//	}()
+func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
+	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
+	static := 0
+	for _, c := range children {
+		if !isForNode(c) {
+			static++
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("func() layout.Dimensions {\n")
+	b.WriteString(fmt.Sprintf("\t\t\tchildren := make([]layout.FlexChild, 0, %d)\n", static))
+
+	for _, c := range children {
+		if isForNode(c) {
+			if err := g.emitForChildren(&b, c, "\t\t\t"); err != nil {
+				return "", err
+			}
+			continue
+		}
+		inner, err := g.nodeExpr(c)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("\t\t\tchildren = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
+		b.WriteString("\t\t\t\treturn " + inner + "\n")
+		b.WriteString("\t\t\t}))\n")
+	}
+
+	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + "}.Layout(" + ops + ", children...)\n")
+	b.WriteString("\t\t}()")
+	return b.String(), nil
+}
+
+// emitForChildren 把一个 <For> 内联展开为「循环 + 逐项 append」的语句块。
+//
+// 关键一致性（<For> 列表契约 §5）：数据源只求值一次并存入局部变量 items，
+// 供后续事件轮询与渲染共用——两处各写一遍取数表达式会在并发修改下串位。
+func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, indent string) error {
+	nf, ok := lookupFor(n, g.facts)
+	if !ok {
+		return fmt.Errorf("codegen: <%s> has no resolved for-clause facts; the analyzer result is inconsistent", n.Tag)
+	}
+	if nf.In == nil {
+		return fmt.Errorf("codegen: <For> has no resolved In path")
+	}
+	if nf.Each == "" {
+		return fmt.Errorf("codegen: <For> has no Each variable")
+	}
+	// 循环变量名不得与生成代码使用的标识符冲突（契约 §6.1）。
+	// 静默覆盖会生成语法正确但语义错误的代码，因此显式报错。
+	if err := checkLoopVarName(nf.Each); err != nil {
+		return err
+	}
+	if nf.Index != "" {
+		if err := checkLoopVarName(nf.Index); err != nil {
+			return err
+		}
+		if nf.Index == nf.Each {
+			return fmt.Errorf("codegen: <For> Each and Index must differ (both %q)", nf.Each)
+		}
+	}
+	if len(n.Children) == 0 {
+		return fmt.Errorf("codegen: <For> has no children")
+	}
+
+	inExpr, err := pathExpr(nf.In, "v.vm", "<For In>")
+	if err != nil {
+		return err
+	}
+
+	b.WriteString(indent + "{\n")
+	b.WriteString(indent + "\titems := " + inExpr + "\n")
+	// Index 变量只在循环体**真的引用**它时才生成。
+	// Go 对 `for i, item := range` 中未使用的 i 会报 "declared and not used"，
+	// 而 Index 是可选的，声明了却不引用是完全合法的写法。
+	if nf.Index != "" && g.forVarUsed(n.Children, nf.Index) {
+		b.WriteString(indent + "\tfor " + nf.Index + ", " + nf.Each + " := range items {\n")
+	} else {
+		b.WriteString(indent + "\tfor _, " + nf.Each + " := range items {\n")
+	}
+	// 显式遮蔽：闭包捕获的是**本轮**的循环变量。
+	// （Go 1.22 起 range 变量本就每轮独立，这里显式写出来是为了让生成的
+	// 代码在任何阅读者眼里都不依赖那个语言细节。）
+	b.WriteString(indent + "\t\t" + nf.Each + " := " + nf.Each + "\n")
+
+	// 循环体内不分配显示缓存槽位：槽位按节点分配，每行复用会互相覆盖
+	// （<For> 列表契约 §6.2）。
+	prevInFor := g.inFor
+	g.inFor = true
+	for _, c := range n.Children {
+		if isForNode(c) {
+			g.inFor = prevInFor
+			return fmt.Errorf("codegen: nested <For> is not supported in this slice")
+		}
+		inner, err := g.nodeExpr(c)
+		if err != nil {
+			g.inFor = prevInFor
+			return err
+		}
+		b.WriteString(indent + "\t\tchildren = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
+		b.WriteString(indent + "\t\t\treturn " + inner + "\n")
+		b.WriteString(indent + "\t\t}))\n")
+	}
+	g.inFor = prevInFor
+
+	b.WriteString(indent + "\t}\n")
+	b.WriteString(indent + "}\n")
+	return nil
+}
+
+// isForNode 报告节点是否为 <For> 结构节点。
+func isForNode(n *contracts.NodeIR) bool {
+	if n == nil {
+		return false
+	}
+	return n.Kind == contracts.KindFor || n.For != nil
+}
+
+// hasForChild 报告直接子节点中是否含 <For>。
+func hasForChild(children []*contracts.NodeIR) bool {
+	for _, c := range children {
+		if isForNode(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkLoopVarName 拒绝与生成代码标识符冲突的循环变量名。
+func checkLoopVarName(name string) error {
+	switch name {
+	case "v", "th", "gtx", "items", "children", "rec", "k", "ops":
+		return fmt.Errorf(
+			"codegen: <For> variable %q collides with an identifier used by generated code; rename it", name)
+	}
+	return nil
 }
 
 // nodeExpr 生成单个节点的渲染**表达式**（返回 layout.Dimensions）。
@@ -222,6 +383,13 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 				return "", err
 			}
 			g.usesVM = true
+			// 循环体内**不**分配显示缓存槽位：槽位按节点分配，
+			// N 行复用同一槽位会在同一帧内互相覆写，命中率恒为 0
+			// （<For> 列表契约 §6.2）。直接布局。
+			if g.inFor {
+				g.imports.add("gioui.org/widget/material", "material")
+				return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
+			}
 			// 分配显示缓存槽位；闭包内通过 v.n<i> 读写缓存。
 			slot := g.bindSlots
 			g.bindSlots++
@@ -339,9 +507,15 @@ func (g *generator) assemble(body string) (string, error) {
 	// 签名始终需要 layout。
 	g.imports.add("gioui.org/layout", "layout")
 	g.imports.add("gioui.org/io/system", "system")
-	g.imports.add("gioui.org/op", "op")
 	g.imports.add("math", "math")
 	g.imports.add("gioui.org/unit", "unit")
+	// op 只在真正用到时导入：
+	//   静态页 —— op.Record / op.CallOp 的整页固化；
+	//   动态页 —— 绑定缓存槽位（op.Ops/op.CallOp）或事件失效（op.InvalidateCmd）。
+	// 只为展示型 <For> 的页面两者都没有，无条件导入会编译失败。
+	if !g.usesVM || g.bindSlots > 0 || len(g.clicks) > 0 {
+		g.imports.add("gioui.org/op", "op")
+	}
 	if g.usesVM {
 		// 构造函数的 nil 校验使用 fmt.Errorf。
 		g.imports.add("fmt", "fmt")

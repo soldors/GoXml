@@ -199,14 +199,23 @@ for _, item := range items {   // ② 与渲染同一顺序
 
 ```go
 for _, item := range items { ... }   // Each="item"
-for i, item := range items { ... }   // 有 Index="i"
+for i, item := range items { ... }   // 有 Index="i" 且循环体**引用**了 i
 ```
 
 生成代码使用 `Each`/`Index` 的**原始名称**，与 `pathExpr` 的
 `RootForVar` 分支一致（`binding.go` 用 `path.Root` 作基名）。
 
-若 `Each` 与生成代码的其它标识符冲突（如 `v`、`th`、`gtx`、`items`），
-Codegen **必须**报错或加前缀——不得静默覆盖。MVP 采用**显式报错**。
+**`Index` 按引用生成**（步骤 1 的实测结论）：`Index` 是可选属性，声明了却
+不引用是合法写法；而 Go 对 `for i, item := range` 中未使用的 `i` 会报
+`declared and not used`（编译失败）。因此 Codegen 必须扫描循环体是否引用该
+变量，未引用时生成 `for _, item := range`。
+
+> 该问题由编译探测发现：`TestForIndexCompiles` 最初直接失败，报
+> `gen.go:46:8: declared and not used: i`。该测试保留为回归防线。
+
+若 `Each`/`Index` 与生成代码的其它标识符冲突（`v`、`th`、`gtx`、`items`、
+`children`、`rec`、`k`、`ops`），Codegen **必须**报错——不得静默覆盖。
+MVP 采用**显式报错**。
 
 ### 6.2 绑定取值
 

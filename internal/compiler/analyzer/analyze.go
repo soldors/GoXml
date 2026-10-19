@@ -219,7 +219,7 @@ func (a *analyzer) analyzeFor(n *contracts.NodeIR) {
 			"<For In> must be a binding like {Items}; got %q", f.In.Raw)
 		return
 	}
-	_, raw, ok := a.resolveBinding(f.In, n.Span, "In")
+	inPath, raw, ok := a.resolveBinding(f.In, n.Span, "In")
 	if !ok {
 		// In 自身解析失败，诊断已产出。**跳过整个子树**：
 		// 继续遍历会让循环体里的 {item.X} 被误报成「首段无法解析」，
@@ -252,6 +252,7 @@ func (a *analyzer) analyzeFor(n *contracts.NodeIR) {
 
 	a.facts.set(n, &NodeFacts{forCl: &ResolvedFor{
 		Each:      f.Each,
+		In:        inPath,
 		Elem:      typeInfo(elem),
 		Index:     f.Index,
 		IndexType: typeInfo(index),

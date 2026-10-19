@@ -608,6 +608,11 @@ type ResolvedArg struct {
 type ResolvedFor struct {
 	// Each 是循环变量名（如 "item"）。
 	Each string
+	// In 是数据源路径（如 ViewModel 的 Items 字段）。
+	//
+	// Codegen 据它生成 range 表达式；缺了它就只能回读原始 BindingVal，
+	// 与本项目「Codegen 不自行解析路径」的红线冲突。
+	In *ResolvedPath
 	// Elem 是元素类型；可迭代性已校验。
 	Elem TypeInfo
 	// Index 是索引变量名，可为空。
