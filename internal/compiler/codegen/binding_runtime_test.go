@@ -78,14 +78,34 @@ const rtProbeHeader = `package demo
 
 import (
 	"image"
+	"strings"
 	"testing"
+	"time"
 
+	"gioui.org/f32"
 	"gioui.org/gpu/headless"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
 	"github.com/goxml/goxml/internal/compiler/analyzer/testdata/fixture"
+	"github.com/goxml/goxml/pkg/runtime/app"
+)
+
+// 各探测只用到部分依赖；用包级空引用避免「imported and not used」。
+var (
+	_ = f32.Pt
+	_ = input.Router{}
+	_ = pointer.Press
+	_ = app.RunWindow
+	_ = time.Second
+	_ = strings.Contains
+	_ = material.NewTheme
+	_ = fixture.ViewModel{}
+	_ = headless.NewWindow
+	_ = unit.Metric{}
 )
 
 func rtGtx(ops *op.Ops, w, h int) layout.Context {
@@ -119,6 +139,8 @@ func rtNonZero(p []byte) int {
 }
 
 var _ = material.NewTheme
+var _ = app.RunWindow
+var _ = time.Second
 
 func fatal(t *testing.T, err error) {
 	t.Helper()

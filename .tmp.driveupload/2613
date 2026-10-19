@@ -1,0 +1,15 @@
+package codegen
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestPrintButton(t *testing.T) {
+	v := verified(t, `<Column><Text Value="{Title}"/><Button Text="Save" Click="Save"/></Column>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(string(out))
+}

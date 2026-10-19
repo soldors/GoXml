@@ -116,7 +116,7 @@ type generator struct {
 	// facts 是 Analyzer 已验证的语义事实。绑定路径与目标类型都取自此处，
 	// Codegen **不得**自行解析绑定路径。
 	facts *analyzer.Facts
-	// usesVM 表示页面含绑定，需要 vm 参数，且**不得**整页静态固化。
+	// usesVM 表示页面**动态**（含绑定或事件）：需要 vm 参数，且**不得**整页静态固化。
 	usesVM bool
 	// opsName 是顶层容器布局所用的 Ops 变量名。
 	//
@@ -126,6 +126,18 @@ type generator struct {
 	vmRef analyzer.ViewModelRef
 	// bindSlots 是页面中绑定 <Text> 的数量（用于生成显示缓存槽位）。
 	bindSlots int
+	// clickSlots 是页面中 <Button> 的数量（用于生成 widget.Clickable 字段）。
+	clickSlots int
+	// clicks 记录需要轮询的事件槽位（事件处理输出契约 §2）。
+	clicks []clickSlot
+}
+
+// clickSlot 是一个待轮询的控件状态槽位。
+type clickSlot struct {
+	// index 对应生成字段 click<index>。
+	index int
+	// method 是 ViewModel 上的无参方法名。
+	method string
 }
 
 // page 生成页面根节点的渲染体。
@@ -139,7 +151,7 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 	}
 
 	// 预扫描：先确定是否含绑定，因为 ops 与返回形态都取决于它。
-	g.usesVM = hasBinding(n)
+	g.usesVM = hasDynamic(n)
 
 	ops := "rec"
 	if g.usesVM {
@@ -186,12 +198,12 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 	if n == nil {
 		return "", fmt.Errorf("codegen: nil node")
 	}
-	if len(n.Events) > 0 {
-		return "", fmt.Errorf("codegen: <%s> events are not supported in this slice", n.Tag)
-	}
 
 	switch n.Tag {
 	case "Text":
+		if len(n.Events) > 0 {
+			return "", fmt.Errorf("codegen: <Text> events are not supported in this slice")
+		}
 		if len(n.Children) > 0 {
 			return "", fmt.Errorf("codegen: <Text> must not have children")
 		}
@@ -219,6 +231,9 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		}
 		return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value)), nil
 
+	case "Button":
+		return g.buttonExpr(n)
+
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
 		return g.containerExpr(n.Children, "layout.Vertical", "gtx")
@@ -229,6 +244,68 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)
 	}
+}
+
+// buttonExpr 生成 <Button> 的渲染表达式（事件处理输出契约 §6）。
+//
+// MVP 范围：
+//   - 事件：仅无参 Click；
+//   - 属性：Text（静态或绑定）；Enabled 明确报错。
+func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
+	if len(n.Children) > 0 {
+		return "", fmt.Errorf("codegen: <Button> must not have children")
+	}
+	g.imports.add("gioui.org/widget/material", "material")
+	g.imports.add("gioui.org/widget", "widget")
+
+	// Enabled 需要 gtx.Disabled() 语义，不在 MVP 范围。
+	// 明确报错而非静默忽略——忽略会让「禁用」变成可点击。
+	if _, ok := staticAttr(n, "Enabled"); ok {
+		return "", fmt.Errorf("codegen: <Button Enabled> is not supported in this slice")
+	}
+	for _, a := range n.Attrs {
+		if a.Name == "Enabled" {
+			return "", fmt.Errorf("codegen: <Button Enabled> is not supported in this slice")
+		}
+	}
+
+	// 控件状态槽位：每个 Button 一个，跨帧稳定（契约 §1）。
+	idx := g.clickSlots
+	g.clickSlots++
+
+	// 事件校验（MVP：仅无参 Click）。
+	for _, ev := range n.Events {
+		if ev.Name != "Click" {
+			return "", fmt.Errorf(
+				"codegen: <Button> event %q is not supported in this slice; only Click", ev.Name)
+		}
+		if len(ev.Args) > 0 {
+			// 带参事件的阻断点在契约 §5.2：Facts 不携带实参值，
+			// 回读原始实参违反「不得自行解析」红线。
+			return "", fmt.Errorf(
+				"codegen: event arguments are not supported in this slice (Click=%q has %d argument(s)); use a parameterless handler",
+				ev.Method, len(ev.Args))
+		}
+		if ev.Method == "" {
+			return "", fmt.Errorf("codegen: Click has no method name")
+		}
+		g.clicks = append(g.clicks, clickSlot{index: idx, method: ev.Method})
+	}
+
+	// 标签：绑定优先（经 Facts），否则静态字面量；缺省为空标签（Schema 非必选）。
+	label := `""`
+	if ra, ok := lookupAttr(n, "Text", g.facts); ok && ra.Path != nil {
+		expr, err := bindingExpr(ra, "v.vm")
+		if err != nil {
+			return "", err
+		}
+		g.usesVM = true
+		label = expr
+	} else if raw, ok := staticAttr(n, "Text"); ok {
+		label = quote(raw)
+	}
+
+	return fmt.Sprintf("material.Button(th, &v.click%d, %s).Layout(gtx)", idx, label), nil
 }
 
 // staticAttr 取静态属性值；绑定属性返回 false。
@@ -282,7 +359,15 @@ func (g *generator) assemble(body string) (string, error) {
 		// 但按绑定节点生成**显示缓存槽位**（契约 §05.2/05.3.1），
 		// 并持有 vm 引用（状态更新契约 §1、ADR-0010）。
 		b.WriteString("\tvm *" + g.vmTypeExprStr() + "\n")
-		b.WriteString("\tslots []textCache\n")
+		// 仅在确有绑定槽位时生成：纯事件页没有 textCache 类型声明
+		// （bindCacheDecl 在 slots==0 时不输出），否则编译失败。
+		if g.bindSlots > 0 {
+			b.WriteString("\tslots []textCache\n")
+		}
+		// 交互控件状态：每个 <Button> 一个，跨帧地址不变（契约 §1.3）。
+		for i := 0; i < g.clickSlots; i++ {
+			b.WriteString(fmt.Sprintf("\tclick%d widget.Clickable\n", i))
+		}
 	} else {
 		for _, line := range cacheFieldLines(g.view) {
 			b.WriteString(line + "\n")
@@ -320,7 +405,22 @@ func (g *generator) assemble(body string) (string, error) {
 		b.WriteString("// 变化时重录（契约 §05.2/§05.3.1）。\n")
 		b.WriteString("//\n")
 		b.WriteString("// 含绑定，因此**不**走静态子树固化（契约 §16.7）。\n")
+		if len(g.clicks) > 0 {
+			b.WriteString("//\n")
+			b.WriteString("// 事件轮询置于一切绘制之前（事件处理输出契约 §2.2）：\n")
+			b.WriteString("// 保证所有状态变更发生在任何节点渲染之前，同帧强一致。\n")
+		}
 		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
+		// 事件消费：必须在绘制之前（契约 §2.1/§2.2）。
+		for _, cs := range g.clicks {
+			b.WriteString(fmt.Sprintf("\tfor v.click%d.Clicked(gtx) {\n", cs.index))
+			b.WriteString("\t\tv.vm." + cs.method + "()\n")
+			b.WriteString("\t\tgtx.Execute(op.InvalidateCmd{})\n")
+			b.WriteString("\t}\n")
+		}
+		if len(g.clicks) > 0 {
+			b.WriteString("\n")
+		}
 		b.WriteString("\treturn " + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
 		b.WriteString("}\n")
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
@@ -361,7 +461,7 @@ func (g *generator) assemble(body string) (string, error) {
 // 其他包 → <pkg>.Name，需要 ModulePath 拼出 import 路径。
 func (g *generator) vmTypeExpr() (string, error) {
 	if g.vmRef.Name == "" {
-		return "", fmt.Errorf("codegen: page has bindings but no ViewModel type is available")
+		return "", fmt.Errorf("codegen: page is dynamic (binding or event) but no ViewModel type is available; add a ViewModel declaration")
 	}
 	if g.vmRef.PkgDir == "" {
 		return g.vmRef.Name, nil

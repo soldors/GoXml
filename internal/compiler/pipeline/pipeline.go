@@ -140,7 +140,15 @@ func Run(file string, src []byte, cfg Config, hooks Hooks) *Result {
 	}
 
 	// ---- 5. Codegen ----
-	opts := codegen.Options{PackageName: cfg.PackageName, SourcePath: cfg.SourcePath}
+	//
+	// ModulePath 必须传：跨包 ViewModel 的绑定页面要拼其 import 路径。
+	// 缺它会报 "Options.ModulePath is empty"（同包 ViewModel 不需要，
+	// 因此只有跨包场景会暴露——由 TestRunPassesModulePath 守住）。
+	opts := codegen.Options{
+		PackageName: cfg.PackageName,
+		SourcePath:  cfg.SourcePath,
+		ModulePath:  env.ModulePath(),
+	}
 	gen := hooks.Generate
 	if gen == nil {
 		gen = codegen.Generate

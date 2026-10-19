@@ -93,3 +93,14 @@ func (vm *ViewModel) OnEcho(s string) {}
 
 // OnToggle 接收布尔实参。
 func (vm *ViewModel) OnToggle(b bool) {}
+
+// ---- 零参、无返回值的合法事件处理器 ----
+//
+// Codegen 的事件切片（Button + Click）需要「无参且无返回值」的处理器：
+// 上面多数方法为覆盖校验规则而带参数或有返回值，不适合作为正向用例。
+
+// Increment 是零参无返回值的合法处理器，用于 <Button Click="Increment"/>。
+func (vm *ViewModel) Increment() { vm.Count++ }
+
+// Reset 同为零参无返回值处理器，用于验证多个 Button 各自独立接线。
+func (vm *ViewModel) Reset() { vm.Count = 0 }

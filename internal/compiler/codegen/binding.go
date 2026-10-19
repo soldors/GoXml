@@ -88,13 +88,29 @@ func lookupAttr(n *contracts.NodeIR, name string, facts *analyzer.Facts) (analyz
 	return analyzer.ResolvedAttr{}, false
 }
 
-// hasBinding 递归检查子树是否含任何绑定。
+// hasDynamic 递归检查子树是否为**动态**（需要 vm、且禁止整页静态固化）。
 //
-// 用途：决定页面是否需要 vm 参数、以及能否走静态子树固化。
-// 含绑定的子树**不是**静态子树（契约 §16.7）。
-func hasBinding(n *contracts.NodeIR) bool {
+// 动态的判定（事件处理输出契约 §4.1）：
+//   - 交互控件（Button / Input）——即使没有事件
+//   - 携带事件（len(Events) > 0）
+//   - 存在属性绑定（BindingVal.IsBinding，契约 §16.7）
+//   - 任一子节点为动态
+//
+// ⚠️ 事件必须计入。若只看绑定，含 Click 的页面会被判为静态并整页录进
+// CallOp——录制帧轮询一次 Clicked(gtx) 后再无人点击，后续帧只回放宏，
+// 按钮表现为「编译通过、界面正常、点了没反应」。
+//
+// ⚠️ 交互控件也必须计入：Clickable 的悬停/按下状态随帧变化，
+// 固化会把交互动画一起冻住（ADR-0006 §2.1「不含交互控件」）。
+func hasDynamic(n *contracts.NodeIR) bool {
 	if n == nil {
 		return false
+	}
+	if isInteractiveTag(n.Tag) {
+		return true
+	}
+	if len(n.Events) > 0 {
+		return true
 	}
 	for _, a := range n.Attrs {
 		if a.Value.IsBinding {
@@ -102,9 +118,20 @@ func hasBinding(n *contracts.NodeIR) bool {
 		}
 	}
 	for _, c := range n.Children {
-		if hasBinding(c) {
+		if hasDynamic(c) {
 			return true
 		}
+	}
+	return false
+}
+
+// isInteractiveTag 报告标签是否为交互控件。
+//
+// 名单来自 ADR-0006 §2.1 的静态子树判定标准（「不含交互控件」）。
+func isInteractiveTag(tag string) bool {
+	switch tag {
+	case "Button", "Input":
+		return true
 	}
 	return false
 }
