@@ -218,6 +218,13 @@ func Commit(a *Artifact, dir string) (string, error) {
 	if a.OutputName == "" {
 		return "", fmt.Errorf("pipeline: artifact has no output name")
 	}
+	// 输出名必须是**纯文件名**。
+	//
+	// 不校验的后果（已实测）：OutputName 里的 `../` 会把文件写到目标目录
+	// 之外。Artifact 可能由调用方构造，因此这里必须防守，不能信任上游。
+	if err := validateOutputName(a.OutputName); err != nil {
+		return "", err
+	}
 	if fi, err := os.Stat(dir); err != nil {
 		return "", fmt.Errorf("pipeline: output dir %q: %w", dir, err)
 	} else if !fi.IsDir() {
@@ -260,4 +267,31 @@ func Commit(a *Artifact, dir string) (string, error) {
 // parserParseGo 校验源码可解析。抽成变量便于测试注入失败。
 var parserParseGo = func(src []byte) (any, error) {
 	return format.Source(src)
+}
+
+// validateOutputName 校验输出名是单个普通文件名。
+//
+// 规则：
+//   - 不含路径分隔符（/ 或 \），因此不可能穿越目录；
+//   - 不是 "." 或 ".."；
+//   - 不以 "." 开头（避免生成隐藏文件，也排除 "..foo" 之类歧义）；
+//   - 不以 ".go" 之外的后缀？—— 不限制后缀，但要求以 .go 结尾
+//     （生成物必然是 Go 源码）。
+func validateOutputName(name string) error {
+	if name == "" {
+		return fmt.Errorf("pipeline: empty output name")
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("pipeline: output name %q must not contain a path separator", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("pipeline: output name %q is a directory reference", name)
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("pipeline: output name %q must not start with '.'", name)
+	}
+	if !strings.HasSuffix(name, ".go") {
+		return fmt.Errorf("pipeline: output name %q must end with .go", name)
+	}
+	return nil
 }

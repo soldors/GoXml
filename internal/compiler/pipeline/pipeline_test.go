@@ -438,3 +438,54 @@ func TestCommitRenameFailureLeavesNoTempFiles(t *testing.T) {
 		t.Errorf("失败后残留 %d 个临时文件", tmp)
 	}
 }
+
+// ============================================================================
+// 安全：输出名必须是纯文件名（防路径穿越）
+//
+// 审计发现（TASK-SEC-001 §3.1）：修复前 OutputName 含 `../` 会把文件写到
+// 目标目录之外，属可复现缺陷。以下测试锁定修复。
+// ============================================================================
+
+func TestCommitRejectsPathTraversal(t *testing.T) {
+	outside := t.TempDir()
+	inside := t.TempDir()
+
+	cases := []string{
+		"../evil.go",
+		"../../evil.go",
+		`..\evil.go`,
+		"sub/evil.go",
+		`sub\evil.go`,
+		".",
+		"..",
+		".hidden.go",
+		"evil.txt",
+		"",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Commit(&Artifact{OutputName: name, Source: []byte("package evil\n")}, inside)
+			if err == nil {
+				t.Fatalf("OutputName %q 应被拒绝", name)
+			}
+		})
+	}
+
+	// 目标目录之外不得出现任何文件。
+	entries, _ := os.ReadDir(outside)
+	if len(entries) != 0 {
+		t.Errorf("目标目录之外出现文件: %d 个", len(entries))
+	}
+	entries, _ = os.ReadDir(inside)
+	if len(entries) != 0 {
+		t.Errorf("目标目录不应有残留: %d 个", len(entries))
+	}
+}
+
+func TestValidateOutputNameAcceptsPlainName(t *testing.T) {
+	for _, ok := range []string{"a.go", "dashboard_gen.go", "x_1.go"} {
+		if err := validateOutputName(ok); err != nil {
+			t.Errorf("%q 应被接受: %v", ok, err)
+		}
+	}
+}
