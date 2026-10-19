@@ -62,6 +62,8 @@ type Result struct {
 	Doc *contracts.DocumentIR
 	// Facts 是语义事实旁表。仅当 Status == StatusOK 时完整。
 	Facts *Facts
+	// vm 是解析出的 ViewModel 类型引用。缺省时为 IsZero。
+	vm ViewModelRef
 	// Status 是总体结论。
 	Status Status
 	// Diags 使用项目既有诊断类型，不另造一套。
@@ -98,7 +100,7 @@ func (r *Result) Verified() (*VerifiedDoc, error) {
 		return nil, errors.New("analyzer: status is OK but facts are nil")
 	}
 	r.Facts.freeze()
-	return &VerifiedDoc{doc: r.Doc, facts: r.Facts}, nil
+	return &VerifiedDoc{doc: r.Doc, facts: r.Facts, vm: r.vm}, nil
 }
 
 // VerifiedDoc 是「已通过全部校验」的凭证。
@@ -114,6 +116,46 @@ func (r *Result) Verified() (*VerifiedDoc, error) {
 type VerifiedDoc struct {
 	doc   *contracts.DocumentIR
 	facts *Facts
+	// vm 是解析出的 ViewModel 类型引用（ViewModelRef 形式，不含 go/types）。
+	// 缺省 ViewModel 时为 IsZero。
+	vm ViewModelRef
+}
+
+// ViewModelRef 是 ViewModel 的类型引用。
+//
+// 刻意**不含** *types.Named：types 属于 Analyzer 内部，不得泄漏给 Codegen。
+type ViewModelRef struct {
+	// PkgDir 是模块根相对目录，如 "internal/models"。同包（即 .gxml 所在包）时为空串。
+	PkgDir string
+	// Name 是类型名。
+	Name string
+}
+
+// IsZero 报告是否未设置（纯静态页面）。
+func (r ViewModelRef) IsZero() bool {
+	return r.PkgDir == "" && r.Name == ""
+}
+
+// ViewModel 返回 ViewModel 类型引用。缺省时返回 false。
+func (v *VerifiedDoc) ViewModel() (ViewModelRef, bool) {
+	if v == nil {
+		return ViewModelRef{}, false
+	}
+	if v.vm.IsZero() {
+		return ViewModelRef{}, false
+	}
+	return v.vm, true
+}
+
+// vmRef 把 *ViewModelType 转换为不含 go/types 的引用。
+//
+// 为什么需要转换：Codegen 需要知道 vm 参数的类型名，但 types.Named 属于
+// Analyzer 内部，不得泄漏。这里只保留 PkgDir 与 Name（来自已解析的 TypeExpr）。
+func vmRef(vm *ViewModelType) ViewModelRef {
+	if vm == nil {
+		return ViewModelRef{}
+	}
+	return ViewModelRef{PkgDir: vm.Expr.PkgDir, Name: vm.Expr.Name}
 }
 
 // Document 返回已验证的结构 IR。

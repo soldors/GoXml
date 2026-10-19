@@ -39,9 +39,10 @@ func Analyze(
 	vm, cerr := env.ResolveViewModel(doc.ViewModel)
 	if cerr != nil {
 		a.addDiag(*cerr)
-		return &Result{Doc: doc, Facts: a.facts, Status: StatusBlocked, Diags: a.diags}
+		return &Result{Doc: doc, Facts: a.facts, vm: a.vmRef, Status: StatusBlocked, Diags: a.diags}
 	}
 	a.vm = vm
+	a.vmRef = vmRef(vm)
 
 	// 第 2 步：遍历并解析绑定。
 	if doc.Page != nil {
@@ -52,7 +53,7 @@ func Analyze(
 	if len(a.diags) > 0 {
 		st = StatusPartial
 	}
-	return &Result{Doc: doc, Facts: a.facts, Status: st, Diags: a.diags}
+	return &Result{Doc: doc, Facts: a.facts, vm: a.vmRef, Status: st, Diags: a.diags}
 }
 
 // analyzer 是单次分析的状态。
@@ -61,8 +62,10 @@ type analyzer struct {
 	file    string
 	schemas expander.SchemaRegistry
 	vm      *ViewModelType
-	facts   *Facts
-	diags   []contracts.CompilerError
+	// vmRef 是不含 go/types 的 ViewModel 引用，供 VerifiedDoc 暴露给 Codegen。
+	vmRef ViewModelRef
+	facts *Facts
+	diags []contracts.CompilerError
 	// scopes 是 <For> 变量栈，内层在末尾。
 	scopes []map[string]types.Type
 	// seen 用于诊断去重：同一位置同一码只报一次。

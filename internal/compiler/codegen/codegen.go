@@ -12,6 +12,7 @@ package codegen
 import (
 	"fmt"
 	"go/format"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -28,6 +29,11 @@ type Options struct {
 	// 由调用方按契约 §4.1 从目标目录的 Go package 解析得到。
 	// Codegen 不推导、不猜测；为空时生成失败。
 	PackageName string
+	// ModulePath 是 go.mod 的 module 路径。
+	//
+	// 仅当 ViewModel 位于**其他包**时需要：用于拼出该包的 import 路径。
+	// 同包 ViewModel（或纯静态页面）不需要设置。
+	ModulePath string
 
 	// SourcePath 是 .gxml 相对目标包目录的路径（如 "ui/dashboard.gxml"），
 	// 用于按契约 §4.2 推导符号名。
@@ -66,10 +72,14 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 		return nil, err
 	}
 
+	vmRef, _ := v.ViewModel()
+
 	g := &generator{
 		opts:    opts,
 		view:    view,
 		imports: newImportSet(),
+		facts:   v.Facts(),
+		vmRef:   vmRef,
 	}
 
 	// 页面是生成的主体。没有 Page 时不应走到这里——Parser 保证存在，
@@ -84,7 +94,10 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 		return nil, err
 	}
 
-	src := g.assemble(body)
+	src, err := g.assemble(body)
+	if err != nil {
+		return nil, err
+	}
 	out, err := format.Source([]byte(src))
 	if err != nil {
 		// 格式化失败说明生成器有缺陷。返回错误并附上原文，便于定位，
@@ -99,9 +112,19 @@ type generator struct {
 	opts    Options
 	view    string
 	imports *importSet
+	// facts 是 Analyzer 已验证的语义事实。绑定路径与目标类型都取自此处，
+	// Codegen **不得**自行解析绑定路径。
+	facts *analyzer.Facts
+	// usesVM 表示页面含绑定，需要 vm 参数，且**不得**整页静态固化。
+	usesVM bool
+	// opsName 是顶层容器布局所用的 Ops 变量名。
+	//
+	// 静态页面为 "rec"（录制到 cacheOps）；含绑定页面为 "gtx"（直接布局到帧）。
+	opsName string
+	// vmRef 是 ViewModel 类型引用（不含 go/types）。
+	vmRef analyzer.ViewModelRef
 }
 
-// page 生成页面根节点的渲染函数体。
 // page 生成页面根节点的渲染体。
 //
 // `<Page>` 等价于无 Gap/Padding 的 `<Column>`（规范 §3.1），因此按垂直容器生成。
@@ -112,12 +135,23 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 		return "", fmt.Errorf("codegen: <Page> has no children; Parser should have rejected this")
 	}
 
-	// 顶层使用 rec（cacheOps）；嵌套容器的 ops 由闭包的 gtx 决定。
-	expr, err := g.containerExpr(n.Children, "layout.Vertical", "rec")
+	// 预扫描：先确定是否含绑定，因为 ops 与返回形态都取决于它。
+	g.usesVM = hasBinding(n)
+
+	ops := "rec"
+	if g.usesVM {
+		// 含绑定：直接布局到帧 Ops，且**不**赋给 cacheDims
+		// （没有静态缓存，也不得把动态结果固化）。
+		ops = "gtx"
+	}
+	expr, err := g.containerExpr(n.Children, "layout.Vertical", ops)
 	if err != nil {
 		return "", err
 	}
-	// 录制发生在 cacheOps 上（rec），不是帧 Ops。
+	if g.usesVM {
+		return expr, nil
+	}
+	// 静态：录制发生在 cacheOps 上（rec），不是帧 Ops。
 	return "v.cacheDims = " + expr, nil
 }
 
@@ -155,15 +189,27 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 
 	switch n.Tag {
 	case "Text":
+		if len(n.Children) > 0 {
+			return "", fmt.Errorf("codegen: <Text> must not have children")
+		}
+		g.imports.add("gioui.org/widget/material", "material")
+
+		// 优先按绑定处理。绑定信息**只**来自 Facts；查不到就报错，
+		// 绝不回退成字符串常量（那会把 "{Title}" 当成字面文本）。
+		if ra, ok := lookupAttr(n, "Value", g.facts); ok && ra.Path != nil {
+			expr, err := bindingExpr(ra, "vm")
+			if err != nil {
+				return "", err
+			}
+			g.usesVM = true
+			return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
+		}
+
 		value, ok := staticAttr(n, "Value")
 		if !ok {
 			return "", fmt.Errorf(
 				"codegen: <Text> needs a static Value; data binding is not supported in this slice")
 		}
-		if len(n.Children) > 0 {
-			return "", fmt.Errorf("codegen: <Text> must not have children")
-		}
-		g.imports.add("gioui.org/widget/material", "material")
 		return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value)), nil
 
 	case "Column":
@@ -196,13 +242,29 @@ func staticAttr(n *contracts.NodeIR, name string) (string, bool) {
 //
 // import 由 importSet 统一收集并按契约 §7 排序，只在真正被引用时出现。
 // assemble 拼装完整源文件（含静态子树缓存，契约 §16）。
-func (g *generator) assemble(body string) string {
-	// 签名与缓存字段都会用到的 import。
+func (g *generator) assemble(body string) (string, error) {
+	// 签名始终需要 layout。
 	g.imports.add("gioui.org/layout", "layout")
-	g.imports.add("gioui.org/io/system", "system")
-	g.imports.add("gioui.org/op", "op")
-	g.imports.add("math", "math")
-	g.imports.add("gioui.org/unit", "unit")
+	// 缓存相关的 import 只在静态页面需要。
+	//
+	// 含绑定页面不生成 renderKey / cache 字段，若仍 import 这些包
+	// 会产生「imported and not used」编译错误。
+	if !g.usesVM {
+		g.imports.add("gioui.org/io/system", "system")
+		g.imports.add("gioui.org/op", "op")
+		g.imports.add("math", "math")
+		g.imports.add("gioui.org/unit", "unit")
+	}
+
+	// vm 参数：仅当页面含绑定时需要。
+	vmParam := ""
+	if g.usesVM {
+		vmType, err := g.vmTypeExpr()
+		if err != nil {
+			return "", err
+		}
+		vmParam = ", vm *" + vmType
+	}
 
 	var b strings.Builder
 	b.WriteString(header)
@@ -211,14 +273,28 @@ func (g *generator) assemble(body string) string {
 	b.WriteString("\n")
 	b.WriteString("// " + g.view + " 是 " + baseName(g.opts.SourcePath) + " 的生成视图。\n")
 	b.WriteString("type " + g.view + " struct {\n")
-	for _, line := range cacheFieldLines(g.view) {
-		b.WriteString(line + "\n")
+	// 含绑定时**不**生成静态缓存字段：含绑定的子树不是静态子树，
+	// 整页固化会把动态文本永久冻结，值变化后画面不更新（契约 §16.7、红线 2）。
+	if !g.usesVM {
+		for _, line := range cacheFieldLines(g.view) {
+			b.WriteString(line + "\n")
+		}
 	}
 	b.WriteString("}\n\n")
 	b.WriteString("// New" + g.view + " 创建视图状态。\n")
 	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
 	b.WriteString("// Layout 渲染页面。\n")
 	b.WriteString("//\n")
+
+	if g.usesVM {
+		b.WriteString("// vm 是 ViewModel，绑定值从它读取。\n")
+		b.WriteString("// 含绑定，因此**不**走静态子树固化（契约 §16.7）。\n")
+		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme" + vmParam + ") layout.Dimensions {\n")
+		b.WriteString("\treturn " + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
+		b.WriteString("}\n")
+		return b.String(), nil
+	}
+
 	b.WriteString("// 首个 key 生效时录制，之后 key 未变只回放（契约 §16.4）。\n")
 	b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
 	b.WriteString("\tk := v.currentKey(gtx, th)\n")
@@ -238,7 +314,28 @@ func (g *generator) assemble(body string) string {
 	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
 	b.WriteString(renderKeyDecl(g.view))
-	return b.String()
+	return b.String(), nil
+}
+
+// vmTypeExpr 生成 ViewModel 参数的类型表达式，并按需登记 import。
+//
+// 同包（PkgDir 为空）→ Name，不需要 import。
+// 其他包 → <pkg>.Name，需要 ModulePath 拼出 import 路径。
+func (g *generator) vmTypeExpr() (string, error) {
+	if g.vmRef.Name == "" {
+		return "", fmt.Errorf("codegen: page has bindings but no ViewModel type is available")
+	}
+	if g.vmRef.PkgDir == "" {
+		return g.vmRef.Name, nil
+	}
+	if g.opts.ModulePath == "" {
+		return "", fmt.Errorf(
+			"codegen: ViewModel %s is in package %q but Options.ModulePath is empty",
+			g.vmRef.Name, g.vmRef.PkgDir)
+	}
+	pkg := filepath.Base(g.vmRef.PkgDir)
+	g.imports.add(g.opts.ModulePath+"/"+g.vmRef.PkgDir, pkg)
+	return pkg + "." + g.vmRef.Name, nil
 }
 
 // renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。

@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -62,6 +63,23 @@ func verified(t *testing.T, body string) *analyzer.VerifiedDoc {
 		t.Fatalf("取凭证失败: %v", err)
 	}
 	return v
+}
+
+// verifiedErr 与 verified 相同，但 Analyzer 失败时返回错误而非 t.Fatal。
+//
+// 用途：测试「非法输入必须被 Analyzer 拒绝」这类负向用例。
+func verifiedErr(t *testing.T, body string) (*analyzer.VerifiedDoc, error) {
+	t.Helper()
+	src := `<Goxml Version="1" ViewModel="` + vmPath + `">
+  <Page Route="/">` + body + `</Page>
+</Goxml>`
+
+	p := runFrontend(t, src)
+	r := analyzer.Analyze("case.gxml", p.doc, p.schemas, p.env)
+	if r.Status != analyzer.StatusOK {
+		return nil, fmt.Errorf("analyzer status=%s diags=%v", r.Status, codes(r))
+	}
+	return r.Verified()
 }
 
 // codes 汇总诊断码，便于失败信息。
@@ -312,15 +330,74 @@ func TestUnsupportedNodeFails(t *testing.T) {
 	}
 }
 
-func TestBindingNotSupportedInSlice(t *testing.T) {
-	// 绑定属于后续切片：必须明确失败，不能静默生成空字符串。
+// TestBindingRequiresModulePath 覆盖跨包 ViewModel 缺 ModulePath 的情形：
+// 必须明确报错，不能产出无法编译的代码。
+func TestBindingRequiresModulePath(t *testing.T) {
 	v := verified(t, `<Text Value="{Title}"/>`)
 	_, err := Generate(v, defaultOpts())
 	if err == nil {
-		t.Fatal("绑定在最小切片中应明确失败")
+		t.Fatal("跨包 ViewModel 且无 ModulePath 时应报错")
 	}
-	if !strings.Contains(err.Error(), "data binding") {
-		t.Errorf("错误信息应说明绑定不受支持: %v", err)
+	if !strings.Contains(err.Error(), "ModulePath") {
+		t.Errorf("错误信息应说明缺 ModulePath: %v", err)
+	}
+}
+
+// TestBindingGeneratesReadExpr 是步骤 1 的核心验收：
+// {Title} 必须生成从 vm 取值的表达式，而不是字符串常量。
+func TestBindingGeneratesReadExpr(t *testing.T) {
+	v := verified(t, `<Text Value="{Title}"/>`)
+	opts := defaultOpts()
+	opts.ModulePath = "github.com/goxml/goxml"
+	out, err := Generate(v, opts)
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	s := string(out)
+
+	// 1) 从 vm 取值
+	if !strings.Contains(s, "vm.Title") {
+		t.Errorf("应生成 vm.Title 取值:\n%s", s)
+	}
+	// 2) 不得把绑定当字面量
+	if strings.Contains(s, `"{Title}"`) {
+		t.Errorf("绑定不能被当作字符串常量:\n%s", s)
+	}
+	// 3) Layout 需要 vm 参数
+	if !strings.Contains(s, "vm *") {
+		t.Errorf("Layout 应带 vm 参数:\n%s", s)
+	}
+	// 4) 含绑定时**不**生成静态缓存字段（契约 §16.7）
+	for _, fld := range []string{"cacheOps", "cacheCall", "cacheDims", "cacheKey", "cached"} {
+		if strings.Contains(s, fld) {
+			t.Errorf("含绑定页面不应生成静态缓存字段 %s", fld)
+		}
+	}
+	// 5) 需要 fixture 包的 import
+	if !strings.Contains(s, "testdata/fixture") {
+		t.Errorf("应 import ViewModel 所在包:\n%s", s)
+	}
+}
+
+// TestStaticPageUnchanged 确认静态页面不受绑定改动影响。
+func TestStaticPageUnchanged(t *testing.T) {
+	v := verified(t, `<Text Value="Hello"/>`)
+	out, err := Generate(v, defaultOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	// 静态：仍有缓存字段、仍是 Layout(gtx, th) 两参数。
+	for _, fld := range []string{"cacheOps", "cacheCall", "cacheDims", "cacheKey"} {
+		if !strings.Contains(s, fld) {
+			t.Errorf("静态页面应保留缓存字段 %s", fld)
+		}
+	}
+	if strings.Contains(s, "vm *") {
+		t.Error("静态页面不应带 vm 参数")
+	}
+	if strings.Contains(s, "vm.Title") {
+		t.Error("静态页面不应引用 vm")
 	}
 }
 
@@ -502,5 +579,104 @@ func TestBaseName(t *testing.T) {
 		if got := baseName(in); got != want {
 			t.Errorf("baseName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// ============================================================================
+// 步骤 1：绑定生成覆盖（多段、指针、方法、静态混排）
+// ============================================================================
+
+func bindingOpts() Options {
+	o := defaultOpts()
+	o.ModulePath = "github.com/goxml/goxml"
+	return o
+}
+
+// TestBindingMultiSegment 多段路径：{User.Name}。
+func TestBindingMultiSegment(t *testing.T) {
+	v := verified(t, `<Text Value="{User.Name}"/>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if !strings.Contains(string(out), "vm.User.Name") {
+		t.Errorf("应生成 vm.User.Name:\n%s", out)
+	}
+}
+
+// TestBindingPointerDeref 指针字段自动解引用：{Owner.Name}。
+func TestBindingPointerDeref(t *testing.T) {
+	v := verified(t, `<Text Value="{Owner.Name}"/>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if !strings.Contains(string(out), "vm.Owner.Name") {
+		t.Errorf("应生成 vm.Owner.Name:\n%s", out)
+	}
+}
+
+// TestBindingZeroArgMethod 零参单返回值方法：{Display}。
+func TestBindingZeroArgMethod(t *testing.T) {
+	v := verified(t, `<Text Value="{Display}"/>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if !strings.Contains(string(out), "vm.Display") {
+		t.Errorf("应生成 vm.Display:\n%s", out)
+	}
+}
+
+// TestBindingMixedStaticAndBinding 静态与绑定混排：两者都要正确生成。
+func TestBindingMixedStaticAndBinding(t *testing.T) {
+	v := verified(t, `<Column><Text Value="Static"/><Text Value="{Title}"/></Column>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"Static"`) {
+		t.Errorf("静态值应生成为字符串常量:\n%s", s)
+	}
+	if !strings.Contains(s, "vm.Title") {
+		t.Errorf("绑定值应生成为 vm.Title:\n%s", s)
+	}
+}
+
+// TestBindingGenerationDeterministic 含绑定时生成仍需确定性。
+func TestBindingGenerationDeterministic(t *testing.T) {
+	v := verified(t, `<Text Value="{Title}"/>`)
+	a, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(string(a), string(b)) && string(a) != string(b) {
+		t.Error("含绑定时两次生成结果不一致")
+	}
+}
+
+// TestBindingStillRejectedByAnalyzer 非法绑定必须被 Analyzer 拦下，
+// 不能因为 Codegen 支持绑定就绕过校验。
+func TestBindingStillRejectedByAnalyzer(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"不存在的字段", `<Text Value="{NoSuchField}"/>`},
+		{"未导出字段", `<Text Value="{secret}"/>`},
+		{"有参方法", `<Text Value="{Format}"/>`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := verifiedErr(t, c.body)
+			if err == nil {
+				t.Errorf("%s 应被 Analyzer 拒绝", c.name)
+			}
+		})
 	}
 }
