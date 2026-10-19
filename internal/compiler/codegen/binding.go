@@ -43,6 +43,12 @@ func bindingExpr(ra analyzer.ResolvedAttr, vm string) (string, error) {
 	expr := base
 	for _, step := range path.Steps {
 		expr += "." + step.Name
+		// 方法段必须生成调用：`x.M()`。
+		//
+		// 若写成 `x.M` 会得到函数值，类型不匹配（实测：编译失败）。
+		if step.IsMethod {
+			expr += "()"
+		}
 	}
 
 	if path.Negated {
@@ -50,45 +56,6 @@ func bindingExpr(ra analyzer.ResolvedAttr, vm string) (string, error) {
 	}
 
 	return expr, nil
-}
-
-// valueRef 返回一个属性值的 Go 表达式。
-//
-// 静态 → 字符串字面量。
-// 绑定 → 取值表达式（来自 Facts）。
-// 查不到 Facts → 报错。
-func valueRef(n *contracts.NodeIR, name string, vm string, facts *analyzer.Facts) (string, bool, error) {
-	for _, a := range n.Attrs {
-		if a.Name != name {
-			continue
-		}
-
-		if !a.Value.IsBinding {
-			return quote(a.Value.Raw), false, nil
-		}
-
-		// 绑定：必须查到 Facts。
-		if facts == nil {
-			return "", false, fmt.Errorf("codegen: attr %s is a binding but no facts available", name)
-		}
-		nf, ok := facts.Lookup(n)
-		if !ok {
-			return "", false, fmt.Errorf("codegen: attr %s is a binding but no facts recorded for node <%s>", name, n.Tag)
-		}
-
-		for _, ra := range nf.Attrs() {
-			if ra.Name != name {
-				continue
-			}
-			expr, err := bindingExpr(ra, vm)
-			if err != nil {
-				return "", false, err
-			}
-			return expr, true, nil
-		}
-		return "", false, fmt.Errorf("codegen: attr %s is a binding but not found in attrs", name)
-	}
-	return "", false, nil
 }
 
 // propFacts 从 Facts 取一个节点的属性事实列表。
@@ -105,23 +72,6 @@ func propFacts(n *contracts.NodeIR, facts *analyzer.Facts) ([]analyzer.ResolvedA
 
 // ============================================================================
 // 绑定节点的生成
-
-// bindingTextExpr 生成绑定 <Text> 的渲染表达式。
-//
-// 与静态版本的区别：值来自 vm 字段，不是字符串字面量。
-func bindingTextExpr(n *contracts.NodeIR, vm string, facts *analyzer.Facts) (string, error) {
-	expr, isBinding, err := valueRef(n, "Value", vm, facts)
-	if err != nil {
-		return "", err
-	}
-	if !isBinding {
-		// 静态：直接渲染。
-		return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
-	}
-
-	// 绑定：值需要转换为显示字符串。
-	return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
-}
 
 // lookupAttr 在 Facts 中查找属性。
 func lookupAttr(n *contracts.NodeIR, name string, facts *analyzer.Facts) (analyzer.ResolvedAttr, bool) {

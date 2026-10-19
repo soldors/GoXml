@@ -342,12 +342,19 @@ type ResolvedPath struct {
 	Negated bool
 }
 
-// PathStep 是路径上的一步字段访问。
+// PathStep 是路径上的一步成员访问。
 type PathStep struct {
-	// Name 是字段名。
+	// Name 是成员名（字段或方法）。
 	Name string
-	// Type 是访问该字段后的类型。
+	// Type 是访问该成员后的类型。
+	//
+	// 对方法而言是**返回值**类型，不是函数类型。
 	Type TypeInfo
+	// IsMethod 表示该段是方法而非字段。
+	//
+	// Codegen 必须据此生成调用 `x.M()`，而不是字段访问 `x.M`
+	// ——后者是函数值，无法作为文本值使用（实测：会编译失败）。
+	IsMethod bool
 }
 
 // ============================================================================

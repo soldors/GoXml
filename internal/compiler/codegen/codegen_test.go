@@ -623,8 +623,25 @@ func TestBindingZeroArgMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("生成失败: %v", err)
 	}
-	if !strings.Contains(string(out), "vm.Display") {
-		t.Errorf("应生成 vm.Display:\n%s", out)
+	// 方法段必须生成**调用**：vm.Display()，不是函数值 vm.Display。
+	if !strings.Contains(string(out), "vm.Display()") {
+		t.Errorf("零参方法应生成 vm.Display()（调用），而非函数值:\n%s", out)
+	}
+}
+
+// TestBindingMethodNotCallableAsName 确认方法段不会被误生成为字段访问。
+//
+// 回归保护：{Display} 若生成 vm.Display 会成为 func() string，
+// material.Body1 无法接受，编译失败（已在运行时测试中实测）。
+func TestBindingMethodNotCallableAsName(t *testing.T) {
+	v := verified(t, `<Text Value="{Display}"/>`)
+	out, err := Generate(v, bindingOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, "Body1(th, vm.Display)") {
+		t.Errorf("不得生成字段形态的函数值:\n%s", s)
 	}
 }
 

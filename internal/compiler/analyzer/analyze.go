@@ -317,7 +317,7 @@ func (a *analyzer) resolveBinding(
 		}
 		cur = st.typ
 		path.RootKind = RootViewModel
-		path.Steps = append(path.Steps, PathStep{Name: segs[0], Type: typeInfo(cur)})
+		path.Steps = append(path.Steps, PathStep{Name: segs[0], Type: typeInfo(cur), IsMethod: st.isMethod})
 	}
 
 	// ---- 中间段：逐段基于**上一段解析出的实际类型**查找 ----
@@ -338,7 +338,7 @@ func (a *analyzer) resolveBinding(
 			return nil, nil, false
 		}
 		cur = st.typ
-		path.Steps = append(path.Steps, PathStep{Name: seg, Type: typeInfo(cur)})
+		path.Steps = append(path.Steps, PathStep{Name: seg, Type: typeInfo(cur), IsMethod: st.isMethod})
 	}
 
 	path.Type = typeInfo(cur)
@@ -352,6 +352,12 @@ type stepResult struct {
 	unexported bool
 	// bad 非空表示该形式不受支持（BIND-005）。
 	bad string
+	// isMethod 表示该段是**方法**而非字段。
+	//
+	// Codegen 必须据此生成调用（`x.M()`），而不是字段访问（`x.M`）。
+	// 实测依据：`{Display}` 若生成 `vm.Display` 会成为函数值，
+	// material.Body1 无法接受，编译失败。
+	isMethod bool
 }
 
 // stepType 在 recv 上查找成员 name 的类型。
@@ -412,7 +418,7 @@ func stepType(recv types.Type, name string) (stepResult, bool) {
 		if !o.Exported() {
 			return stepResult{unexported: true}, true
 		}
-		return stepResult{typ: sig.Results().At(0).Type()}, true
+		return stepResult{typ: sig.Results().At(0).Type(), isMethod: true}, true
 	default:
 		return stepResult{bad: fmt.Sprintf("%q is not a field", name)}, true
 	}

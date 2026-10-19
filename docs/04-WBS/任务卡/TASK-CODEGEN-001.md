@@ -227,8 +227,9 @@ ok  （全仓 496 个测试）
 实现并完成 A5 验收：当前支持的静态 Page/Text/Column/Row 在稳定命中时回放外层
 CallOp，三种测试场景均为 0 allocs/op。
 
-Codegen 已开始支持 `<Text Value>` 字段绑定读取，但默认 Pipeline 尚未传递 `ModulePath`，
-方法路径未验收，绑定缓存、状态通知、事件、If、For、交互控件和 Grid 仍未完成。
+Codegen 已开始支持 `<Text Value>` 字段及零参方法绑定读取；多段路径、指针访问和零参方法的
+定向运行时路径测试通过，但默认 Pipeline 尚未传递 `ModulePath`。绑定缓存、状态通知、事件、
+If、For、交互控件和 Grid 仍未完成。
 含绑定页面目前整页不走静态缓存，因此动态树、局部静态/动态混合边界和完整页面的分配行为
 仍未验证；这些缺口不能由静态缓存结果代替。
 

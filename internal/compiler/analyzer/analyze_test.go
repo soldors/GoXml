@@ -477,6 +477,30 @@ func TestBindMethodAsSegment(t *testing.T) {
 	if p.Type.Kind != ValueString {
 		t.Errorf("方法结果类型 = %v, 期望 string", p.Type.Kind)
 	}
+	// 方法段必须被标记，否则 Codegen 会生成字段访问（函数值）导致编译失败。
+	if len(p.Steps) != 1 {
+		t.Fatalf("Steps = %d, 期望 1", len(p.Steps))
+	}
+	if !p.Steps[0].IsMethod {
+		t.Error("零参方法段应标记 IsMethod=true")
+	}
+}
+
+// TestBindFieldNotMarkedAsMethod 对照：字段段不得被标记为方法。
+//
+// 若误标，Codegen 会生成 vm.Title()，编译失败。
+func TestBindFieldNotMarkedAsMethod(t *testing.T) {
+	r := analyzeSrc(t, vmSrc(`<Text Value="{User.Name}"/>`))
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %v, 诊断: %v", r.Status, r.Diags)
+	}
+	nf := onlyFacts(t, r)
+	p := nf.Attrs()[0].Path
+	for i, st := range p.Steps {
+		if st.IsMethod {
+			t.Errorf("Steps[%d] (%s) 是字段，不应标记为方法", i, st.Name)
+		}
+	}
 }
 
 func TestBindMethodWithParamsRejected(t *testing.T) {
