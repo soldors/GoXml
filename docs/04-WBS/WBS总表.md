@@ -8,6 +8,9 @@
 | TASK-EXPANDER-001 | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | go test -v ./internal/compiler/expander/... |
 | TASK-ANALYZER-001 | analyzer | 实现语义校验（绑定路径、事件签名、For 作用域） | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
 | TASK-CODEGEN-001 | codegen | 实现 Gio 布局（含 Align/Justify/Gap/尺寸/Grid）与控件代码生成器 | TASK-ANALYZER-001 | go test -v ./internal/compiler/codegen/... |
+| TASK-BINDING-IMPLEMENT-001 | codegen | 接通 Analyzer Facts 到绑定代码生成，并继续实现绑定缓存 | TASK-CODEGEN-001、TASK-BINDING-CONTRACT-001 | 见任务卡；直接 Codegen 步骤 1/2 已验证，Pipeline 集成与步骤 3 未完成 |
+| TASK-BINDING-IMPLEMENT-002 | codegen | 绑定运行时读取与显式重新布局验收 | TASK-BINDING-IMPLEMENT-001 | go test -count=1 -run '^TestBindingRuntime' ./internal/compiler/codegen/ |
+| TASK-BINDING-IMPLEMENT-003 | codegen | 绑定缓存、显示值复用与 shaping 观测验证 | TASK-BINDING-IMPLEMENT-002 | 见任务卡；当前仅完成场景 ③ 规则冻结，seam、缓存实现和五场景验收未完成 |
 | TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口）| TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |

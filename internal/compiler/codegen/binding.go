@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/goxml/goxml/contracts"
 	"github.com/goxml/goxml/internal/compiler/analyzer"
@@ -106,4 +107,75 @@ func hasBinding(n *contracts.NodeIR) bool {
 		}
 	}
 	return false
+}
+
+// bindCacheDecl 生成绑定文本的显示缓存类型与回放方法（契约 §05.3.1）。
+//
+// 三层中的前两层：
+//   - 值读取：每次都读（否则无法感知变化）；
+//   - 显示转换：值 → 字符串。键 = renderKey + 显示串；
+//     显示串不变时**回放**已录制的绘制（不再调用文本布局入口）。
+//
+// shaping 层：由 Gio 内部缓存承担，项目层不维护第二份
+// （TASK-BINDING-IMPLEMENT-003 §3：先测量，Gio 内部已有 layoutCache）。
+func bindCacheDecl(view string, slots int) string {
+	if slots == 0 {
+		return ""
+	}
+	return `
+// textCache 是单个绑定 <Text> 的显示缓存槽位（契约 §05.2/§05.3.1）。
+//
+// ⚠️ 生成产物，不要手改。语义见 绑定系统契约 §05。
+type textCache struct {
+	// key 是录制时的上下文指纹（约束/DPI/主题/Locale）。
+	key renderKey
+	// text 是录制时的显示字符串。
+	text string
+	// ops 是**本槽位私有**的持久 Ops。
+	//
+	// 不能多槽共享：Reset 会截断数据，使所有指向它的 CallOp 失效
+	// （ADR-0009 §A1 实测：panic: slice bounds out of range）。
+	ops op.Ops
+	// call 指向本槽 ops 中的录制区间。
+	call op.CallOp
+	// dims 是录制时的布局结果（CallOp.Add 不返回尺寸）。
+	dims layout.Dimensions
+	// valid 表示 call 是否已有效录制。
+	valid bool
+}
+
+// bindText 渲染一个绑定 <Text>：
+//
+//   - 值读取：每次调用取值表达式（必须，否则无法感知变化）；
+//   - 显示串不变且上下文未变 → 回放已录制的绘制；
+//   - 否则 → 在本槽位私有的 Ops 上重录本节点。
+//
+// 每个绑定节点有独立槽位，互不干扰。
+//
+// ⚠️ 本方法由测试显式驱动时才能观察到更新；
+// 生产环境的自动刷新（ViewModel 变化 → UI 重绘）归 TASK-STATE-001。
+func (v *` + view + `) bindText(gtx layout.Context, th *material.Theme, slot int, s string) layout.Dimensions {
+	// 惰性初始化槽位数组。
+	if len(v.slots) != ` + strconv.Itoa(slots) + ` {
+		v.slots = make([]textCache, ` + strconv.Itoa(slots) + `)
+	}
+	k := v.currentKey(gtx, th)
+	c := &v.slots[slot]
+	if c.valid && c.text == s && c.key.equal(k) {
+		c.call.Add(gtx.Ops)
+		return c.dims
+	}
+	c.ops.Reset()
+	m := op.Record(&c.ops)
+	rec := gtx
+	rec.Ops = &c.ops
+	c.dims = material.Body1(th, s).Layout(rec)
+	c.call = m.Stop()
+	c.key = k
+	c.text = s
+	c.valid = true
+	c.call.Add(gtx.Ops)
+	return c.dims
+}
+`
 }

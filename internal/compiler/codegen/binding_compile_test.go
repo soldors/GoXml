@@ -58,9 +58,10 @@ func TestBindingGeneratedCompiles(t *testing.T) {
 }
 
 // TestBindingMustNotFreezeDynamic 是红线 2 的机器可验证形式：
-// 含绑定的页面绝不能生成 op.Record / op.CallOp 固化逻辑。
+// 含绑定的页面不能生成整页 cacheOps/cacheCall/cacheDims 固化逻辑。
 //
-// 一旦生成，绑定值变化后画面将永久陈旧（正确性优先于性能，红线 4）。
+// 绑定节点可以拥有独立的显示缓存槽位；槽位缓存只复用当前绑定文本的
+// 录制结果，不能把整个动态页面冻结（正确性优先于性能，红线 4）。
 func TestBindingMustNotFreezeDynamic(t *testing.T) {
 	v := verified(t, `<Text Value="{Title}"/>`)
 	out, err := Generate(v, bindingOpts())
@@ -68,9 +69,14 @@ func TestBindingMustNotFreezeDynamic(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, bad := range []string{"op.Record", "op.CallOp", "cacheKey", "renderKey"} {
+	for _, bad := range []string{"cacheOps", "cacheCall", "cacheDims"} {
 		if contains(s, bad) {
-			t.Errorf("含绑定页面不应生成 %q（会把动态值固化）:\n%s", bad, s)
+			t.Errorf("含绑定页面不应生成整页缓存字段 %q:\n%s", bad, s)
+		}
+	}
+	for _, want := range []string{"textCache", "bindText", "renderKey", "op.Record"} {
+		if !contains(s, want) {
+			t.Errorf("含绑定页面应生成绑定槽位缓存所需的 %q:\n%s", want, s)
 		}
 	}
 }

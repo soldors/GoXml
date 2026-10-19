@@ -5,8 +5,9 @@
 //   - 只返回 []byte，**不写文件**——写入与原子替换由编排层负责；
 //   - 只消费已验证的事实，不重新推导布局语义、不重新判断兼容性。
 //
-// 当前实现范围：静态 Page/Text 缓存与 Column/Row 多子节点布局。
-// 绑定、事件、If/For、交互控件与 Grid 尚未实现，见输出契约 §4.6。
+// 当前实现范围：静态 Page/Text 缓存、Column/Row 多子节点布局、
+// <Text> 字段/零参方法绑定读取及绑定节点显示缓存。
+// 事件、If/For、交互控件与 Grid 尚未实现，见输出契约 §4.6。
 package codegen
 
 import (
@@ -123,6 +124,8 @@ type generator struct {
 	opsName string
 	// vmRef 是 ViewModel 类型引用（不含 go/types）。
 	vmRef analyzer.ViewModelRef
+	// bindSlots 是页面中绑定 <Text> 的数量（用于生成显示缓存槽位）。
+	bindSlots int
 }
 
 // page 生成页面根节点的渲染体。
@@ -202,7 +205,11 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 				return "", err
 			}
 			g.usesVM = true
-			return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
+			// 分配显示缓存槽位；闭包内通过 v.n<i> 读写缓存。
+			slot := g.bindSlots
+			g.bindSlots++
+			return fmt.Sprintf(
+				"v.bindText(gtx, th, %d, %s)", slot, expr), nil
 		}
 
 		value, ok := staticAttr(n, "Value")
@@ -245,16 +252,10 @@ func staticAttr(n *contracts.NodeIR, name string) (string, bool) {
 func (g *generator) assemble(body string) (string, error) {
 	// 签名始终需要 layout。
 	g.imports.add("gioui.org/layout", "layout")
-	// 缓存相关的 import 只在静态页面需要。
-	//
-	// 含绑定页面不生成 renderKey / cache 字段，若仍 import 这些包
-	// 会产生「imported and not used」编译错误。
-	if !g.usesVM {
-		g.imports.add("gioui.org/io/system", "system")
-		g.imports.add("gioui.org/op", "op")
-		g.imports.add("math", "math")
-		g.imports.add("gioui.org/unit", "unit")
-	}
+	g.imports.add("gioui.org/io/system", "system")
+	g.imports.add("gioui.org/op", "op")
+	g.imports.add("math", "math")
+	g.imports.add("gioui.org/unit", "unit")
 
 	// vm 参数：仅当页面含绑定时需要。
 	vmParam := ""
@@ -273,9 +274,12 @@ func (g *generator) assemble(body string) (string, error) {
 	b.WriteString("\n")
 	b.WriteString("// " + g.view + " 是 " + baseName(g.opts.SourcePath) + " 的生成视图。\n")
 	b.WriteString("type " + g.view + " struct {\n")
-	// 含绑定时**不**生成静态缓存字段：含绑定的子树不是静态子树，
-	// 整页固化会把动态文本永久冻结，值变化后画面不更新（契约 §16.7、红线 2）。
-	if !g.usesVM {
+	if g.usesVM {
+		// 含绑定：**不**生成整页静态缓存（契约 §16.7、红线 2），
+		// 但按绑定节点生成**显示缓存槽位**（契约 §05.2/05.3.1）：
+		// 键 = renderKey + 显示字符串；显示串不变时回放，变化时重录。
+		b.WriteString("\tslots []textCache\n")
+	} else {
 		for _, line := range cacheFieldLines(g.view) {
 			b.WriteString(line + "\n")
 		}
@@ -289,9 +293,15 @@ func (g *generator) assemble(body string) (string, error) {
 	if g.usesVM {
 		b.WriteString("// vm 是 ViewModel，绑定值从它读取。\n")
 		b.WriteString("// 含绑定，因此**不**走静态子树固化（契约 §16.7）。\n")
+		b.WriteString("//\n")
+		b.WriteString("// 绑定节点按槽位缓存显示结果：显示串与上下文未变时回放，\n")
+		b.WriteString("// 变化时重录（契约 §05.2/§05.3.1）。\n")
 		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme" + vmParam + ") layout.Dimensions {\n")
 		b.WriteString("\treturn " + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
 		b.WriteString("}\n")
+		// 绑定页面同样需要 renderKey 与绑定缓存声明。
+		b.WriteString(renderKeyDecl(g.view))
+		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
 		return b.String(), nil
 	}
 
@@ -314,6 +324,9 @@ func (g *generator) assemble(body string) (string, error) {
 	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
 	b.WriteString(renderKeyDecl(g.view))
+	if g.usesVM {
+		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
+	}
 	return b.String(), nil
 }
 
