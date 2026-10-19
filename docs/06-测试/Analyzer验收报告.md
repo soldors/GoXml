@@ -103,7 +103,7 @@ analyzer                    141 测试 · 92.1% 覆盖
 |---|---|---|
 | ~~**编排层门禁**~~ | ✅ **已验证**（2026-10-19，`d5c083b`） | 原状态为「❌ 未验证」（基准 `9381542`）：Codegen 与编排层都不存在。`d5c083b` 实现 `internal/compiler/pipeline` 后，由 `TestGatePartialDoesNotCallCodegen` / `TestGateBlockedDoesNotCallCodegen` 断言 Codegen 调用计数为 0，`TestRunNeverWritesFiles` 断言无文件产生。证据见 `TASK-ORCH-001` §6.1 |
 | **`<Def>` 调用点的事件签名** | ❌ 未校验 | v1 不传播 Def 事件（规范 §7.2.3），展开后事件消失，物理上无法校验。由 `TestDefEventNotSignatureChecked` 锁定 |
-| **端到端生成** | ❌ 不存在 | 无 `codegen` 包，无 CLI |
+| ~~**端到端生成**~~ | ✅ **已打通**（2026-10-19，`3cd258b` + `eb8a7b2`） | 原状态为「❌ 不存在 — 无 codegen 包」（基准 `9381542`）。现 `internal/compiler/codegen` 与 `pkg/runtime/app` 已落地，`examples/demo` 可打开真实窗口。**能力边界**：仅 `<Page>` + 单个静态 `<Text>`，无绑定/事件/布局/`<For>`。**验证边界**：窗口显示与文字渲染未经自动验证 |
 | **`color`/`insets` 载荷** | ⚠️ 仅单元测试 | 没有内置事件使用这两类载荷，无法通过 `.gxml` 走到该分支 |
 | **macOS / Linux** | ❌ 未验证 | 仅在 Windows amd64 上运行过 |
 

@@ -64,14 +64,17 @@
 
 ## 3. 目录边界与职责拓扑 (Architecture Topology)
 
-AI 在修改文件时，必须严格遵守以下目录的单向依赖规则，严禁逆向引用：
+AI 在修改文件时，必须严格遵守以下目录的单向依赖规则，严禁逆向引用。
+
+> **图例**：`[已有]` = 目录已存在且有代码；`[规划]` = 目标拓扑，尚未创建。
+> 截至 2026-10-19，运行时只有 `pkg/runtime/app` 已实现，其余规划目录需在对应任务中创建。
 
 
 
 ```
 goxml/
 ├── contracts/             # [核心契约] 编译器 IR、Theme、Lifecycle 接口（全库唯一中立公共依赖）
-├── internal/compiler/     # [AOT 编译器] 仅供 CLI 工具链调用，最终用户二进制不包含此目录
+├── internal/compiler/     # [已有] [AOT 编译器] 仅供 CLI 工具链调用，最终用户二进制不包含此目录
 │   ├── parser/            # 带行列号的词法/语法分析器，EdgeInsets/Color 强类型转换
 │   ├── expander/          # 组件 Schema 分类、属性/事件区分、<Def>/<Slot> 宏内联展开
 │   ├── analyzer/          # go/types 语义校验：绑定路径、类型兼容、事件签名、For 作用域
@@ -80,14 +83,15 @@ goxml/
 │   ├── grid/              # Grid 列宽计算的规范参考实现（oracle）
 │   ├── sizelayout/        # 尺寸决策的可执行形式（主轴/交叉轴、无界判断）
 │   └── diagdoc/           # 诊断码目录一致性门禁（AST 发射校验）
-├── pkg/runtime/           # [运行时底座] 生成代码所依赖的轻量级运行时库
-│   ├── router/            # 单窗口虚拟路由，MacroOp 转场快照动画器，OSWindow 逃生舱
-│   ├── theme/             # 强类型 Theme 结构体，指针切换与暗色模式
-│   ├── lifecycle/         # Context 驱动的 OnMount/OnUnmount 生命周期管理
-│   └── hydration/         # Live Reload 状态序列化暂存与恢复 (.goxml_state.json)
-├── pkg/platform/          # [Zero-CGO OS 桥接] 纯 Go 实现的托盘、菜单、异步弹窗、剪贴板
-├── pkg/widgets/           # [标准组件库] 自绘 ContextMenu、DataGrid (虚拟滚动)、Modal 等
-├── cmd/goxml/             # [CLI 工具链] generate、watch (双进程防抖热重启)、preview (静态预览)
+├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（当前仅 app/）
+│   ├── app/               # [已有] 窗口创建与 Gio 主循环入口（最小实现）
+│   ├── router/            # [规划] 单窗口虚拟路由，MacroOp 转场快照动画器，OSWindow 逃生舱
+│   ├── theme/             # [规划] 强类型 Theme 结构体，指针切换与暗色模式
+│   ├── lifecycle/         # [规划] Context 驱动的 OnMount/OnUnmount 生命周期管理
+│   └── hydration/         # [规划] Live Reload 状态序列化暂存与恢复 (.goxml_state.json)
+├── pkg/platform/          # [规划] [Zero-CGO OS 桥接] 纯 Go 实现的托盘、菜单、异步弹窗、剪贴板
+├── pkg/widgets/           # [规划] [标准组件库] 自绘 ContextMenu、DataGrid (虚拟滚动)、Modal 等
+├── cmd/goxml/             # [规划] [CLI 工具链] generate、watch (双进程防抖热重启)、preview (静态预览)
 └── docs/                  # [工程文档库] ADR、WBS 任务卡、交接包、踩坑记录
 ```
 
@@ -133,6 +137,18 @@ goxml/
    - **可以写**：任务虽已在单次会话内闭环，但存在值得沉淀的上下文（关键决策、踩过的坑、易被误解的边界）时，允许补写交接包，并在文件内标注「事后补齐」。
    - **不必写**：闭环且无额外上下文的简单任务，以 Git 提交、`CHANGELOG.md` 与验收报告为准即可。
    - 判断标准是「后来者是否需要这份文件才能接续」，而不是「规则是否要求」。
+4. **文档同步**：提交前检查本次改动是否让既有文档的描述失真。
+
+   | 检查 | 何时需要动作 |
+   |---|---|
+   | `CHANGELOG.md` | 新增/移除对外能力、依赖、契约或诊断码 |
+   | `dev-log/` | 有决策、缺陷、踩坑或非常规操作需要留痕 |
+   | 其它文档 | 本次改动**改变了某文档描述的事实**时，同一提交内更新它 |
+
+   **允许不记录**，但必须能说出理由（例如「纯格式修改」「同一事实的措辞微调」）。
+   不要为了满足日志形式而无意义地改文档——那会让日志失去检索价值。
+
+   `dev-log` 的提交覆盖由 `scripts/check-doc-sync` 机械校验（见该脚本头部说明其边界）。
 
 
 ## 5. 关键验证命令速查 (Tooling Cheatsheet)
@@ -243,7 +259,9 @@ AI 必须使用以下标准命令验证自身改动，严禁擅自修改验证�
 14. **架构决议留痕**：`docs/03-架构/adr/` (ADR-0001 ~ ADR-0008)
 15. **当前开发进度总表**：`docs/04-WBS/WBS总表.md`
 16. **当前断点（即时待办）**：`docs/04-WBS/任务卡/TASK-CODEGEN-001.md`（进行中：仅 `<Page>` + 静态 `<Text>`；布局/绑定/事件/`<For>`/Grid 未做）
-17. **最新断点交接记录**：`docs/05-开发/交接包/TASK-ORCH-001-交接.md`（同目录另有 Parser/Expander/Analyzer/Codegen 的交接包；`TASK-DEMO-001` 的交接包尚未建立，属 SOP 步骤 7 未闭环）
+17. **断点交接记录**：`docs/05-开发/交接包/`（现有 Parser/Expander/Analyzer/Codegen/Orch 五份，均标注「事后补齐」）。
+    按 §4 第 3 条，交接包**按需编写**：未闭环任务必须写；已闭环任务可写可不写。
+    `TASK-DEMO-001`、`TASK-SEC-001` 未建交接包，**不构成流程缺口**。
 
 > ⚠️ 上表第 16、17 项**会过期**。接手时若发现与 `docs/04-WBS/WBS总表.md` 或任务卡不一致，以任务卡为准，并按 SOP 步骤 6 修正本文档指针。
 

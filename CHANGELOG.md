@@ -71,7 +71,17 @@ All notable changes to this project will be documented in this file.
 - 新增文档：`docs/03-架构/编译编排契约.md`、`docs/06-测试/Analyzer验收报告.md`、`TASK-ORCH-001`、仓库根 `README.md`。
 - 新增开发日志 `2026-10-19.md`；补记 `2026-10-18.md` §3（Analyzer 第 2–4 步与整体验收）。
 - 新增门禁：`diagdoc` 的 AST 发射校验（每个 `Code*` 常量必须有发射点、必须登记、登记的符号必须存在）；`pipeline` 的编排层门禁。
-- **`pkg/runtime/app`**：把生成视图接入 Gio 主循环的最小运行入口。`View` 接口与生成代码的
+- **安全审查**：`docs/03-架构/安全边界与威胁模型.md`。沿真实数据流做实证探针，
+  发现并修复 `pipeline.Commit` 的**路径穿越**缺陷（`OutputName` 可含 `../` 写到目标目录之外）；
+  量化两处未修的资源风险（Parser 无嵌套深度限制、`<Def>` 组合指数膨胀）。
+  结论「有条件通过」，含 Codegen 扩展准入清单 6 条。
+- **`internal/docgate`**：文档同步门禁。检查 dev-log 是否覆盖约定的提交范围，
+  排除 HEAD（自引用）并机械豁免纯日志维护提交；git 不可用时直接失败而非静默通过。
+- **`docs/03-架构/语法速查表.md`**：手册性质的检索文档（文件骨架、布局标签、属性、
+  绑定与类型兼容矩阵、控制流、事件拼接、`<Def>`/`<Slot>`、14 条常见错误对照）。
+- **`docs/07-Bug/BUG-001`**：首个真实缺陷记录（Commit 路径穿越），含根因分析与回归测试。
+- **`docs/11-复盘/复盘报告.md`**：首次填写，记录契约治理、门禁自证、状态漂移、
+  并发写入与安全审查五条经验。- **`pkg/runtime/app`**：把生成视图接入 Gio 主循环的最小运行入口。`View` 接口与生成代码的
   `Layout(gtx, th)` 签名一致；`Run`/`RunWith` 生产用，`RunWindow` 供测试可控退出。
 - `examples/demo` 改为走完整管线并打开真实窗口（此前只演示 Parser + Expander）。
 - 新增 `docs/03-架构/运行时入口契约.md`、`TASK-DEMO-001`。
