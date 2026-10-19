@@ -162,8 +162,9 @@ func TestGenerateLayoutSignature(t *testing.T) {
 
 func TestGenerateTextRendering(t *testing.T) {
 	out := mustGen(t, `<Text Value="Hello"/>`, defaultOpts())
-	// 渲染结果赋值给 cacheDims，且发生在 rec（cacheOps）上，不是帧 gtx。
-	if !strings.Contains(string(out), `v.cacheDims = material.Body1(th, "Hello").Layout(rec)`) {
+	// 单节点现在也走容器形态：Page ≡ 垂直 Flex（契约 §4.7.1）。
+	// 渲染结果赋值给 cacheDims，容器布局发生在 rec（cacheOps）上。
+	if !strings.Contains(string(out), `v.cacheDims = layout.Flex{Axis: layout.Vertical}.Layout(rec`) {
 		t.Errorf("未生成预期的文本渲染:\n%s", string(out))
 	}
 }
@@ -434,11 +435,12 @@ func TestPageWithMultipleChildrenFails(t *testing.T) {
 	}
 }
 
-func TestNodeWithChildrenFails(t *testing.T) {
-	v := verified(t, `<Column><Text Value="a"/></Column>`)
+func TestUnsupportedTagFails(t *testing.T) {
+	// Column/Row 已支持；未支持的标签仍需明确失败。
+	v := verified(t, `<Column><Button Text="x" Click="Delete(1)"/></Column>`)
 	_, err := Generate(v, defaultOpts())
 	if err == nil {
-		t.Fatal("Column 在本切片不支持")
+		t.Fatal("Button 在本切片不支持，应失败")
 	}
 	if !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("错误信息应说明不支持: %v", err)

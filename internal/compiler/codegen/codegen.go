@@ -102,34 +102,52 @@ type generator struct {
 }
 
 // page 生成页面根节点的渲染函数体。
+// page 生成页面根节点的渲染体。
+//
+// `<Page>` 等价于无 Gap/Padding 的 `<Column>`（规范 §3.1），因此按垂直容器生成。
 func (g *generator) page(n *contracts.NodeIR) (string, error) {
-	var b strings.Builder
-
-	// 最小切片的页面只支持单个静态子节点。
-	children := n.Children
-	switch len(children) {
-	case 0:
-		return "", fmt.Errorf("codegen: <Page> has no children; empty pages are not generated yet")
-	case 1:
-	default:
-		return "", fmt.Errorf("codegen: <Page> currently supports exactly one child, got %d", len(children))
+	// Parser 保证 <Page> 至少有一个渲染子节点（GXML-ROOT-001），
+	// 因此这里不必再判空；若真为空是上游不变式被破坏。
+	if len(n.Children) == 0 {
+		return "", fmt.Errorf("codegen: <Page> has no children; Parser should have rejected this")
 	}
 
-	inner, err := g.node(children[0])
+	// 顶层使用 rec（cacheOps）；嵌套容器的 ops 由闭包的 gtx 决定。
+	expr, err := g.containerExpr(n.Children, "layout.Vertical", "rec")
 	if err != nil {
 		return "", err
 	}
-	b.WriteString(inner)
+	// 录制发生在 cacheOps 上（rec），不是帧 Ops。
+	return "v.cacheDims = " + expr, nil
+}
+
+// containerExpr 生成一个 Flex 容器的表达式（契约 §4.7.2）。
+//
+// 子节点顺序严格等于声明顺序；每个直接子节点一个 layout.Rigid。
+func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
+	g.imports.add("gioui.org/layout", "layout")
+
+	var b strings.Builder
+	b.WriteString("layout.Flex{Axis: " + axis + "}.Layout(" + ops)
+	for _, c := range children {
+		inner, err := g.nodeExpr(c)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(",\n\t\tlayout.Rigid(func(gtx layout.Context) layout.Dimensions {\n\t\t\treturn ")
+		b.WriteString(inner)
+		b.WriteString("\n\t\t})")
+	}
+	b.WriteString(")")
 	return b.String(), nil
 }
 
-// node 生成单个节点的渲染表达式。
-func (g *generator) node(n *contracts.NodeIR) (string, error) {
+// nodeExpr 生成单个节点的渲染**表达式**（返回 layout.Dimensions）。
+//
+// 与语句形态的区别：闭包内必须是表达式，不能是赋值语句。
+func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 	if n == nil {
 		return "", fmt.Errorf("codegen: nil node")
-	}
-	if len(n.Children) > 0 {
-		return "", fmt.Errorf("codegen: <%s> children are not supported in this slice", n.Tag)
 	}
 	if len(n.Events) > 0 {
 		return "", fmt.Errorf("codegen: <%s> events are not supported in this slice", n.Tag)
@@ -142,9 +160,18 @@ func (g *generator) node(n *contracts.NodeIR) (string, error) {
 			return "", fmt.Errorf(
 				"codegen: <Text> needs a static Value; data binding is not supported in this slice")
 		}
+		if len(n.Children) > 0 {
+			return "", fmt.Errorf("codegen: <Text> must not have children")
+		}
 		g.imports.add("gioui.org/widget/material", "material")
-		// 赋值给 cacheDims：录制发生在 cacheOps 上（rec），而不是帧 Ops。
-		return fmt.Sprintf("v.cacheDims = material.Body1(th, %s).Layout(rec)", quote(value)), nil
+		return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value)), nil
+
+	case "Column":
+		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
+		return g.containerExpr(n.Children, "layout.Vertical", "gtx")
+
+	case "Row":
+		return g.containerExpr(n.Children, "layout.Horizontal", "gtx")
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)

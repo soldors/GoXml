@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**A1–A4 完成**（语义验证、决策、契约、单节点实现），A5–A6 待做 | 优先级：P0 | 预计：4h
+- 状态：**A1–A4 + A6a + B1 完成**（含 `<Column>`/`<Row>` 多子节点），A5–A6b 待做 | 优先级：P0 | 预计：4h
 - 依赖：TASK-CODEGEN-001（最小切片）
 - 契约：`代码生成输出契约.md` §15.1（要求）、§4.7（容器结构）
 - 决策依据：`ADR-0006` §2.1（静态子树判定标准）
@@ -113,6 +113,83 @@ cacheOps.Reset() 后重录相同内容 → CallOp 完全相同（start:9 end:192
 改用 **`cacheKey` 是否被改写** 作为信号：回放分支根本不写 `cacheKey`，只有录制分支写。
 
 `TestCacheCallIsNotARecordSignal` 专门锁定这个事实，防止后来者再犯。
+
+## 3.3 A6a 单节点性能基线（2026-10-19）
+
+在扩展 `<Column>` 之前先固定单节点基线，供后续判断嵌套缓存的额外成本。
+
+**测量环境**：Windows amd64 / Go 1.26.1 / Gio v0.10.3 / `CGO_ENABLED=0` /
+`-benchtime 200ms -benchmem` / 20 逻辑核（P）。
+
+| 基准 | ns/op | B/op | allocs/op | 说明 |
+|---|---:|---:|---:|---|
+| `BenchmarkNoCache` | 643.6 | 3 | 0 | 对照组：每帧直接布局 |
+| `BenchmarkFirstRecord` | 1720 | 1185 | 14 | 冷路径：新建 View + 首次录制 |
+| `BenchmarkCacheHit` | **29.35** | **0** | **0** | 稳定命中：只 `CallOp.Add` |
+
+**缓存命中比不缓存快约 21.9 倍**（29.35 vs 643.6 ns/op），且稳定帧零分配。
+
+### 解读
+
+- 「不缓存」的 643.6 ns/op 里，主要成本是文本 shaping 与布局计算——
+  这些在命中路径被完全跳过。
+- `FirstRecord` 的 1185 B/14 allocs 是**一次性**成本，摊销到 N 帧后趋近于零。
+- 命中路径 0 B/0 allocs 满足契约 §15.1 与 §16.8 的性能要求。
+
+### 这个基线的局限
+
+**只代表单节点 `<Text>`，不能外推到嵌套容器。** `layout.Flex.Layout` 内部
+已对每个 `Rigid` 子节点录制，嵌套场景的缓存边界与收益需要 A5/A6b 重新测量。
+
+### 复现方式
+
+```text
+go test -run TestSingleNodeBaseline -v ./internal/compiler/codegen/
+```
+
+基准在临时模块中对**真实生成的代码**运行，不是测量生成器本身。
+
+## 3.4 B1 `<Column>` / `<Row>` 多子节点（2026-10-19）
+
+按契约 §4.7 实现。**只做结构，不调缓存边界**（缓存粒度评估留给 A5）。
+
+### 实现要点
+
+| 项 | 做法 |
+|---|---|
+| 生成形态 | `layout.Flex{Axis: ...}.Layout(ops, layout.Rigid(func(gtx) ...))` |
+| 子节点顺序 | 严格按声明顺序遍历 `n.Children` |
+| `Page` | 等价于垂直容器（规范 §3.1） |
+| 嵌套容器 | 闭包内使用**闭包的 `gtx`**，不是外层 `rec` |
+| 顶层容器 | 使用 `rec`（cacheOps），使录制发生在缓存 Ops 上 |
+
+**一个实现细节**：`containerExpr` 需要 `ops` 参数区分顶层与嵌套。
+顶层传 `rec`，嵌套传 `gtx`——否则内层的 `Rigid` 闭包会把绘制写进错误的 Ops。
+
+### 运行时验证
+
+| 测试 | 验证内容 |
+|---|---|
+| `TestColumnMultiChildRuntime` | 3 子节点 Column 在 Exact(200,300) 下返回 (200,300) |
+| `TestNestedContainersRuntime` | Column 套 Row 的嵌套布局正确 |
+| `TestMultiChildCacheReplay` | 多子节点下仍能正确回放 / 重录 |
+
+### 兼容性
+
+单节点生成结果**改变**了：`<Page><Text/></Page>` 现在也包一层垂直 Flex
+（因为 Page ≡ 无 Gap/Padding 的 Column，契约 §4.7.1）。
+
+这是契约要求的语义，不是回归。旧测试 `TestGenerateTextRendering` 已相应更新，
+断言改为检查容器形态。
+
+`Layout(gtx, th)` 签名未变。
+
+### 明确未做
+
+- 未调整缓存粒度（`Flex` 内部已录制 `Rigid` 子节点，外层再缓存是否重复录制——
+  留给 A5 验证）
+- 未实现 `Gap` / `Padding` / `Align` / `Justify` / 尺寸属性
+- 未实现 `<Spacer>` / `<Expanded>` / `<If>` / `<For>` / `<Grid>`
 
 ## 4. 验收项
 

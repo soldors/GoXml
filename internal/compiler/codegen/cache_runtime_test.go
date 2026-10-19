@@ -282,3 +282,103 @@ func TestProbeSignal(t *testing.T) {
 	}
 	t.Log("已记录：cacheCall 相同不蕴含未重录，故用 cacheKey 作信号")
 }
+
+// ============================================================================
+// B1 运行时验证：<Column> / <Row> 多子节点
+//
+// 契约 §4.7 要求：声明顺序、垂直/水平方向、空容器行为。
+// 这些必须在真实生成代码上跑，不能只看源码。
+// ============================================================================
+
+// TestColumnMultiChildRuntime 验证多子节点的实际布局。
+func TestColumnMultiChildRuntime(t *testing.T) {
+	src := mustGen(t, `<Column><Text Value="a"/><Text Value="b"/><Text Value="c"/></Column>`, defaultOpts())
+
+	probe := probeCommon + `
+func TestProbeColumn(t *testing.T) {
+	th := material.NewTheme()
+	v := &GoxmlDashboardView{}
+
+	var ops op.Ops
+	d := v.Layout(testGtx(&ops, 200, 300), th)
+	t.Logf("Column 3 子节点：尺寸=%v", d.Size)
+
+	// 垂直 Flex 在 Exact 约束下应返回约束尺寸。
+	if d.Size != image.Pt(200, 300) {
+		t.Errorf("尺寸 = %v, 期望 (200,300)", d.Size)
+	}
+}
+`
+	out, err := genModuleWithProbe(t, src, probe)
+	if err != nil {
+		t.Fatalf("运行时探测失败:\n%s", out)
+	}
+	t.Log("Column 3 子节点运行时布局通过")
+}
+
+// TestNestedContainersRuntime 验证嵌套容器的布局。
+func TestNestedContainersRuntime(t *testing.T) {
+	src := mustGen(t, `<Column><Text Value="a"/><Row><Text Value="b"/><Text Value="c"/></Row></Column>`, defaultOpts())
+
+	probe := probeCommon + `
+func TestProbeNested(t *testing.T) {
+	th := material.NewTheme()
+	v := &GoxmlDashboardView{}
+
+	var ops op.Ops
+	d := v.Layout(testGtx(&ops, 300, 200), th)
+	if d.Size != image.Pt(300, 200) {
+		t.Errorf("尺寸 = %v, 期望 (300,200)", d.Size)
+	}
+	t.Log("嵌套 Column+Row 布局通过")
+}
+`
+	out, err := genModuleWithProbe(t, src, probe)
+	if err != nil {
+		t.Fatalf("运行时探测失败:\n%s", out)
+	}
+	t.Log("嵌套容器运行时布局通过")
+}
+
+// TestMultiChildCacheReplay 验证多子节点下缓存仍正确回放。
+func TestMultiChildCacheReplay(t *testing.T) {
+	src := mustGen(t, `<Column><Text Value="a"/><Text Value="b"/></Column>`, defaultOpts())
+
+	probe := probeCommon + `
+func TestProbeMultiCache(t *testing.T) {
+	th := material.NewTheme()
+	v := &GoxmlDashboardView{}
+
+	var f1 op.Ops
+	g1 := testGtx(&f1, 200, 100)
+	d1 := v.Layout(g1, th)
+	key1 := v.cacheKey
+
+	// 第二帧应回放（不写 cacheKey）
+	var f2 op.Ops
+	d2 := v.Layout(testGtx(&f2, 200, 100), th)
+	if v.cacheKey != key1 {
+		t.Error("第2帧改写了 cacheKey —— 未走回放分支")
+	}
+	if d1 != d2 {
+		t.Errorf("尺寸不一致: %v vs %v", d1, d2)
+	}
+
+	// 约束变化 → 重录
+	var f3 op.Ops
+	d3 := v.Layout(testGtx(&f3, 50, 40), th)
+	if v.cacheKey == key1 {
+		t.Error("约束变化后未重录")
+	}
+	if d3.Size != image.Pt(50, 40) {
+		t.Errorf("重录后尺寸 = %v, 期望 (50,40)", d3.Size)
+	}
+	t.Log("多子节点：回放与重录均正常")
+}
+`
+	out, err := genModuleWithProbe(t, src, probe)
+	if err != nil {
+		t.Fatalf("运行时探测失败:\n%s", out)
+	}
+	t.Log("多子节点缓存运行时验证通过")
+}
