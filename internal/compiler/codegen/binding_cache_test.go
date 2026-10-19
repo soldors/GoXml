@@ -138,7 +138,7 @@ func TestProbeScene3(t *testing.T) {
 	if c2.call != call1 {
 		t.Error("显示串相同应复用（§05.3.1 允许复用）")
 	} else {
-		t.Log("显示串不变：复用 shaping 结果（符合 §05.3.1）")
+		t.Log("显示串不变：复用已录制的 CallOp；Gio 内部 shaping 次数未直接观测")
 	}
 }
 `)

@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**步骤 1 的直接 Codegen 实现已接通，步骤 2 已完成；Pipeline 集成验收未完成，步骤 3 未开始** | 优先级：P0 | 预计：3h
+- 状态：**步骤 1 直接 Codegen 与步骤 2 已完成；Pipeline 集成未完成；步骤 3 显示缓存实现已交付，完整验收见子任务卡** | 优先级：P0 | 预计：3h
 - 依赖：`TASK-BINDING-CONTRACT-001`（契约已冻结）、`TASK-CODEGEN-STATIC-CACHE-001`（静态缓存基线）
 - 范围：**只做步骤 1–3**，不扩展到完整状态更新机制
 
@@ -12,7 +12,7 @@
 |---|---|---|
 | **1** | 接通 `Facts → Codegen`，生成绑定取值表达式 | 直接 `Generate` 的字段和零参方法读取已接通并有定向验证；默认 Pipeline 尚未传 `ModulePath`，集成验收未关闭 |
 | **2** | 最小运行时读取验证 | ✅ `TASK-BINDING-IMPLEMENT-002` 已完成；多段路径、指针访问、零参方法、显式重新布局和失败分类均有测试 |
-| **3** | 绑定缓存与性能验证（三层分离） | 覆盖五个冻结场景；分别报告稳定帧分配数与 shaping 重复执行情况 |
+| **3** | 绑定显示缓存与性能验证（三层分离） | 当前实现按绑定节点回放已录制结果；稳定帧分配与局部行为已测，契约全维度验收见 `TASK-BINDING-IMPLEMENT-003` |
 
 ## 2. 五条红线（实现时必须守住）
 
@@ -27,14 +27,9 @@
 - 静态属性走现有路径；绑定属性走独立路径，**禁止绑定值被误当作普通字符串常量**。
 - `Generate` 仍只返回字节，不承担文件写入或提交。
 
-### 3.1 一个必须解决的契约局部决策（步骤 1 开工前）
+### 3.1 已冻结的契约局部决策
 
-契约 §05 冻结了五个验收场景，但**「原始值变化、显示字符串不变时是否允许复用 shaping」**（场景 ③）尚未给出明确规则。实现时应：
-
-- 在契约中补充该条规则后再实现缓存；
-- **不得擅自把某种行为当成既定契约**。
-
-步骤 1 只生成取值表达式，不涉及缓存，因此**步骤 1 不阻塞于该决策；步骤 3 开工前必须解决**。
+契约 §05.3.1 已冻结：显示字符串与所有 shaping 输入均未变化时，允许复用；这是允许而非强制。实现和验收边界见 `TASK-BINDING-IMPLEMENT-003`。显示缓存回放不等同于 Gio 内部 shaping 已验证。
 
 ### 3.2 `ModulePath` 的 Pipeline 接线尚缺
 
@@ -42,12 +37,10 @@
 与 `SourcePath`。需从 `TypeEnv.ModulePath()` 取得模块路径并传递，再补完整管线编译测试；
 完成前，跨包绑定只在测试显式调用 `Generate` 时可用。
 
-### 3.3 方法路径的语义事实不足
+### 3.3 方法路径已修复并验证
 
-Analyzer 曾接受零参单返回值方法但未将方法身份传给 Codegen，导致 `vm.Display` 被生成为
-方法值。当前共享工作区已在 `PathStep` 增加 `IsMethod` 并生成 `vm.Display()`；
-`TestBindingRuntimePathKinds` 定向测试通过。后续仍需完成 Pipeline 的 `ModulePath` 接线，
-并让该方法行为保留在稳定回归测试中。
+Analyzer 通过 `PathStep.IsMethod` 传递方法身份，Codegen 生成 `vm.Display()`；
+`TestBindingRuntimePathKinds/零参方法` 已真实编译并运行。Pipeline 的 `ModulePath` 接线仍未完成。
 
 ## 3.3 步骤 1 已完成（2026-10-19）
 
@@ -57,9 +50,9 @@ Analyzer 曾接受零参单返回值方法但未将方法身份传给 Codegen，
 |---|---|
 | Facts 接入 | `generator.facts = v.Facts()`；绑定**只**从 Facts 取，查不到就报错 |
 | 取值表达式 | `bindingExpr()`：按 `RootKind` 决定起点（vm / For 变量），再拼 `Steps` |
-| `<Text>` 分支 | 有绑定 → `material.Body1(th, vm.Title)`；无 → 字符串常量 |
+| `<Text>` 分支 | 有绑定 → `v.bindText(..., vm.Title)`；无 → 字符串常量 |
 | vm 参数 | `assemble` 按 `usesVM` 给 `Layout` 加 `vm *<Type>` |
-| **红线 2** | 含绑定页面**不**生成缓存字段/`op.Record`（值变化会永久陈旧） |
+| **红线 2** | 含绑定页面不生成整页 `cacheOps/cacheCall/cacheDims`；绑定文本使用独立私有槽位，显示值变化时失效 |
 
 ### 生成结果（实测）
 
@@ -67,7 +60,7 @@ Analyzer 曾接受零参单返回值方法但未将方法身份传给 Codegen，
 func (v *GoxmlDashboardView) Layout(gtx layout.Context, th *material.Theme, vm *fixture.ViewModel) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Body1(th, vm.Title).Layout(gtx)
+			return v.bindText(gtx, th, 0, vm.Title)
 		}))
 }
 ```
@@ -76,14 +69,14 @@ func (v *GoxmlDashboardView) Layout(gtx layout.Context, th *material.Theme, vm *
 
 | 测试 | 覆盖 |
 |---|---|
-| `TestBindingGeneratesReadExpr` | 生成 `vm.Title`、不把 `{Title}` 当字面量、无缓存字段 |
+| `TestBindingGeneratesReadExpr` | 生成 `vm.Title`，不把 `{Title}` 当字面量 |
 | `TestBindingMultiSegment` | `{User.Name}` |
 | `TestBindingPointerDeref` | `{Owner.Name}` |
 | `TestBindingZeroArgMethod` | `{Display}` |
 | `TestBindingMixedStaticAndBinding` | 静态与绑定混排 |
 | `TestBindingStillRejectedByAnalyzer` | 非法绑定仍被 Analyzer 拦下（3 例） |
 | **`TestBindingGeneratedCompiles`** | 生成代码真实编译通过 |
-| `TestBindingMustNotFreezeDynamic` | 红线 2 的机器可验证形式 |
+| `TestBindingMustNotFreezeDynamic` | 禁止整页缓存字段，保留绑定槽位缓存 |
 | `TestStaticPageStillFreezes` | 对照：静态页面仍固化，未退化 |
 
 ### 两个实测发现
@@ -93,9 +86,9 @@ ViewModel 在 `internal/compiler/analyzer/testdata/fixture`，而 Go 的 interna
 规则禁止外部模块 import `github.com/goxml/goxml/internal/...`。
 → 改为在**仓库内同模块**建临时包编译，验证通过。
 
-**② 含绑定页面不能复用缓存 import。**
-`system`/`op`/`unit`/`math` 仅静态页面需要；含绑定页面若仍 import 会产生
-「imported and not used」编译错误。已按 `usesVM` 条件化。
+**② 绑定页面也需要缓存依赖。**
+绑定文本槽位使用独立 `op.Ops` 与 `CallOp`，因此绑定页面也会生成
+`system`/`op`/`unit`/`math` 相关的 `renderKey` 代码。
 
 ### 契约补充（需记录）
 
@@ -106,14 +99,15 @@ import 路径。同包 ViewModel 与纯静态页面不需要。这是对契约 �
 
 能证明：
 
-- 步骤 1 当前测试证明：直接调用 `Generate` 可生成并编译简单字符串字段读取。它尚未证明 Pipeline 集成、方法路径、绑定缓存或状态变化后的 UI 刷新。
+- 直接调用 `Generate` 可生成并编译字段/零参方法读取；定向运行时测试证明显式再次布局可以读取新值。
+- 绑定显示缓存的实现、测试范围和未闭环项目见 [`绑定显示缓存验收报告.md`](../../06-测试/绑定显示缓存验收报告.md)。
 
 **不能证明** ViewModel 修改后生产 UI 会自动失效、触发重绘。该能力归 `TASK-STATE-001`。
 
 ## 5. 交付物
 
 - 绑定代码生成实现及测试（步骤 1 已交付；当前覆盖 `<Text Value>`）
-- 绑定读取与缓存实现及测试
+- 绑定读取与显示缓存实现及测试；Pipeline 集成和契约全维度性能验收仍开放
 - 运行时读取验收报告：[`绑定运行时读取验收报告.md`](../../06-测试/绑定运行时读取验收报告.md)（步骤 2 已完成）
 - shaping 测试 seam 设计记录（若无需生产接口，记录原因）
 - `INV-PERF-4` 验收记录：通过项 / 失败项 / 未验证项分别列出
