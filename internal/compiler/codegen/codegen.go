@@ -135,6 +135,11 @@ type generator struct {
 	// 循环体内**不得**分配显示缓存槽位：槽位是按节点分配的，
 	// 每行复用同一槽位会互相覆盖（<For> 列表契约 §6.2）。
 	inFor bool
+	// rowClicks 汇总循环内需要行状态池的按钮（<For> 列表契约 §3）。
+	rowClicks []rowClickSlot
+	// currentFor 是当前正在生成的 <For> 节点（nodeExpr 没有祖先链，
+	// 用生成时的作用域标记传递）。
+	currentFor *contracts.NodeIR
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -148,6 +153,58 @@ type clickSlot struct {
 	// 实参来自 Analyzer 的 ResolvedArg（事件处理输出契约 §5.4），
 	// Codegen 只负责渲染语法。
 	args string
+	// inFor 表示该按钮位于 <For> 循环体内，行状态从池中取。
+	inFor bool
+	// keyExpr 是行状态的 Key 表达式（inFor 时有效），如 item.ID。
+	keyExpr string
+	// poolIndex 是所属行状态池的编号（inFor 时有效）。
+	poolIndex int
+}
+
+// rowClickSlot 记录一个 <For> 的行状态池（<For> 列表契约 §3）。
+//
+// 一个 <For> 一个池（而不是每按钮一个）：同一行的多个按钮共享同一份
+// 行身份，池的生命周期也由同一把清理逻辑管理。
+type rowClickSlot struct {
+	// inExpr 是数据源表达式（如 v.vm.Items），轮询与渲染共用。
+	inExpr string
+	// keyExpr 是 Key 表达式（如 item.ID）。
+	keyExpr string
+	// keyType 是 Key 的类型信息（用于生成 map 的键类型）。
+	keyType analyzer.TypeInfo
+	// each 是循环变量名。
+	each string
+	// index 是索引变量名（可为空）。
+	index string
+	// clicks 是该循环内的按钮事件（保持声明顺序）。
+	clicks []rowClick
+	// fieldIndex 是该池在生成结构体里的编号（rowClicks<N>）。
+	fieldIndex int
+}
+
+// rowClick 是循环内一个按钮的事件接线。
+type rowClick struct {
+	// method 是 ViewModel 方法名。
+	method string
+	// args 是已渲染的实参。
+	args string
+}
+
+// keyTypeExpr 渲染 map 的键类型；不可比较类型显式报错（契约 §3.2）。
+func (s rowClickSlot) keyTypeExpr() (string, error) {
+	switch s.keyType.Kind {
+	case analyzer.ValueString, analyzer.ValueBool, analyzer.ValueInt,
+		analyzer.ValueUint, analyzer.ValueFloat, analyzer.ValuePointer:
+		return s.keyType.Display, nil
+	case analyzer.ValueStruct:
+		// 结构体的可比性取决于字段，Analyzer 的 Display 不够判；
+		// 走到这里说明上游未拦截，显式拒绝而不是生成可能编译失败的代码。
+		return "", fmt.Errorf(
+			"codegen: <For> Key of struct type %q is not supported; use a comparable scalar key", s.keyType.Display)
+	default:
+		return "", fmt.Errorf(
+			"codegen: <For> Key type %q is not comparable and cannot index row state", s.keyType.Display)
+	}
 }
 
 // page 生成页面根节点的渲染体。
@@ -307,7 +364,9 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 	// 循环体内不分配显示缓存槽位：槽位按节点分配，每行复用会互相覆盖
 	// （<For> 列表契约 §6.2）。
 	prevInFor := g.inFor
+	prevFor := g.currentFor
 	g.inFor = true
+	g.currentFor = n
 	for _, c := range n.Children {
 		if isForNode(c) {
 			g.inFor = prevInFor
@@ -316,6 +375,7 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 		inner, err := g.nodeExpr(c)
 		if err != nil {
 			g.inFor = prevInFor
+			g.currentFor = prevFor
 			return err
 		}
 		b.WriteString(indent + "\t\tchildren = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
@@ -323,6 +383,7 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 		b.WriteString(indent + "\t\t}))\n")
 	}
 	g.inFor = prevInFor
+	g.currentFor = prevFor
 
 	b.WriteString(indent + "\t}\n")
 	b.WriteString(indent + "}\n")
@@ -443,8 +504,13 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 	}
 
 	// 控件状态槽位：每个 Button 一个，跨帧稳定（契约 §1）。
+	// 循环内的按钮改用行状态池，idx 仍分配但不用于绘制。
 	idx := g.clickSlots
 	g.clickSlots++
+	// rowKey 是行状态的 Key 表达式（g.inFor 时有效），如 item.ID。
+	// rowPool 是所属池编号。
+	var rowKey string
+	rowPool := -1
 
 	// 事件校验（MVP：仅无参 Click）。
 	for _, ev := range n.Events {
@@ -466,7 +532,30 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		g.clicks = append(g.clicks, clickSlot{index: idx, method: ev.Method, args: args})
+		slot := clickSlot{index: idx, method: ev.Method, args: args}
+		// 循环内的按钮：**必须**有 Key（<For> 列表契约 §3.1——Parser 的
+		// SCOPE-003 已强制，这里做防御性二次校验），行状态从池取。
+		if g.inFor {
+			// Key 必须存在（<For> 列表契约 §3.1——Parser 的 SCOPE-003 已强制，
+			// 这里做防御性二次校验，防上游放行）。
+			if g.currentFor == nil || g.currentFor.For == nil || !g.currentFor.For.HasKey {
+				return "", fmt.Errorf("codegen: <Button> inside <For> requires a Key on <For> to keep per-row state stable")
+			}
+			rf, ok := lookupFor(g.currentFor, g.facts)
+			if !ok || rf.Key == nil {
+				return "", fmt.Errorf("codegen: <For> Key is required for row state but no resolved key path is available")
+			}
+			keyExpr, err := pathExpr(rf.Key, "v.vm", "<For Key>")
+			if err != nil {
+				return "", err
+			}
+			slot.inFor = true
+			slot.keyExpr = keyExpr
+			rowKey = keyExpr
+			slot.poolIndex = g.registerRowClick(rf, ev.Method, args, keyExpr)
+			rowPool = slot.poolIndex
+		}
+		g.clicks = append(g.clicks, slot)
 	}
 
 	// 标签：绑定优先（经 Facts），否则静态字面量；缺省为空标签（Schema 非必选）。
@@ -482,6 +571,9 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 		label = quote(raw)
 	}
 
+	if g.inFor {
+		return fmt.Sprintf("material.Button(th, v.rowClick%d(%s), %s).Layout(gtx)", rowPool, rowKey, label), nil
+	}
 	return fmt.Sprintf("material.Button(th, &v.click%d, %s).Layout(gtx)", idx, label), nil
 }
 
@@ -551,6 +643,15 @@ func (g *generator) assemble(body string) (string, error) {
 		for i := 0; i < g.clickSlots; i++ {
 			b.WriteString(fmt.Sprintf("\tclick%d widget.Clickable\n", i))
 		}
+		// 行状态池：每个含交互控件的 <For> 一个（<For> 列表契约 §3.2）。
+		// map 元素不可寻址，必须存指针。
+		for pi, rc := range g.rowClicks {
+			kt, err := rc.keyTypeExpr()
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(fmt.Sprintf("\trowClicks%d map[%s]*widget.Clickable\n", pi, kt))
+		}
 	} else {
 		for _, line := range cacheFieldLines(g.view) {
 			b.WriteString(line + "\n")
@@ -595,17 +696,53 @@ func (g *generator) assemble(body string) (string, error) {
 		}
 		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
 		// 事件消费：必须在绘制之前（契约 §2.1/§2.2）。
+		// 普通按钮逐个轮询；行状态按钮数据驱动（<For> 列表契约 §5）。
 		for _, cs := range g.clicks {
+			if cs.inFor {
+				continue
+			}
 			b.WriteString(fmt.Sprintf("\tfor v.click%d.Clicked(gtx) {\n", cs.index))
 			b.WriteString("\t\tv.vm." + cs.method + "(" + cs.args + ")\n")
 			b.WriteString("\t\tgtx.Execute(op.InvalidateCmd{})\n")
 			b.WriteString("\t}\n")
+		}
+		// 行状态轮询（<For> 列表契约 §5）：数据驱动。
+		// 与渲染用**同一数据源表达式**（同源）与**同一顺序**（range 切片），
+		// 防止并发修改列表时两处错位。
+		for _, rc := range g.rowClicks {
+			b.WriteString(rc.pollCode())
+		}
+		// 键清理（<For> 列表契约 §4）：轮询之后、渲染之前。
+		// 快速跳过：池不比列表大就不可能有失效键——稳定帧零分配。
+		for _, rc := range g.rowClicks {
+			b.WriteString(rc.cleanupCode())
 		}
 		if len(g.clicks) > 0 {
 			b.WriteString("\n")
 		}
 		b.WriteString("\treturn " + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
 		b.WriteString("}\n")
+		// 行状态池辅助方法（<For> 列表契约 §3.3）：惰性创建，跨帧稳定。
+		for pi, rc := range g.rowClicks {
+			kt, err := rc.keyTypeExpr()
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(fmt.Sprintf(`
+// rowClick%d 返回 Key 对应的行控件状态；不存在则创建（惰性）。
+func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
+	if v.rowClicks%d == nil {
+		v.rowClicks%d = make(map[%s]*widget.Clickable)
+	}
+	c := v.rowClicks%d[key]
+	if c == nil {
+		c = new(widget.Clickable)
+		v.rowClicks%d[key] = c
+	}
+	return c
+}
+`, pi, pi, kt, pi, pi, kt, pi, pi))
+		}
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
 		b.WriteString(renderKeyDecl(g.view))
 		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
@@ -910,6 +1047,127 @@ func (g *generator) vmTypeExprStr() string {
 		// 这里吞掉错误会让 Generate 返回错误（vmTypeExpr 已登记失败原因）。
 		// 为安全起见返回类型名，让编译错误显式暴露而不是静默。
 		return g.vmRef.Name
+	}
+	return t
+}
+
+// registerRowClick 把循环内按钮的事件登记到所属 <For> 的行状态池。
+//
+// 同一 <For> 内的多个按钮共享一个池与一份轮询循环。
+func (g *generator) registerRowClick(rf analyzer.ResolvedFor, method, args, keyExpr string) int {
+	inExpr, err := pathExpr(rf.In, "v.vm", "<For In>")
+	if err != nil {
+		// In 已在 For 展开时用过一次；到这里失败说明事实被破坏。
+		panic("codegen: <For In> path failed on second use: " + err.Error())
+	}
+	// 找已有池（同一 For）。
+	for i := range g.rowClicks {
+		if g.rowClicks[i].keyExpr == keyExpr && g.rowClicks[i].inExpr == inExpr {
+			g.rowClicks[i].clicks = append(g.rowClicks[i].clicks, rowClick{method: method, args: args})
+			return g.rowClicks[i].fieldIndex
+		}
+	}
+	g.rowClicks = append(g.rowClicks, rowClickSlot{
+		inExpr:     inExpr,
+		keyExpr:    keyExpr,
+		keyType:    rf.Key.Type,
+		each:       rf.Each,
+		index:      rf.Index,
+		fieldIndex: len(g.rowClicks),
+		clicks:     []rowClick{{method: method, args: args}},
+	})
+	return len(g.rowClicks) - 1
+}
+
+// pollCode 生成一个行状态池的顶部轮询块（<For> 列表契约 §5）。
+//
+// 关键：遍历的是**数据源本身**（与渲染同源同序）；Key 与实参都在
+// 轮询变量 rowItem 上求值——渲染期变量是 item，两者语义一致但作用域不同。
+func (s rowClickSlot) pollCode() string {
+	var b strings.Builder
+	b.WriteString("\t{\n")
+	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
+	b.WriteString("\t\tfor _, rowItem := range rowItems {\n")
+	b.WriteString("\t\t\trowItem := rowItem\n")
+	b.WriteString(fmt.Sprintf("\t\t\tif c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
+	for _, ck := range s.clicks {
+		b.WriteString("\t\t\t\tfor c.Clicked(gtx) {\n")
+		b.WriteString("\t\t\t\t\tv.vm." + ck.method + "(" + s.rewriteRoot(ck.args) + ")\n")
+		b.WriteString("\t\t\t\t\tgtx.Execute(op.InvalidateCmd{})\n")
+		b.WriteString("\t\t\t\t}\n")
+	}
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n")
+	return b.String()
+}
+
+// keyRef 把 Key 表达式改写到轮询变量 rowItem 上（每段路径根名替换）。
+func (s rowClickSlot) keyRef() string {
+	return s.rewriteRoot(s.keyExpr)
+}
+
+// rewriteRoot 把表达式里以循环变量（item）为根的路径改写为 rowItem。
+//
+// 渲染期与轮询期是两个作用域，变量名不同但数据相同——同一份 items 的
+// 同一个元素。改写是纯文本的根段替换，安全边界：表达式由本文件生成，
+// 根名必为 Each 名。
+func (s rowClickSlot) rewriteRoot(expr string) string {
+	if expr == "" || s.each == "" {
+		return expr
+	}
+	if expr == s.each {
+		return "rowItem"
+	}
+	if strings.HasPrefix(expr, s.each+".") {
+		return "rowItem." + expr[len(s.each)+1:]
+	}
+	// 复合实参（如 "f(item.ID)" 不会出现；逗号分隔的多实参）：
+	// 逐段替换每个以 each. 开头的路径段。
+	parts := strings.Split(expr, ", ")
+	for i, p := range parts {
+		parts[i] = s.rewriteSingle(p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// rewriteSingle 改写单个实参表达式的根。
+func (s rowClickSlot) rewriteSingle(expr string) string {
+	if expr == s.each {
+		return "rowItem"
+	}
+	if strings.HasPrefix(expr, s.each+".") {
+		return "rowItem." + expr[len(s.each)+1:]
+	}
+	return expr
+}
+
+// cleanupCode 生成键清理块（<For> 列表契约 §4）。
+//
+// 行删除后其 Key 残留在池里会造成无界增长；清理放在轮询之后、渲染之前。
+// 快速跳过条件保证未发生删除的稳定帧零分配。
+func (s rowClickSlot) cleanupCode() string {
+	var b strings.Builder
+	b.WriteString("\t{\n")
+	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
+	b.WriteString(fmt.Sprintf("\t\tif len(v.rowClicks%d) > len(rowItems) {\n", s.fieldIndex))
+	b.WriteString("\t\t\tkeep := make(map[" + s.keyTypeExprMust() + "]struct{}, len(rowItems))\n")
+	b.WriteString("\t\t\tfor _, rowItem := range rowItems {\n")
+	b.WriteString("\t\t\t\tkeep[" + s.keyRef() + "] = struct{}{}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString(fmt.Sprintf("\t\t\tfor k := range v.rowClicks%d {\n", s.fieldIndex))
+	b.WriteString(fmt.Sprintf("\t\t\t\tif _, ok := keep[k]; !ok {\n\t\t\t\t\tdelete(v.rowClicks%d, k)\n\t\t\t\t}\n", s.fieldIndex))
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n")
+	return b.String()
+}
+
+// keyTypeExprMust 是 keyTypeExpr 的无错版本（登记时已校验过可比性）。
+func (s rowClickSlot) keyTypeExprMust() string {
+	t, err := s.keyTypeExpr()
+	if err != nil {
+		panic("codegen: row key type was validated at registration but failed here: " + err.Error())
 	}
 	return t
 }

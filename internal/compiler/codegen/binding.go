@@ -95,11 +95,8 @@ func (g *generator) renderEventArg(a analyzer.ResolvedArg) (string, error) {
 		}
 
 	case analyzer.ArgPath:
-		if a.Path != nil && a.Path.RootKind == analyzer.RootForVar {
-			// <For> 循环变量尚未实现——没有可引用的变量名。
-			return "", fmt.Errorf(
-				"codegen: event argument bound to a <For> variable is not supported yet")
-		}
+		// ForVar 实参在轮询作用域内合法：<For> 列表契约 §6.3。
+		// item 在 Layout 顶部的循环里可见，pathExpr 会生成 item.ID。
 		return pathExpr(a.Path, "v.vm", "event argument")
 
 	default:

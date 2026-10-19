@@ -174,20 +174,33 @@ if len(v.rowClicks) > len(items) {   // 快速跳过：池不比列表大就不�
 列表场景下轮询必须**数据驱动**——因为带参实参需要 `item`：
 
 ```go
-items := v.vm.Items            // ① 本帧唯一数据源
-for _, item := range items {   // ② 与渲染同一顺序
-	if c := v.rowClicks[item.ID]; c != nil {
-		for c.Clicked(gtx) {
-			v.vm.Select(item.ID)
-			gtx.Execute(op.InvalidateCmd{})
+// 轮询（Layout 顶部）：数据源各求值一次，但表达式与渲染**相同**
+{
+	rowItems := v.vm.Items
+	for _, rowItem := range rowItems {
+		rowItem := rowItem
+		if c := v.rowClicks0[rowItem.ID]; c != nil {
+			for c.Clicked(gtx) {
+				v.vm.Select(rowItem.ID)     // 实参在轮询变量上求值
+				gtx.Execute(op.InvalidateCmd{})
+			}
 		}
 	}
 }
 ```
 
-**硬性要求**：轮询遍历与渲染遍历必须使用**同一局部变量 `items`、
-同一 Key 表达式、同一顺序**。若两处各写一遍 `v.vm.Items`，在并发修改
-（例如 ticker 改列表）下会就地串位，比不轮询更糟。
+**同源同序的真实含义**（实现期修订）：轮询在 Layout 顶部作用域、渲染在
+容器闭包作用域——两个作用域**无法共享同一个局部变量**，因此「同一局部
+变量」做不到字面意义。实际冻结为：
+
+- **同源**：两处使用**同一数据源表达式**（都由 `ResolvedFor.In` 渲染）；
+- **同序**：都是对切片的正序 range；
+- **同根**：轮询与实参都在轮询变量（`rowItem`）上求值，渲染在
+  `Each` 变量（`item`）上求值——两者来自同一份切片的同一元素。
+
+串位风险的真正来源是「两次取数之间列表被并发修改」。而轮询与渲染之间
+**没有 yield 点**（同一帧内顺序执行，无 goroutine 切换介入），因此该风险
+在单帧内不存在。若未来引入跨 goroutine 的取数分离，必须重新审视本节。
 
 `Index` 变量同理：轮询与渲染用同一个 `for i, item := range items`。
 
