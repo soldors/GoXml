@@ -138,7 +138,7 @@ func TestGenerateSymbolNames(t *testing.T) {
 	for src, want := range cases {
 		out := mustGen(t, `<Text Value="x"/>`, Options{PackageName: "demo", SourcePath: src})
 		s := string(out)
-		if !strings.Contains(s, "type "+want+" struct{}") {
+		if !strings.Contains(s, "type "+want+" struct {") {
 			t.Errorf("%s: 期望类型 %s\n%s", src, want, firstLines(s, 14))
 			continue
 		}
@@ -162,7 +162,8 @@ func TestGenerateLayoutSignature(t *testing.T) {
 
 func TestGenerateTextRendering(t *testing.T) {
 	out := mustGen(t, `<Text Value="Hello"/>`, defaultOpts())
-	if !strings.Contains(string(out), `material.Body1(th, "Hello").Layout(gtx)`) {
+	// 渲染结果赋值给 cacheDims，且发生在 rec（cacheOps）上，不是帧 gtx。
+	if !strings.Contains(string(out), `v.cacheDims = material.Body1(th, "Hello").Layout(rec)`) {
 		t.Errorf("未生成预期的文本渲染:\n%s", string(out))
 	}
 }

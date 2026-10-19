@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**A1–A3 完成**（语义已验证、8 项决策已记录、契约 §16 已冻结），A4–A6 待做 | 优先级：P0 | 预计：4h
+- 状态：**A1–A4 完成**（语义验证、决策、契约、单节点实现），A5–A6 待做 | 优先级：P0 | 预计：4h
 - 依赖：TASK-CODEGEN-001（最小切片）
 - 契约：`代码生成输出契约.md` §15.1（要求）、§4.7（容器结构）
 - 决策依据：`ADR-0006` §2.1（静态子树判定标准）
@@ -87,6 +87,32 @@ A3 期间补充三项实测，其中一项最容易漏：
   （`flex.go` 中的 `macro := op.Record(gtx.Ops)`）。
 - 因此「多子节点 + 固化」可能存在**重复录制**：Flex 自己录一次，
   生成的代码又录一次。这必须在设计时澄清，否则会得到更差的性能。
+
+## 3.2 A4 已完成（2026-10-19）
+
+生成的 `<Text>` 视图已实现缓存闭环。契约 §16.8 的五项验收全部满足：
+
+| # | 要求 | 证据 |
+|---|---|---|
+| 1 | 缓存槽位存在 | `TestCacheStructFields`：AST 断言 5 个字段与类型 |
+| 2 | **确实回放** | `TestCacheReplaysAtRuntime`：临时模块中跑真实生成代码，连续 4 帧仅首帧写 `cacheKey` |
+| 3 | 布局结果符合语义 | `TestCachedDimsStayConsistent`：录制/回放尺寸一致（含 1×1 边界） |
+| 4 | key 变化正确重录 | `TestKeyChangesTriggerRerecord`：Constraints / Metric / Theme / Locale 分别变化均触发 |
+| 5 | 生成确定性 | `TestCacheGenerationDeterministic` + `TestCacheImportsSorted` |
+
+### 一个推翻测试方法的重要发现
+
+最初用「`cacheCall` 是否变化」判断是否重录。**实测证明这不可靠**：
+
+```text
+cacheOps.Reset() 后重录相同内容 → CallOp 完全相同（start:9 end:192 一致）
+```
+
+因此 `cacheCall` 相同既可能是「回放了」，也可能是「重录了相同内容」。
+
+改用 **`cacheKey` 是否被改写** 作为信号：回放分支根本不写 `cacheKey`，只有录制分支写。
+
+`TestCacheCallIsNotARecordSignal` 专门锁定这个事实，防止后来者再犯。
 
 ## 4. 验收项
 

@@ -143,7 +143,8 @@ func (g *generator) node(n *contracts.NodeIR) (string, error) {
 				"codegen: <Text> needs a static Value; data binding is not supported in this slice")
 		}
 		g.imports.add("gioui.org/widget/material", "material")
-		return fmt.Sprintf("return material.Body1(th, %s).Layout(gtx)", quote(value)), nil
+		// 赋值给 cacheDims：录制发生在 cacheOps 上（rec），而不是帧 Ops。
+		return fmt.Sprintf("v.cacheDims = material.Body1(th, %s).Layout(rec)", quote(value)), nil
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)
@@ -167,9 +168,14 @@ func staticAttr(n *contracts.NodeIR, name string) (string, bool) {
 // assemble 拼装完整源文件。
 //
 // import 由 importSet 统一收集并按契约 §7 排序，只在真正被引用时出现。
+// assemble 拼装完整源文件（含静态子树缓存，契约 §16）。
 func (g *generator) assemble(body string) string {
-	// layout.Context 与 layout.Dimensions 出现在签名里，因此 layout 总是需要。
+	// 签名与缓存字段都会用到的 import。
 	g.imports.add("gioui.org/layout", "layout")
+	g.imports.add("gioui.org/io/system", "system")
+	g.imports.add("gioui.org/op", "op")
+	g.imports.add("math", "math")
+	g.imports.add("gioui.org/unit", "unit")
 
 	var b strings.Builder
 	b.WriteString(header)
@@ -177,14 +183,93 @@ func (g *generator) assemble(body string) string {
 	b.WriteString(g.imports.render())
 	b.WriteString("\n")
 	b.WriteString("// " + g.view + " 是 " + baseName(g.opts.SourcePath) + " 的生成视图。\n")
-	b.WriteString("type " + g.view + " struct{}\n\n")
+	b.WriteString("type " + g.view + " struct {\n")
+	for _, line := range cacheFieldLines(g.view) {
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("}\n\n")
 	b.WriteString("// New" + g.view + " 创建视图状态。\n")
 	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
 	b.WriteString("// Layout 渲染页面。\n")
+	b.WriteString("//\n")
+	b.WriteString("// 首个 key 生效时录制，之后 key 未变只回放（契约 §16.4）。\n")
 	b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
-	b.WriteString(body + "\n")
+	b.WriteString("\tk := v.currentKey(gtx, th)\n")
+	b.WriteString("\tif v.cached && v.cacheKey.equal(k) {\n")
+	b.WriteString("\t\tv.cacheCall.Add(gtx.Ops)\n")
+	b.WriteString("\t\treturn v.cacheDims\n")
+	b.WriteString("\t}\n\n")
+	b.WriteString("\tv.cacheOps.Reset()\n")
+	b.WriteString("\tm := op.Record(&v.cacheOps)\n")
+	b.WriteString("\trec := gtx\n")
+	b.WriteString("\trec.Ops = &v.cacheOps\n")
+	b.WriteString("\t" + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
+	b.WriteString("\tv.cacheCall = m.Stop()\n")
+	b.WriteString("\tv.cacheKey = k\n")
+	b.WriteString("\tv.cached = true\n\n")
+	b.WriteString("\tv.cacheCall.Add(gtx.Ops)\n")
+	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
+	b.WriteString(renderKeyDecl(g.view))
 	return b.String()
+}
+
+// renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。
+//
+// 注意：这是**生成产物**，不要手改。字段变更必须先改契约 §16.5 再重新生成。
+func renderKeyDecl(view string) string {
+	return `
+// renderKey 复制自 代码生成输出契约 §16.5。
+//
+// ⚠️ 本类型是生成产物，不要手改。
+// 字段变更必须先改契约 §16.5，再重新生成——已生成文件不会自动跟随。
+type renderKey struct {
+	constraints layout.Constraints
+	metric      unit.Metric
+	theme       *material.Theme
+	locale      system.Locale
+}
+
+// equal 按位比较浮点字段，避免 float32 精度造成的误判（契约 §16.5）。
+func (k renderKey) equal(o renderKey) bool {
+	return k.constraints == o.constraints &&
+		math.Float32bits(k.metric.PxPerDp) == math.Float32bits(o.metric.PxPerDp) &&
+		math.Float32bits(k.metric.PxPerSp) == math.Float32bits(o.metric.PxPerSp) &&
+		k.theme == o.theme &&
+		k.locale == o.locale
+}
+
+// currentKey 采集当前帧的上下文指纹。
+func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) renderKey {
+	return renderKey{
+		constraints: gtx.Constraints,
+		metric:      gtx.Metric,
+		theme:       th,
+		locale:      gtx.Locale,
+	}
+}
+`
+}
+
+// cacheFieldLines 返回 View 结构体的缓存字段（契约 §16.2）。
+func cacheFieldLines(view string) []string {
+	return []string{
+		"\t// cacheOps 是持久操作列表，仅由本视图持有，永不 Reset 之外的复用。",
+		"\t// 必须与每帧的帧 Ops 分离：帧 Ops 每帧被 Reset，而 CallOp 引用 cacheOps 的数据。",
+		"\tcacheOps op.Ops",
+		"",
+		"\t// cacheCall 指向 cacheOps 中的录制区间。",
+		"\tcacheCall op.CallOp",
+		"",
+		"\t// cacheDims 是录制时的布局结果。CallOp.Add 不返回尺寸，必须一并缓存。",
+		"\tcacheDims layout.Dimensions",
+		"",
+		"\t// cacheKey 是录制时的上下文指纹，用于判断失效。",
+		"\tcacheKey renderKey",
+		"",
+		"\t// cached 表示 cacheCall 是否已有效录制。",
+		"\tcached bool",
+	}
 }
 
 // ============================================================================
