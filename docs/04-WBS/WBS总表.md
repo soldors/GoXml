@@ -8,7 +8,7 @@
 | TASK-EXPANDER-001 | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | go test -v ./internal/compiler/expander/... |
 | TASK-ANALYZER-001 | analyzer | 实现语义校验（绑定路径、事件签名、For 作用域） | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
 | TASK-CODEGEN-001 | codegen | 实现 Gio 布局（含 Align/Justify/Gap/尺寸/Grid）与控件代码生成器 | TASK-ANALYZER-001 | go test -v ./internal/compiler/codegen/... |
-| TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口） | TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
+| TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口）| TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
@@ -19,7 +19,7 @@
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |
 | TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v -race ./cmd/goxml/watch/... ./pkg/runtime/hydration/... |
 | TASK-DEVX-002 | cli/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | go test -v ./cmd/goxml/preview/... |
-| TASK-OS-001 | platform | 实现 Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | CGO_ENABLED=0 go test -v ./pkg/platform/clipboard/... ./pkg/platform/dialog/... |
+| TASK-OS-001 | platform | 实现 Windows Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | Windows: CGO_ENABLED=0 go test -v ./pkg/platform/clipboard/... ./pkg/platform/dialog/... |
 | TASK-OS-002 | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macOS 允许 CGO） | TASK-OS-001 | make build-windows && make build-linux |
 | TASK-WIDGET-001 | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | go test -v ./pkg/widgets/... |
 | TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | go test -bench . -benchmem ./benchmarks/... |
@@ -71,7 +71,7 @@ WBS、任务卡、契约状态、开发日志与实际代码必须能相互对�
 
 | 说法 | 实际含义 |
 |---|---|
-| **契约冻结 ≠ 实现完成** | 契约描述「应当如何」，实现是「是否做到了」。`ROOT-002` 等 10 个码的语义已定稿，但其中只有 1 个已能发射 |
+| **契约冻结 ≠ 实现完成** | 契约描述「应当如何」，实现是「是否做到了」。当前 Analyzer 诊断码已全部有发射点，但 REQ-002 至 REQ-006 仍有未实现能力，状态以需求清单和任务卡为准 |
 | **单元测试通过 ≠ 端到端门禁已验证** | Codegen 的单元测试证明「能生成可编译代码」，但不证明「管线失败时不产生产物」——后者需要编排层的真实调用链测试（`TASK-ORCH-001`）。两者证据不可互替；`StatusOK` 也不代表生成结果正确 |
 
 这两条正是本项目最容易产生状态漂移的地方：把「设计已定」误读成「功能可用」，或把「组件测试通过」误读成「管线可用」。

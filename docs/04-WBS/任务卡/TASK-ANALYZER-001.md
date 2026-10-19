@@ -30,7 +30,7 @@
 | 5 | `<For>` 可迭代性与循环变量作用域 | `SCOPE-004` | ✅ 完成（随步骤 2 一并实现） |
 | — | **整体验收**（诊断码 / Status / IR / 夹具） | — | ✅ 通过，见 `docs/06-测试/Analyzer验收报告.md` |
 | — | `Analyze` 总入口与 `Status` 判定 | — | ✅ 完成 |
-| — | 编排层门禁（`StatusOK` 才发凭证） | — | ⬜ |
+| — | 编排层门禁（仅 `StatusOK` 且无诊断时进入 Codegen） | — | ✅ 已由 `TASK-ORCH-001` 验收 |
 
 ### 第 4 步已完成的内容
 
@@ -102,12 +102,11 @@ $ go test ./internal/compiler/diagdoc/
 ok  （诊断码目录一致性门禁）
 ```
 
-### 完成全部 5 步后必须补齐
+### 完成后的证据与边界
 
-- 夹具期望表全部启用（`TestAnalyzeBehavior` 从 `t.Skip` 改为实际断言）
-- `Partial`/`Blocked` 情形下 `Verified()` 拒绝发放凭证
-- **编排层实测**：用失败输入跑完整管线，断言没有产生任何生成产物
-  → ✅ 已由 `TASK-ORCH-001`（`d5c083b`）完成，见该任务卡 §6.1
+- `Verified()` 对 `Partial`/`Blocked` 拒绝签发：由 `TestPartialCannotGetVerifiedDoc` 和 `TestBlockedCannotGetVerifiedDoc` 锁定。
+- 编排层以真实调用链验证失败门禁：见 `TASK-ORCH-001` §6.1。
+- 行为夹具 15/16 启用；剩余组合的 v1 限制和待启用理由见 Analyzer 验收报告，不把它计作未解释的缺口。
 
 ## 6. 验收结论
 
@@ -121,4 +120,4 @@ ok  （诊断码目录一致性门禁）
 
 - ~~编排层尚不存在~~ → 已由 `TASK-ORCH-001`（`d5c083b`）实现，
   `StatusBlocked` 已接到管线总入口。
-- 索引访问、Map 取值、方法调用等表达式形式未设计（语法未冻结）。
+- 索引访问、Map 取值与任意方法调用不属于 GXML v1 的点分字段路径；扩展须更新语言规范与 Analyzer 契约。

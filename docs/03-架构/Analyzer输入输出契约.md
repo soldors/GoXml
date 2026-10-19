@@ -1,8 +1,9 @@
 # Analyzer 输入输出契约
 
-- 状态：**部分冻结**（§1–§6、§8.2–§8.3 已定稿；§7 待 Q7 确认）
+- 状态：**冻结；核心实现已落地**
+- 最后核对：2026-10-19
 - 适用阶段：`TASK-ANALYZER-001`
-- 前置任务：`EXPANDER` 输出 Schema（见 §9 变更清单）
+- 前置任务：`TASK-EXPANDER-001`（已完成）
 - 相关：ADR-0001、ADR-0002、ADR-0003、`GXML语言规范.md`、`诊断码目录.md`
 
 ## 1. 目的与范围
@@ -31,31 +32,31 @@ Parser ──► Expander ──► Analyzer ──► Codegen
 
 ## 2. 现状核实（对照代码）
 
-本文基于 2026-10-18 的仓库状态。以下是**实际代码**，不是设想：
+以下按 2026-10-19 仓库代码核对，描述的是**实际实现**：
 
 | 结构 | 实际定义 | 是否满足 Analyzer |
 |---|---|---|
-| `expander.Result` | `{Doc *contracts.DocumentIR; Diags []contracts.CompilerError}` | ❌ 缺 Schema |
-| `expander.ComponentSchema` | `{Tag string; Properties []PropertySchema; Events []contracts.EventSchema}` | ✅ 内容足够，但**未导出** |
+| `expander.Result` | `{Doc *contracts.DocumentIR; Schemas SchemaRegistry; Diags []contracts.CompilerError}` | ✅ 与文档同一展开上下文 |
+| `expander.ComponentSchema` | `{Tag string; Properties []PropertySchema; Events []contracts.EventSchema}` | ✅ 已导出 |
 | `expander.PropertySchema` | `{Name string; Type contracts.PropType; Required bool}` | ✅ |
 | `contracts.EventSchema` | `{Name string; Params []EventParam; Span SourceSpan}` | ✅ |
 | `contracts.EventParam` | `{Name string; Type PropType}` | ⚠️ 无独立 Span，沿用 `EventSchema.Span` |
-| `contracts.DocumentIR` | 含 `ViewModel string` | ❌ **纯字符串，无源码位置** |
+| `contracts.DocumentIR` | 含 `ViewModelDecl{Value, Span}` | ✅ 保留原值与属性源码位置 |
 | `contracts.NodeIR.Attrs` | `AttrList`，每项含 `Span` | ✅ 已分类且带位置 |
 | `contracts.NodeIR.Events` | `[]EventBinding`，含 `Name`/`Method`/`Args`/`Span` | ✅ 已分类且带位置 |
 | `contracts.PropType` | `Unknown/String/Bool/Int/Float/Color/Insets` | ✅ 6 种具体类型 |
 
-**结论**：开始实现前必须先完成 §9 的三项契约变更。
+类型兼容、事件签名和 `<For>` 作用域均已有实现与测试；`VerifiedDoc` 门禁由 Analyzer 构造，编排层只在 `StatusOK` 且无诊断时调用 Codegen。验收记录见 `TASK-ANALYZER-001` 和 `TASK-ORCH-001`。
 
 ## 3. 输入 A：Expander 输出
 
 ### 3.1 形态
 
 ```go
-// 变更后（见 §9），位于 internal/compiler/expander
+// 位于 internal/compiler/expander
 type Result struct {
     Doc     *contracts.DocumentIR
-    Schemas SchemaRegistry          // 新增
+    Schemas SchemaRegistry
     Diags   []contracts.CompilerError
 }
 
@@ -774,9 +775,9 @@ Analyzer 必须**分别构建并校验**三项独立信息：
 |---|---|
 | `Click="Delete(item.ID)"` | ✅ 保持合法，不因 `Click` 无载荷而改变既有调用语义 |
 | `ValueChanged="OnNameChanged"` | ✅ 不要求 XML 显式写出 `value`；事件触发时由组件提供载荷 |
-| 规范 §5.5「实参必须与处理方法签名匹配」 | ⚠️ 需修订为「**载荷与实参拼接后**必须与处理方法签名匹配」 |
+| 规范 §5.5 事件参数匹配 | ✅ 已在 `GXML语言规范.md` 同步为「载荷与调用点实参拼接后」匹配方法签名 |
 
-最后一条是规范正文的实质性修订，需同步更新 `GXML语言规范.md` §5.5。
+该修订已进入冻结的 GXML v1 语言规范。
 
 
 ## 9. 冻结状态
@@ -792,34 +793,22 @@ Analyzer 必须**分别构建并校验**三项独立信息：
 | §8.3 取反类型要求 | ✅ 已定稿（Q6 已决） |
 | §8.4 事件载荷与实参（Q7） | ✅ 已定稿（方案 A） |
 
-**契约已全部冻结，三项代码变更可以开始。**
+**契约已冻结，列出的数据结构、诊断语义和准入边界已进入实现。**
 
-Q7 确认后，`SchemaRegistry` 的接口形态已经明确：它必须能提供事件声明参数（名称 + 类型），供 §8.4 的 R2/R3 校验使用。
+已实现的 `SchemaRegistry` 提供事件声明参数（名称 + 类型），供 §8.4 的数量与类型校验使用。
 
 
-## 10. 冻结前必须完成的契约变更
+## 10. 已完成的契约落地
 
-以下三项是**实现前置条件**。建议按此顺序**分三次提交**，这样出现回归时能清楚判断是 Schema 接口、源码位置还是诊断契约引入的问题。
+本节保留原实现前置清单，记录其落地事实，避免把历史计划误读为当前欠项。
 
-| 顺序 | 变更 | 文件 | 说明 |
-|---|---|---|---|
-| 1 | `Result` 增加 `Schemas` | `internal/compiler/expander/expander.go` | 导出 `ComponentSchema` 与只读查询接口；合并 `builtinSchemas` |
-| 2 | `DocumentIR` 记录 `ViewModel` 位置 | `contracts/ir_schema.go` | 现在只有 `ViewModel string`，报 `ROOT-002` 时无法指向属性。改为 `ViewModelDecl{Value string; Span SourceSpan}` |
-| 3 | 诊断码定稿 | `docs/03-架构/诊断码目录.md` + 各包常量 | 按 §7 定稿后再实现，避免实现中反复改号 |
-| 4 | 语义 IR 类型定义 | 新建 `internal/compiler/analyzer/ir.go` | 按 §6.4–§6.9 定义 `Status`/`Result`/`Facts`/`Resolved*`/`TypeInfo` 等类型，**暂不实现校验逻辑** |
-| 5 | 契约测试夹具 | `internal/compiler/analyzer/testdata/` | 按 §6.12 建 15 个夹具的目录骨架与期望文件，先不实现 Analyzer |
-
-**提交顺序**：第 1–3 项已完成（见 Git 提交 `5e71510`、`ef92216`、`f203443`）。第 4–5 项是**纯结构定义**，不含校验逻辑——先固定类型与夹具，再实现，避免临时 IR 被推翻。
-
-每项的验收要求：
-
-| 变更 | 验收 |
-|---|---|
-| 1. `Schemas` | 能查询到内置控件与用户组件的契约；布局标签返回 nil；现有测试全绿 |
-| 2. `ViewModelDecl` | 合法与非法 `ViewModel` 声明都能定位到属性列；`ROOT-002` 的 Span 非零 |
-| 3. 诊断码 | 目录与代码一致性门禁通过；`GXML-BIND-001` 的既有承诺调整有明确记录 |
-| 4. 语义 IR 类型 | 能编译；`contracts` 仍不依赖 `go/types`；`Verified()` 在非 OK 时返回 error；类型定义有注释说明「消费者不得解析 `Display`」 |
-| 5. 夹具骨架 | 15 个夹具目录齐全，每个含 `.gxml` 与期望状态/诊断码；夹具 Go 类型包可被 `go/packages` 加载 |
+| 原顺序 | 变更 | 实际证据 |
+|---|---|---|
+| 1 | Expander Schema 注册表 | `expander.Result.Schemas`、导出的 `ComponentSchema`、内置和自定义 Schema 查询测试 |
+| 2 | ViewModel 源码位置 | `contracts.ViewModelDecl` 保存 `Value` 与 `Span`；Analyzer 测试覆盖 `ROOT-002` 定位 |
+| 3 | 诊断契约 | `diagdoc` AST 门禁；Analyzer 11 个码均有生产发射点 |
+| 4 | 语义 IR 与凭证 | `analyzer.VerifiedDoc` 字段未导出；非 `StatusOK` 结果无法取得凭证 |
+| 5 | 夹具 | 16 个行为夹具中 15 个启用；1 个 v1 不支持的组合保留原因并由测试守护，见 Analyzer 验收报告 |
 
 ## 11. 类型兼容契约（Go 类型 → `PropType`）
 

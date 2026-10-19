@@ -12,15 +12,9 @@ import (
 
 // Analyze 校验文档语义并产出语义 IR。
 //
-// 当前实现范围（契约 §6.13 的「第 2 步」）：
-//
-//   - 解析 ViewModel 声明（第 1 步，已完成）
-//   - 解析绑定路径：属性绑定、`<If Condition>`、`<For In>` / `<For Key>`
-//   - 建立 `<For>` 作用域，使循环变量可作为绑定根
-//
-// **尚未实现**：属性目标类型匹配（BIND-004）、事件签名校验
-// （EVENT-003/004/006）。这些留给后续步骤，因此当前 StatusOK 只代表
-// 「路径层面通过」，**不代表整条语义链已验证**。
+// 校验 ViewModel、绑定路径与目标属性类型、事件处理方法签名，以及
+// <If>/<For> 的类型和作用域约束。StatusOK 表示本阶段全部检查通过；
+// VerifiedDoc 是进入 Codegen 的唯一凭证。
 func Analyze(
 	file string,
 	doc *contracts.DocumentIR,
