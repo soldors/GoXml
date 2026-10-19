@@ -82,16 +82,39 @@ func Run(view View, cfg Config) error {
 	return RunWith(view, material.NewTheme(), cfg)
 }
 
-// RunWith 与 Run 相同，但允许注入主题。
+// App 是生产形态的运行入口：先持有句柄，后阻塞驱动（ADR-0010 实现项）。
 //
-// 注入主题的意义：主题可能带有字体集合等初始化成本，调用方可能希望
-// 在多个窗口间复用，或在测试中传入受控主题。
-func RunWith(view View, th *material.Theme, cfg Config) error {
+// 与 Run/RunWith 的关系：那两个是一行式便捷包装（内部 NewApp + Run）；
+// 需要在后台 goroutine 触发重绘（ticker、网络回调、事件处理器）时，
+// 用 NewApp 在 Run 之前拿到 *App，即可并发安全地调用 Invalidate。
+//
+// 典型形态：
+//
+//	a, err := app.NewApp(view, th, cfg)
+//	if err != nil { ... }
+//	go func() {                       // 后台工作线程
+//	    for range time.Tick(time.Second) {
+//	        vm.Set(...)               // 状态同步由调用方负责
+//	        a.Invalidate()
+//	    }
+//	}()
+//	a.Run()                           // 主线程阻塞
+type App struct {
+	w    *app.Window
+	view View
+	th   *material.Theme
+}
+
+// NewApp 校验参数并创建运行句柄。
+//
+// 平台窗口在首次 w.Event() 时才真正创建（S0 源码证据），因此本函数
+// 不涉及显示服务器；错误只来自参数校验。
+func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 	if view == nil {
-		return fmt.Errorf("app: nil view")
+		return nil, fmt.Errorf("app: nil view")
 	}
 	if th == nil {
-		return fmt.Errorf("app: nil theme")
+		return nil, fmt.Errorf("app: nil theme")
 	}
 	cfg = cfg.withDefaults()
 
@@ -100,13 +123,46 @@ func RunWith(view View, th *material.Theme, cfg Config) error {
 		app.Title(cfg.Title),
 		app.Size(cfg.Width, cfg.Height),
 	)
+	return &App{w: w, view: view, th: th}, nil
+}
 
-	// 事件循环放在 goroutine 中，主线程交给 app.Main()。
-	go loop(w, view, th)
+// Invalidate 请求窗口产生下一帧（状态更新契约 §2）。
+//
+// 并发安全。本项目实测（S3）：事件循环启动前调用也安全——
+// Gio 的 mayInvalidate 零值为 false，driver 未创建时静默跳过，不 panic。
+//
+// 职责边界：
+//   - 只请求重绘，不修改任何状态、不感知 ViewModel；
+//   - 不承诺每次调用对应一个独立帧（Gio 可合并连续失效）；
+//   - ⚠️ 不等于 ViewModel 字段读写的并发安全——跨 goroutine 修改
+//     状态数据的同步由调用方负责。
+func (a *App) Invalidate() {
+	a.w.Invalidate()
+}
 
-	// mainFunc 默认是 app.Main()：接管主线程，窗口关闭后返回。
+// Run 阻塞驱动主循环，直到窗口关闭。
+//
+// 必须在主系统线程调用（内部走 app.Main()，契约 §4）。
+// 后台 goroutine 应在本调用之前启动，并使用 a.Invalidate() 请求重绘。
+func (a *App) Run() error {
+	go loop(a.w, a.view, a.th)
 	mainFunc()
 	return nil
+}
+
+// RunWith 与 Run 相同，但允许注入主题。
+//
+// 注入主题的意义：主题可能带有字体集合等初始化成本，调用方可能希望
+// 在多个窗口间复用，或在测试中传入受控主题。
+//
+// 一行式形态：内部 NewApp + Run。需要在后台 goroutine 触发重绘时，
+// 请改用 NewApp 拿句柄——RunWith 返回时阻塞已结束，句柄无处可取。
+func RunWith(view View, th *material.Theme, cfg Config) error {
+	a, err := NewApp(view, th, cfg)
+	if err != nil {
+		return err
+	}
+	return a.Run()
 }
 
 // loop 驱动事件循环直到窗口关闭。

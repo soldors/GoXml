@@ -1,6 +1,6 @@
 # AGENT.md: Goxml Multi-AI Engineering Directives
 
-> 本文件是所有参与 **Goxml** 框架开发、重构、测试与代码审查的 AI Agent（如 Claude Code、Cursor、Windsurf、Aider 等）的**最高行为准则与架构约束协议**。在执行任何代码改动、测试编写或架构调整前，必须严格通读并无条件恪守本规范。
+> 本文件是所有参与 **Goxml** 框架开发、重构、测试与代码审查的 AI Agent（如 Claude Code、Cursor、Windsurf、Aider 等）的执行规则与协同约束。它规定工作流、红线和交接要求；产品语义以正式契约和已批准 ADR 为准。若本文件与正式契约或已批准 ADR 冲突，必须登记冲突并交项目所有者裁决，执行者不得自行取舍。
 
 ## 1. 项目定位与核心指标 (Project Identity)
 

@@ -1,7 +1,7 @@
 # Goxml 多 AI 协同开发宪章
 
 ## 1. 启动接手七步法（任何 AI Agent 启动必读）
-1. 查阅 docs/00-文档索引.md 与 docs/03-架构/架构说明.md，明确四大红线（Zero-CGO、编译期零反射 Diff、无运行时 XML/CSS 解析、异步 OS 弹窗）。
+1. 查阅 docs/00-文档索引.md 与 docs/03-架构/架构说明.md，明确五大架构红线（Windows 侧 Zero-CGO、编译期零反射 Diff、无运行时 XML/CSS 解析、异步 OS 弹窗、帧热路径零分配）。Linux/macOS 按平台矩阵使用 Gio 所需的 CGO，不把全平台 Zero-CGO 当作现行约束。
 2. 读取目标任务卡 docs/04-WBS/任务卡/TASK-xxx.md 第 1 节“背景与上下文”及对应交接包。
 3. 读取 docs/08-踩坑/ 关联踩坑点。
 4. 终端执行 make setup && make test，确保基线代码 100% 绿色通过。

@@ -92,8 +92,32 @@ S0 核查同时确认：
 
 | 项 | 状态 |
 |---|---|
-| Invalidate 并发安全 | ✅ 源码证据（S0） |
-| Event 唤醒 | ✅ 源码证据（S0） |
-| 持有引用的构造形态 | ⬜ S2 实现验证 |
-| 端到端自动刷新 | ⬜ S3 真实窗口验证 |
-| 整窗失效性能充分性 | ⬜ S4/S5 测量决定 |
+| Invalidate 并发安全 | ✅ 源码证据（S0）+ 并发测试（8×100 无 panic，S3） |
+| Event 唤醒 | ✅ 源码证据（S0）+ 真实窗口端到端（S2/S3） |
+| 持有引用的构造形态 | ✅ `TestGeneratedConstructorRejectsNilVM` 对真实生成代码断言（S3，B0-F10 闭环） |
+| `RunWindowWithInvalidator` 真实窗口刷新 | ✅ S2 受测场景通过 |
+| **生产句柄形态 `NewApp`/`Run`/`Invalidate`** | ✅ S3 实现；`TestAppRunDrivesAndInvalidateRefreshes` 真实窗口验证 AAAA→WWWWWWWW；动态 demo（ticker 计数）冒烟存活 |
+| **首帧前 Invalidate 语义** | ✅ 实测：安全静默跳过（mayInvalidate 零值 false + 真实窗口实测双重证据），无需就绪门 |
+| 整窗失效性能充分性 | ⬜ S4 测量决定 |
+
+## 6. S3 实现补充（2026-10-19）
+
+生产 API 采纳**持久句柄形态**：`NewApp(view, th, cfg) (*App, error)` +
+`(*App).Run() error` + `(*App).Invalidate()`。
+
+选择理由：
+
+- `app.Main()` 永不返回，任何「从返回值拿句柄」的方案不成立；
+- 回调形态（`RunWith(..., onReady func(Invalidator))`）会迫使每个使用者
+  为取句柄搭一套通道桥接；句柄形态在阻塞前就绪，后台 goroutine 直接使用；
+- 与 Gio 自身「先 `new(app.Window)` 后驱动」的惯例同构。
+
+`Run`/`RunWith` 保留为 `NewApp`+`Run` 的薄包装，一行式场景零破坏；
+`RunWindow`/`RunWindowWithInvalidator`（测试集成形态）不变。
+
+动态 demo（`examples/demo`）：.gxml 声明 `ViewModel="demoVM"`（同包形式）+
+绑定 `{Title}`，管线真实产出绑定代码，后台 ticker 每秒更新并 Invalidate。
+冒烟验证进程存活 8 秒（ticker 与主循环共存）。
+
+**发现的接口语义澄清**：`SourceDir` 是同包 ViewModel 的解析目录。
+demo 最初误设为仓库根导致 `GXML-ROOT-002`，修正为 demo 目录。

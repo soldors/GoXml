@@ -2,6 +2,8 @@
 
 | Task ID | 模块 | 标题 | 依赖 | 核心验收命令 |
 |---|---|---|---|---|
+| TASK-DOC-BASELINE-001 | docs | 批次 0 文档冻结与基线建立 | 范围与退出门槛确认（已完成） | 0A 完成；0B 进行中，0D 门禁校准已推进；见任务卡及 B0 清单 |
+| TASK-B0-ADR-CONFLICT-001 | docs/architecture | 裁决 AOT Diff 的版本定位并校准追踪链 | - | 等待项目所有者裁决；见任务卡与 B0-F01 |
 | TASK-CONTRACT-001 | contracts | 定义编译器 IR 与运行时核心接口契约 | - | go test -v ./contracts/... |
 | TASK-PARSER-001 | parser | 实现带行列号的 GXML 语法分析与控制流解析 | TASK-CONTRACT-001 | go test -v ./internal/compiler/parser/... |
 | TASK-PARSER-002 | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding) | TASK-PARSER-001 | go test -v ./internal/compiler/parser/... |
@@ -14,10 +16,11 @@
 | TASK-BINDING-IMPLEMENT-003 | codegen | 绑定显示缓存与 shaping 观测验证 | TASK-BINDING-IMPLEMENT-002 | 显示缓存已实现；契约场景③/⑤和 Gio shaping 证据未闭环，见验收报告 |
 | TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口）| TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
+| TASK-GENERATE-CLI-001 | cli/generate | 实现 Generate CLI、Manifest 与输出清理边界 | TASK-CODEGEN-001、TASK-ORCH-001、TASK-SEC-001 | go test -v ./cmd/goxml/... |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen/runtime | 状态更新与 UI 自动刷新（AOT Diff 降为 S5 评估项） | TASK-CODEGEN-001 | 见 `TASK-STATE-001` 分阶段验收 |
-| TASK-STATE-IMPLEMENT-001 | codegen/runtime | S2 最小状态通知机制与统一绑定 View 接口 | TASK-STATE-001、ADR-0010 | 真实窗口端到端验收；当前进行中，未签收 |
+| TASK-STATE-IMPLEMENT-001 | codegen/runtime | S2 最小状态通知机制与统一绑定 View 接口 | TASK-STATE-001、ADR-0010 | 生成构造函数 nil 回归测试已补；定向和 Codegen 全包测试在当前工作区通过，待提交证据归档 |
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开 | TASK-CODEGEN-001 | go test -v ./internal/compiler/macro/... ./pkg/runtime/theme/... |
 | TASK-FONT-001 | theme/font | 实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收 | TASK-STYLE-001 | go test -v ./pkg/runtime/theme/... |
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |

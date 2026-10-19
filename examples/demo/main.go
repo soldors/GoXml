@@ -1,20 +1,22 @@
 // Command demo 演示 Goxml 的最小端到端链路：
 //
 //	.gxml → Parser → Expander → Analyzer → Codegen → 真实窗口
+//	→ 后台状态更新 → Invalidate → 自动刷新
 //
 // 页面由内嵌的 .gxml 源码走完整管线生成，再交给 pkg/runtime/app 渲染。
 //
 // 这是 demo，不是 CLI——没有目录发现、没有写盘、没有 watch。
 //
-// 当前边界（运行时入口契约 §5）：
-//   - Codegen 只支持 <Page> + 单个静态 <Text>；
-//   - 窗口是否真的显示需人工确认，自动化只能验证「启动不崩溃」。
+// 动态部分（S3）：后台 ticker 每秒更新计数并请求失效，
+// 演示「状态变化 → 失效 → 下一帧显示新值」的生产形态闭环。
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/widget/material"
@@ -23,10 +25,10 @@ import (
 	"github.com/goxml/goxml/pkg/runtime/app"
 )
 
-// page 是演示页面。刻意保持最小：静态文本，无绑定、无事件。
-const page = `<Goxml Version="1">
+// page 是演示页面。绑定 {Title}：值由后台 goroutine 每秒更新。
+const page = `<Goxml Version="1" ViewModel="demoVM">
   <Page Route="/">
-    <Text Value="Hello, Goxml"/>
+    <Text Value="{Title}"/>
   </Page>
 </Goxml>`
 
@@ -37,16 +39,43 @@ func main() {
 	}
 }
 
-// run 走完整管线并把结果接到窗口。
+// demoVM 是演示 ViewModel。
+//
+// ⚠️ 状态同步由调用方负责（状态更新契约 §2.3）：
+// 失效通知（Invalidate）并发安全 ≠ 字段读写并发安全，
+// 因此这里用 mutex 保护，UI 线程读取也走锁。
+type demoVM struct {
+	mu    sync.Mutex
+	Title string
+}
+
+func (m *demoVM) Set(t string) {
+	m.mu.Lock()
+	m.Title = t
+	m.mu.Unlock()
+}
+
+func (m *demoVM) Get() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Title
+}
+
+// run 走完整管线、编译生成代码语义等价的视图，并接入窗口。
+//
+// 说明：demo 保持**单进程、单编译单元**——生成代码不会被写盘再编译
+// （那需要外部 go build）。页面结构由真实管线产出并打印，
+// 视图实现与生成器按同一契约手写（见 demoView 注释）。
 func run() error {
 	root, err := moduleRoot()
 	if err != nil {
 		return err
 	}
 
+	// SourceDir 指向 demo 目录：同包 ViewModel（demoVM）在这里解析。
 	res := pipeline.Run("demo.gxml", []byte(page), pipeline.Config{
 		ModuleRoot:  root,
-		SourceDir:   root,
+		SourceDir:   filepath.Join(root, "examples", "demo"),
 		PackageName: "main",
 		SourcePath:  "demo.gxml",
 	}, pipeline.Hooks{})
@@ -57,25 +86,53 @@ func run() error {
 	// 打印生成结果：证明管线确实产出了源码，而非 demo 里硬编码界面。
 	fmt.Printf("--- 生成 %s ---\n%s\n", res.Artifact.OutputName, res.Artifact.Source)
 
-	return app.RunWith(&demoView{text: "Hello, Goxml"}, material.NewTheme(), app.Config{
+	vm := &demoVM{Title: "启动中…"}
+	view := newDemoView(vm)
+
+	a, err := app.NewApp(view, material.NewTheme(), app.Config{
 		Title:  "Goxml Demo",
 		Width:  640,
 		Height: 360,
 	})
+	if err != nil {
+		return err
+	}
+
+	// 后台 ticker：每秒更新状态并请求失效（生产典型形态）。
+	go func() {
+		n := 0
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for range tick.C {
+			n++
+			vm.Set(fmt.Sprintf("已运行 %d 秒（后台 goroutine 更新）", n))
+			a.Invalidate()
+		}
+	}()
+
+	return a.Run()
 }
 
-// demoView 与 Codegen 生成的视图等价。
+// demoView 与生成代码的运行形态同构（ADR-0010）：
 //
-// 真实链路中生成代码会被写盘并一起编译；demo 保持单进程，因此这里用
-// **与生成器同一契约**的实现：生成的 Layout 方法体正是
-// `return material.Body1(th, "Hello, Goxml").Layout(gtx)`。
+//   - 构造时持有 vm 引用；
+//   - Layout(gtx, th) 两参（统一 View 接口）；
+//   - 布局体内从 vm 读取显示值。
 //
 // 不解析生成源码——那等于再写一个解释器，且会掩盖 Codegen 的真实职责。
-type demoView struct{ text string }
+type demoView struct{ vm *demoVM }
+
+// newDemoView 对应生成代码的构造语义：nil vm 明确拒绝（状态更新契约 §4）。
+func newDemoView(vm *demoVM) *demoView {
+	if vm == nil {
+		panic("demo: nil ViewModel") // demo 内直接暴露配置错误
+	}
+	return &demoView{vm: vm}
+}
 
 // Layout 实现 app.View。
 func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	return material.Body1(th, v.text).Layout(gtx)
+	return material.Body1(th, v.vm.Get()).Layout(gtx)
 }
 
 // moduleRoot 返回仓库根目录。
