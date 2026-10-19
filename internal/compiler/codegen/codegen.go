@@ -136,8 +136,13 @@ type generator struct {
 type clickSlot struct {
 	// index 对应生成字段 click<index>。
 	index int
-	// method 是 ViewModel 上的无参方法名。
+	// method 是 ViewModel 上的方法名。
 	method string
+	// args 是已渲染的实参列表（逗号分隔，可为空）。
+	//
+	// 实参来自 Analyzer 的 ResolvedArg（事件处理输出契约 §5.4），
+	// Codegen 只负责渲染语法。
+	args string
 }
 
 // page 生成页面根节点的渲染体。
@@ -279,17 +284,21 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 			return "", fmt.Errorf(
 				"codegen: <Button> event %q is not supported in this slice; only Click", ev.Name)
 		}
-		if len(ev.Args) > 0 {
-			// 带参事件的阻断点在契约 §5.2：Facts 不携带实参值，
-			// 回读原始实参违反「不得自行解析」红线。
-			return "", fmt.Errorf(
-				"codegen: event arguments are not supported in this slice (Click=%q has %d argument(s)); use a parameterless handler",
-				ev.Method, len(ev.Args))
-		}
 		if ev.Method == "" {
 			return "", fmt.Errorf("codegen: Click has no method name")
 		}
-		g.clicks = append(g.clicks, clickSlot{index: idx, method: ev.Method})
+		// 实参**只**取自已验证的 Facts，不回读原始文本。
+		resolved, ok := lookupEvent(n, ev.Name, g.facts)
+		if !ok {
+			return "", fmt.Errorf(
+				"codegen: event %q on <%s> has no resolved facts; the analyzer result is inconsistent",
+				ev.Name, n.Tag)
+		}
+		args, err := g.renderEventArgs(resolved.CallArgs)
+		if err != nil {
+			return "", err
+		}
+		g.clicks = append(g.clicks, clickSlot{index: idx, method: ev.Method, args: args})
 	}
 
 	// 标签：绑定优先（经 Facts），否则静态字面量；缺省为空标签（Schema 非必选）。
@@ -414,7 +423,7 @@ func (g *generator) assemble(body string) (string, error) {
 		// 事件消费：必须在绘制之前（契约 §2.1/§2.2）。
 		for _, cs := range g.clicks {
 			b.WriteString(fmt.Sprintf("\tfor v.click%d.Clicked(gtx) {\n", cs.index))
-			b.WriteString("\t\tv.vm." + cs.method + "()\n")
+			b.WriteString("\t\tv.vm." + cs.method + "(" + cs.args + ")\n")
 			b.WriteString("\t\tgtx.Execute(op.InvalidateCmd{})\n")
 			b.WriteString("\t}\n")
 		}

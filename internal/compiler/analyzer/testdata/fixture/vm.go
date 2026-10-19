@@ -51,6 +51,10 @@ type ViewModel struct {
 	State  Status // 命名类型 + Stringer
 	secret string // 根级未导出字段：用于 BIND-003
 	Meta          // 嵌入：验证提升字段
+
+	// 带参事件的实参记录（供 Codegen 验证「实参真的传进去了」）。
+	LastText string
+	LastNum  int
 }
 
 // Display 是零参单返回值方法，可作为路径段。
@@ -101,6 +105,20 @@ func (vm *ViewModel) OnToggle(b bool) {}
 
 // Increment 是零参无返回值的合法处理器，用于 <Button Click="Increment"/>。
 func (vm *ViewModel) Increment() { vm.Count++ }
+
+// ---- 带参事件处理器：记录实参，供「实参真的传进去了」验证 ----
+
+// RecordText 接收字符串实参并记录（用于 Click="RecordText(”draft”)"）。
+func (vm *ViewModel) RecordText(s string) {
+	vm.LastText = s
+	vm.Title = s
+}
+
+// RecordNum 接收整数实参并记录（用于 Click="RecordNum(42)" 或路径实参）。
+func (vm *ViewModel) RecordNum(n int) {
+	vm.LastNum = n
+	vm.Count = n
+}
 
 // Reset 同为零参无返回值处理器，用于验证多个 Button 各自独立接线。
 func (vm *ViewModel) Reset() { vm.Count = 0 }

@@ -135,21 +135,6 @@ func TestButtonMultipleButtons(t *testing.T) {
 	}
 }
 
-// TestButtonRejectsArguments 带参事件必须显式报错（契约 §5.3）。
-func TestButtonRejectsArguments(t *testing.T) {
-	v := verified(t, `<Button Text="x" Click="Delete(User.Age)"/>`)
-	out, err := Generate(v, bindingOpts())
-	if err == nil {
-		t.Fatal("带参事件应报错")
-	}
-	if len(out) != 0 {
-		t.Error("失败时不得产出部分源码")
-	}
-	if !strings.Contains(err.Error(), "argument") {
-		t.Errorf("错误信息应说明实参不支持: %v", err)
-	}
-}
-
 // TestButtonRejectsEnabled Enabled 不在 MVP 范围，必须显式报错而非静默忽略。
 func TestButtonRejectsEnabled(t *testing.T) {
 	v := verified(t, `<Button Text="x" Click="Increment" Enabled="false"/>`)

@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/goxml/goxml/contracts"
 	"github.com/goxml/goxml/internal/compiler/analyzer"
@@ -22,23 +23,33 @@ func bindingExpr(ra analyzer.ResolvedAttr, vm string) (string, error) {
 	if ra.Path == nil {
 		return "", fmt.Errorf("codegen: attr %s has no resolved path", ra.Name)
 	}
-	path := ra.Path
+	return pathExpr(ra.Path, vm, ra.Name)
+}
+
+// pathExpr 把一个已解析路径渲染为 Go 表达式。
+//
+// 属性绑定与事件路径实参共用本函数——两者的路径语义必须一致
+// （事件处理输出契约 §5.4.3）。
+func pathExpr(path *analyzer.ResolvedPath, vm, what string) (string, error) {
+	if path == nil {
+		return "", fmt.Errorf("codegen: %s has no resolved path", what)
+	}
 
 	// 起点：ViewModel 根 或 <For> 循环变量。
 	var base string
 	switch path.RootKind {
 	case analyzer.RootViewModel:
 		if vm == "" {
-			return "", fmt.Errorf("codegen: attr %s binds to ViewModel but no vm parameter available", ra.Name)
+			return "", fmt.Errorf("codegen: %s binds to ViewModel but no vm parameter available", what)
 		}
 		base = vm
 	case analyzer.RootForVar:
 		if path.Root == "" {
-			return "", fmt.Errorf("codegen: attr %s binds to a <For> variable but root is empty", ra.Name)
+			return "", fmt.Errorf("codegen: %s binds to a <For> variable but root is empty", what)
 		}
 		base = path.Root
 	default:
-		return "", fmt.Errorf("codegen: attr %s has unknown root kind %v", ra.Name, path.RootKind)
+		return "", fmt.Errorf("codegen: %s has unknown root kind %v", what, path.RootKind)
 	}
 
 	expr := base
@@ -57,6 +68,59 @@ func bindingExpr(ra analyzer.ResolvedAttr, vm string) (string, error) {
 	}
 
 	return expr, nil
+}
+
+// renderEventArg 把已校验的事件实参渲染为 Go 表达式（契约 §5.4.3）。
+//
+// 只使用结构化的 Kind/Literal/Path；`Literal.Raw` 仅用于诊断，禁止据此生成。
+func (g *generator) renderEventArg(a analyzer.ResolvedArg) (string, error) {
+	switch a.Kind {
+	case analyzer.ArgLiteral:
+		switch a.Literal.Kind {
+		case analyzer.LiteralString:
+			// 统一走 quote()：Go 转义规则只存在一处（与属性字面量同套）。
+			return quote(a.Literal.Str), nil
+		case analyzer.LiteralInt:
+			return strconv.FormatInt(a.Literal.Int, 10), nil
+		case analyzer.LiteralFloat:
+			return strconv.FormatFloat(a.Literal.Float, 'g', -1, 64), nil
+		case analyzer.LiteralBool:
+			if a.Literal.Bool {
+				return "true", nil
+			}
+			return "false", nil
+		default:
+			return "", fmt.Errorf("codegen: event argument has unsupported literal kind %v (raw %q)",
+				a.Literal.Kind, a.Literal.Raw)
+		}
+
+	case analyzer.ArgPath:
+		if a.Path != nil && a.Path.RootKind == analyzer.RootForVar {
+			// <For> 循环变量尚未实现——没有可引用的变量名。
+			return "", fmt.Errorf(
+				"codegen: event argument bound to a <For> variable is not supported yet")
+		}
+		return pathExpr(a.Path, "v.vm", "event argument")
+
+	default:
+		return "", fmt.Errorf("codegen: event argument has unsupported kind %v", a.Kind)
+	}
+}
+
+// renderEventArgs 渲染实参列表；空列表返回空串。
+func (g *generator) renderEventArgs(args []analyzer.ResolvedArg) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		s, err := g.renderEventArg(a)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, ", "), nil
 }
 
 // propFacts 从 Facts 取一个节点的属性事实列表。
@@ -205,4 +269,24 @@ func (v *` + view + `) bindText(gtx layout.Context, th *material.Theme, slot int
 	return c.dims
 }
 `
+}
+
+// lookupEvent 在 Facts 中查找某个节点的已解析事件。
+//
+// 实参必须走它：原始 contracts.EventBinding.Args 是**未类型化**的文本，
+// Codegen 不得据其生成代码（事件处理输出契约 §5.4.2）。
+func lookupEvent(n *contracts.NodeIR, name string, facts *analyzer.Facts) (analyzer.ResolvedEvent, bool) {
+	if facts == nil {
+		return analyzer.ResolvedEvent{}, false
+	}
+	nf, ok := facts.Lookup(n)
+	if !ok {
+		return analyzer.ResolvedEvent{}, false
+	}
+	for _, ev := range nf.Events() {
+		if ev.Name == name {
+			return ev, true
+		}
+	}
+	return analyzer.ResolvedEvent{}, false
 }

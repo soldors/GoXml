@@ -496,7 +496,10 @@ type ResolvedEvent struct {
 	// Payload 来自 ComponentSchema.Events[i].Params。
 	Payload []ResolvedParam
 	// CallArgs 来自 XML 的 EventBinding.Args。
-	CallArgs []ResolvedParam
+	//
+	// 元素是 ResolvedArg（事件处理输出契约 §5.4）：既含类型，也含
+	// **可生成的类型化取值**——Codegen 据它渲染实参，无需回读原始文本。
+	CallArgs []ResolvedArg
 	// Method 来自 go/types 的真实签名。
 	Method ResolvedMethod
 	// Mapping 与 Method.Params 一一对应，标注每个形参的来源。
@@ -504,6 +507,97 @@ type ResolvedEvent struct {
 	// 长度必然等于 len(Method.Params)——契约 §8.4 的 R2 已校验数量。
 	// 若不等，是 Analyzer 实现缺陷，不是用户错误。
 	Mapping []ParamOrigin
+}
+
+// ============================================================================
+// 事件实参（事件处理输出契约 §5.4）
+// ============================================================================
+
+// ArgKind 是事件实参的来源类别。
+type ArgKind uint8
+
+const (
+	// ArgUnknown 是零值，表示未设置（不应出现在有效事实中）。
+	ArgUnknown ArgKind = iota
+	// ArgLiteral 是字面量实参。
+	ArgLiteral
+	// ArgPath 是 ViewModel（或 <For> 变量）路径实参。
+	ArgPath
+)
+
+// String 返回可读名称，便于诊断与测试。
+func (k ArgKind) String() string {
+	switch k {
+	case ArgLiteral:
+		return "literal"
+	case ArgPath:
+		return "path"
+	default:
+		return "unknown"
+	}
+}
+
+// LiteralKind 是字面量的类型类别。
+type LiteralKind uint8
+
+const (
+	// LiteralUnknown 是零值。
+	LiteralUnknown LiteralKind = iota
+	LiteralString
+	LiteralInt
+	LiteralFloat
+	LiteralBool
+)
+
+// String 返回可读名称。
+func (k LiteralKind) String() string {
+	switch k {
+	case LiteralString:
+		return "string"
+	case LiteralInt:
+		return "int"
+	case LiteralFloat:
+		return "float"
+	case LiteralBool:
+		return "bool"
+	default:
+		return "unknown"
+	}
+}
+
+// LiteralValue 是已解析的字面量值。
+//
+// 刻意**不含 Go 语法**（不加引号、不决定数字格式）——渲染归 Codegen，
+// 理由见事件处理输出契约 §5.4.2。
+type LiteralValue struct {
+	// Kind 决定哪个字段有效。
+	Kind LiteralKind
+	// Str 是已去引号的字符串内容（Kind==LiteralString）。
+	Str string
+	// Int 是整数值（Kind==LiteralInt）。
+	Int int64
+	// Float 是浮点值（Kind==LiteralFloat）。
+	Float float64
+	// Bool 是布尔值（Kind==LiteralBool）。
+	Bool bool
+	// Raw 保留原始文本，仅用于诊断回显，禁止据此生成代码。
+	Raw string
+}
+
+// ResolvedArg 是一个已校验的事件调用实参。
+//
+// 它是 Codegen 生成实参的唯一来源：结构化、类型化、无需回读原始文本。
+type ResolvedArg struct {
+	// Kind 是来源类别。
+	Kind ArgKind
+	// Literal 在 Kind==ArgLiteral 时有效。
+	Literal LiteralValue
+	// Path 在 Kind==ArgPath 时有效；复用既有路径类型（含 RootKind/Steps/Type）。
+	Path *ResolvedPath
+	// Type 是最终类型；Analyzer 已校验其与形参兼容（EVENT-006）。
+	Type TypeInfo
+	// Span 覆盖该实参的源码范围。
+	Span contracts.SourceSpan
 }
 
 // ============================================================================

@@ -36,6 +36,7 @@ const page = `<Goxml Version="1" ViewModel="demoVM">
     <Text Value="{Title}"/>
     <Text Value="{Status}"/>
     <Button Text="点我 +1" Click="Increment"/>
+    <Button Text="加 10" Click="Add(10)"/>
   </Page>
 </Goxml>`
 
@@ -65,6 +66,14 @@ type demoVM struct {
 func (m *demoVM) Increment() {
 	m.mu.Lock()
 	m.count++
+	m.Title = fmt.Sprintf("点击次数：%d", m.count)
+	m.mu.Unlock()
+}
+
+// Add 是**带参**事件处理器（契约 v2）：实参 10 由生成代码传入。
+func (m *demoVM) Add(n int) {
+	m.mu.Lock()
+	m.count += n
 	m.Title = fmt.Sprintf("点击次数：%d", m.count)
 	m.mu.Unlock()
 }
@@ -144,7 +153,8 @@ func run() error {
 // 不解析生成源码——那等于再写一个解释器，且会掩盖 Codegen 的真实职责。
 type demoView struct {
 	vm     *demoVM
-	click0 widget.Clickable
+	click0 widget.Clickable // 对应 Click="Increment"
+	click1 widget.Clickable // 对应 Click="Add(10)"
 }
 
 // newDemoView 对应生成代码的构造语义：nil vm 明确拒绝（状态更新契约 §4）。
@@ -162,6 +172,10 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		v.vm.Increment()
 		gtx.Execute(op.InvalidateCmd{})
 	}
+	for v.click1.Clicked(gtx) {
+		v.vm.Add(10) // 带参事件：实参来自 .gxml 声明
+		gtx.Execute(op.InvalidateCmd{})
+	}
 
 	title, status := v.vm.snapshot()
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -173,6 +187,9 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return material.Button(th, &v.click0, "点我 +1").Layout(gtx)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Button(th, &v.click1, "加 10").Layout(gtx)
 		}))
 }
 

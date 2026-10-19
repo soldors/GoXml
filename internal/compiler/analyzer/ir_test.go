@@ -365,7 +365,7 @@ func TestEventCombinedMappingOrder(t *testing.T) {
 	// 载荷在前、实参在后（契约 §8.4 R1）。
 	ev := ResolvedEvent{
 		Payload:  []ResolvedParam{{Name: "id", Type: TypeInfo{Kind: ValueString}}},
-		CallArgs: []ResolvedParam{{Name: "", Type: TypeInfo{Kind: ValueInt}}},
+		CallArgs: []ResolvedArg{{Kind: ArgLiteral, Type: TypeInfo{Kind: ValueInt}}},
 		Method: ResolvedMethod{
 			Name: "OnOpen",
 			Params: []ResolvedParam{

@@ -1,14 +1,16 @@
 # AOT 状态 Diff 语义规范
 
-- 状态：冻结
+- 状态：设计储备（v1 语义稿；当前阶段推迟）
 - 冻结日期：2026-10-18
 - 关联需求：REQ-003
 - 关联 ADR：ADR-0003
-- 适用范围：Analyzer、Codegen、生成代码、Runtime、Router、Widgets
+- 适用范围：未来批准 AOT Diff 后的 Analyzer、Codegen、生成代码、Runtime、Router、Widgets；不构成当前版本已实现契约
+
+> 本文保留原 v1 AOT Diff 语义，供触发条件满足后的重新评估和实现使用。当前版本采用显式 `Invalidate()`、绑定显示缓存和静态 `op.CallOp` 复用，不实现本文的 ShadowState、Dirty Mask、Deps 或节点级状态协调。当前交付范围以 `S5-AOT状态Diff评估记录.md`、`状态更新契约.md` 和任务卡为准。
 
 ## 1. 目标与不变量
 
-Goxml 的状态更新采用编译期生成的浅层依赖 Diff 和局部 MacroOp 重绘。v1 必须满足：
+若未来批准并实现 AOT Diff，Goxml 的状态更新采用编译期生成的浅层依赖 Diff 和局部 MacroOp 重绘。v1 必须满足：
 
 1. 生成代码中不得引入 `reflect`。
 2. 不复制完整 ViewModel，只保存 GXML 实际引用到的字段。
@@ -353,4 +355,4 @@ func (v *View) checkStateDiff(vm *ViewModel, rc renderContextKey) Dirty {
 - 改变 Key、nil/空集合或生命周期语义。
 - 改变虚拟化的可见性窗口、行状态保留策略或静态子树固化边界。
 
-v1 的 Parser、Analyzer、Codegen 和 Runtime 必须以本文件为 AOT 状态 Diff 的唯一语义依据。
+未来启用 AOT Diff 后，Parser、Analyzer、Codegen 和 Runtime 必须以本文件为该方案的语义依据；在启用前，本文件不得被解释为当前实现或当前发布承诺。

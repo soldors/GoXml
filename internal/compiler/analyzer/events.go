@@ -60,12 +60,14 @@ func (a *analyzer) resolveEvent(n *contracts.NodeIR, ev contracts.EventBinding) 
 	}
 
 	// ---- 第 2 步：调用点实参 ----
-	callArgs := make([]ResolvedParam, 0, len(ev.Args))
+	// 每个实参解析为 ResolvedArg：既做类型校验，也保留可生成的类型化取值
+	// （事件处理输出契约 §5.4）。
+	callArgs := make([]ResolvedArg, 0, len(ev.Args))
 	callArgTypes := make([]types.Type, 0, len(ev.Args))
 	for _, arg := range ev.Args {
 		switch arg.Kind {
 		case contracts.ArgLiteral:
-			t, ok := literalType(arg.Literal)
+			t, lit, ok := parseLiteral(arg.Literal)
 			if !ok {
 				// 字面量形态异常：Expander 已做过形式校验，此处属内部
 				// 不一致，按不兼容处理而不是猜一个类型。
@@ -73,7 +75,12 @@ func (a *analyzer) resolveEvent(n *contracts.NodeIR, ev contracts.EventBinding) 
 					"event %q: cannot determine the type of argument %q", ev.Name, arg.Literal)
 				return nil, false
 			}
-			callArgs = append(callArgs, ResolvedParam{Type: typeInfo(t), Span: ev.Span})
+			callArgs = append(callArgs, ResolvedArg{
+				Kind:    ArgLiteral,
+				Literal: lit,
+				Type:    typeInfo(t),
+				Span:    ev.Span,
+			})
 			callArgTypes = append(callArgTypes, t)
 
 		case contracts.ArgBinding:
@@ -83,7 +90,12 @@ func (a *analyzer) resolveEvent(n *contracts.NodeIR, ev contracts.EventBinding) 
 				// 否则用户会以为有两个问题（契约 §8.4 R3 的配套约束）。
 				return nil, false
 			}
-			callArgs = append(callArgs, ResolvedParam{Type: path.Type, Span: ev.Span})
+			callArgs = append(callArgs, ResolvedArg{
+				Kind: ArgPath,
+				Path: path,
+				Type: path.Type,
+				Span: ev.Span,
+			})
 			callArgTypes = append(callArgTypes, raw)
 
 		default:
@@ -199,28 +211,55 @@ func (a *analyzer) eventSchema(tag, name string) (contracts.EventSchema, bool) {
 // literalType 推断事件实参字面量的 Go 类型。
 //
 // v1 只允许四种字面量（契约 §8.4）：布尔、整数、浮点、字符串。
+//
+// 保留为薄包装：单元测试与旧调用点按类型取用即可。
 func literalType(lit string) (types.Type, bool) {
+	t, _, ok := parseLiteral(lit)
+	return t, ok
+}
+
+// parseLiteral 解析字面量：返回类型与**类型化的值**（事件处理输出契约 §5.4）。
+//
+// 文法由 Expander 保证（expander.parseEventArg）：
+//   - 布尔：true / false
+//   - 字符串：引号包裹，**保留引号**，内容为引号之间的原始字节（无转义处理）
+//   - 数字：整数或浮点，允许负号（isNumberLiteral）
+//
+// 本函数只做类型化，**不决定 Go 语法**（不加引号、不定数字格式）——
+// 渲染归 Codegen（契约 §5.4.2）。
+func parseLiteral(lit string) (types.Type, LiteralValue, bool) {
 	if lit == "" {
-		return nil, false
+		return nil, LiteralValue{}, false
 	}
-	// 字符串字面量保留单引号（见 contracts.EventArg.Literal 的契约）。
+	// 字符串字面量保留引号（见 contracts.EventArg.Literal 的契约）。
 	if lit[0] == '\'' || lit[0] == '"' {
-		return types.Typ[types.String], true
+		q := lit[0]
+		if len(lit) < 2 || lit[len(lit)-1] != q {
+			return nil, LiteralValue{}, false
+		}
+		return types.Typ[types.String],
+			LiteralValue{Kind: LiteralString, Str: lit[1 : len(lit)-1], Raw: lit}, true
 	}
 	switch lit {
-	case "true", "false":
-		return types.Typ[types.Bool], true
+	case "true":
+		return types.Typ[types.Bool],
+			LiteralValue{Kind: LiteralBool, Bool: true, Raw: lit}, true
+	case "false":
+		return types.Typ[types.Bool],
+			LiteralValue{Kind: LiteralBool, Bool: false, Raw: lit}, true
 	}
 	// 整数
-	if _, err := strconv.ParseInt(lit, 10, 64); err == nil {
-		return types.Typ[types.Int], true
+	if n, err := strconv.ParseInt(lit, 10, 64); err == nil {
+		return types.Typ[types.Int],
+			LiteralValue{Kind: LiteralInt, Int: n, Raw: lit}, true
 	}
 	// 浮点
-	if _, err := strconv.ParseFloat(lit, 64); err == nil {
-		return types.Typ[types.Float64], true
+	if f, err := strconv.ParseFloat(lit, 64); err == nil {
+		return types.Typ[types.Float64],
+			LiteralValue{Kind: LiteralFloat, Float: f, Raw: lit}, true
 	}
 	// Expander 已保证字面量只有这四种形态；走到这里说明 IR 不一致。
-	return nil, false
+	return nil, LiteralValue{}, false
 }
 
 // payloadCompatible 判定事件载荷的 PropType 能否传给方法形参。

@@ -771,9 +771,9 @@ EventName(ParamName:Type, ParamName:Type)
 
 当循环体包含 `<Button>`、`<Input>` 或声明为有状态的自定义组件时，`Key` 必须存在。`Key` 必须是稳定且可比较的绑定路径。
 
-`Virtualize` 与 `ItemExtent` 是对 v1 基线的**向后兼容扩展**：未指定时行为与 v1 完全一致。启用虚拟化后的行状态生命周期以 `docs/03-架构/AOT状态Diff语义.md` §5.1.1 为准，决策依据见 `docs/03-架构/adr/ADR-0006-列表虚拟化与静态子树宏固化.md`。
+`Virtualize` 与 `ItemExtent` 是对 v1 基线的**向后兼容扩展**：未指定时行为与 v1 完全一致。启用虚拟化后的行状态生命周期设计以 `docs/03-架构/AOT状态Diff语义.md` §5.1.1 为参考，待对应列表实现批次重新验证；决策依据见 `docs/03-架构/adr/ADR-0006-列表虚拟化与静态子树宏固化.md`。
 
-循环状态协调、`nil`/空 Slice 语义、行状态生命周期和 Macro 缓存边界以 `docs/03-架构/AOT状态Diff语义.md` 为准。
+循环状态协调、`nil`/空 Slice 语义、行状态生命周期和 Macro 缓存边界在 AOT Diff 尚未引入前不构成当前运行时承诺；未来启用该方案时以 `docs/03-架构/AOT状态Diff语义.md` 为准。
 
 `Each` 和 `Index` 只能在循环体内使用。循环变量不得覆盖 ViewModel 根名称或外层同名变量。
 
