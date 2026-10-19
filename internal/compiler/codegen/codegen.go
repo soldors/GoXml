@@ -200,7 +200,7 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		// 优先按绑定处理。绑定信息**只**来自 Facts；查不到就报错，
 		// 绝不回退成字符串常量（那会把 "{Title}" 当成字面文本）。
 		if ra, ok := lookupAttr(n, "Value", g.facts); ok && ra.Path != nil {
-			expr, err := bindingExpr(ra, "vm")
+			expr, err := bindingExpr(ra, "v.vm")
 			if err != nil {
 				return "", err
 			}
@@ -256,15 +256,18 @@ func (g *generator) assemble(body string) (string, error) {
 	g.imports.add("gioui.org/op", "op")
 	g.imports.add("math", "math")
 	g.imports.add("gioui.org/unit", "unit")
-
-	// vm 参数：仅当页面含绑定时需要。
-	vmParam := ""
 	if g.usesVM {
-		vmType, err := g.vmTypeExpr()
-		if err != nil {
+		// 构造函数的 nil 校验使用 fmt.Errorf。
+		g.imports.add("fmt", "fmt")
+	}
+
+	// vm 类型：仅当页面含绑定时需要（构造函数参数与 View 字段）。
+	//
+	// 注意：vmTypeExpr 会登记跨包 import，必须在 import render 之前调用。
+	if g.usesVM {
+		if _, err := g.vmTypeExpr(); err != nil {
 			return "", err
 		}
-		vmParam = ", vm *" + vmType
 	}
 
 	var b strings.Builder
@@ -276,8 +279,9 @@ func (g *generator) assemble(body string) (string, error) {
 	b.WriteString("type " + g.view + " struct {\n")
 	if g.usesVM {
 		// 含绑定：**不**生成整页静态缓存（契约 §16.7、红线 2），
-		// 但按绑定节点生成**显示缓存槽位**（契约 §05.2/05.3.1）：
-		// 键 = renderKey + 显示字符串；显示串不变时回放，变化时重录。
+		// 但按绑定节点生成**显示缓存槽位**（契约 §05.2/05.3.1），
+		// 并持有 vm 引用（状态更新契约 §1、ADR-0010）。
+		b.WriteString("\tvm *" + g.vmTypeExprStr() + "\n")
 		b.WriteString("\tslots []textCache\n")
 	} else {
 		for _, line := range cacheFieldLines(g.view) {
@@ -285,18 +289,38 @@ func (g *generator) assemble(body string) (string, error) {
 		}
 	}
 	b.WriteString("}\n\n")
+	// 构造函数：按页面类型分两种形态（状态更新契约 §1.4）。
+	//
+	//   静态页面：NewXxxView()            —— 与历史形态一致，不变；
+	//   绑定页面：NewXxxView(vm *T) (*X, error) —— 持有 vm 引用。
+	//
+	// nil vm 是调用方配置错误，必须显式拒绝（ADR-0010 §3.4）：
+	// 不静默转空串、不忽略绑定、不允许难定位的深层 panic。
+	// 返回 error 而非 panic：nil 是**调用方输入错误**（可恢复），
+	// 与内部不变式破坏（panic，如 Facts freeze）性质不同；
+	// 且仓库已有 NewTypeEnv(...) (*T, error) 先例。
 	b.WriteString("// New" + g.view + " 创建视图状态。\n")
-	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
-	b.WriteString("// Layout 渲染页面。\n")
-	b.WriteString("//\n")
-
 	if g.usesVM {
-		b.WriteString("// vm 是 ViewModel，绑定值从它读取。\n")
-		b.WriteString("// 含绑定，因此**不**走静态子树固化（契约 §16.7）。\n")
+		b.WriteString("//\n")
+		b.WriteString("// vm 由调用方创建并管理生命周期；View 只持有引用，\n")
+		b.WriteString("// 不拥有、不销毁，第一版不支持隐式替换（ADR-0010）。\n")
+		b.WriteString("// vm 为 nil 时返回错误——这是调用方配置错误，明确拒绝。\n")
+		b.WriteString("//\n")
+		b.WriteString("// ⚠️ 失效通知的并发安全（Runtime Invalidate）不等于 vm 字段\n")
+		b.WriteString("// 读写的并发安全；跨 goroutine 修改 vm 由调用方负责同步。\n")
+		b.WriteString("func New" + g.view + "(vm *" + g.vmTypeExprStr() + ") (*" + g.view + ", error) {\n")
+		b.WriteString("\tif vm == nil {\n")
+		b.WriteString("\t\treturn nil, fmt.Errorf(\"goxml: New" + g.view + " requires a non-nil ViewModel; a binding page cannot render without state\")\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\treturn &" + g.view + "{vm: vm}, nil\n")
+		b.WriteString("}\n\n")
+		b.WriteString("// Layout 渲染页面（统一 View 接口，状态更新契约 §1）。\n")
 		b.WriteString("//\n")
 		b.WriteString("// 绑定节点按槽位缓存显示结果：显示串与上下文未变时回放，\n")
 		b.WriteString("// 变化时重录（契约 §05.2/§05.3.1）。\n")
-		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme" + vmParam + ") layout.Dimensions {\n")
+		b.WriteString("//\n")
+		b.WriteString("// 含绑定，因此**不**走静态子树固化（契约 §16.7）。\n")
+		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
 		b.WriteString("\treturn " + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
 		b.WriteString("}\n")
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
@@ -304,6 +328,7 @@ func (g *generator) assemble(body string) (string, error) {
 		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
 		return b.String(), nil
 	}
+	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
 
 	b.WriteString("// 首个 key 生效时录制，之后 key 未变只回放（契约 §16.4）。\n")
 	b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
@@ -588,4 +613,20 @@ func isGoIdent(s string) bool {
 // quote 生成 Go 字符串字面量。
 func quote(s string) string {
 	return fmt.Sprintf("%q", s)
+}
+
+// vmTypeExprStr 返回构造函数参数的 ViewModel 类型表达式。
+//
+// 前提：usesVM 为 true 且 vmTypeExpr 已在 import 阶段成功执行。
+// 该阶段失败时 Generate 已返回错误，不会走到这里；
+// 万一走到，返回裸类型名让编译错误显式暴露而非静默。
+func (g *generator) vmTypeExprStr() string {
+	t, err := g.vmTypeExpr()
+	if err != nil {
+		// 构造函数生成阶段无法失败（imports 仍需登记），
+		// 这里吞掉错误会让 Generate 返回错误（vmTypeExpr 已登记失败原因）。
+		// 为安全起见返回类型名，让编译错误显式暴露而不是静默。
+		return g.vmRef.Name
+	}
+	return t
 }

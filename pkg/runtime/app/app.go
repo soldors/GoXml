@@ -17,8 +17,9 @@ import (
 
 // View 是可被渲染的页面。
 //
-// 生成代码为每个 .gxml 产生一个实现该接口的类型，签名与
-// 代码生成输出契约 §4.3 一致。
+// 生成代码为每个 .gxml 产生一个实现该接口的类型。静态页面与绑定页面
+// 统一使用本接口（状态更新契约 §1、ADR-0010）：绑定页面在构造时持有
+// ViewModel 引用，Layout 签名不因绑定而变化。
 type View interface {
 	Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 }
@@ -44,6 +45,20 @@ const (
 // 测试替换为一个立即返回的空函数，从而覆盖 RunWith 的其余逻辑。
 // 生产代码从不修改它。
 var mainFunc = app.Main
+
+// Invalidator 是状态变化后请求重新布局的入口（状态更新契约 §2）。
+//
+// 职责**只有**一个：请求窗口产生下一帧。它不修改任何状态、不感知
+// ViewModel、不承诺每次调用对应一个独立帧（Gio 可合并连续失效）。
+//
+// 并发安全：实现必须可从任意 goroutine 调用（S0 源码证据：
+// Gio 的 w.Invalidate() 标注 safe for concurrent use）。
+//
+// ⚠️ 失效通知的并发安全**不等于** ViewModel 字段读写的并发安全。
+// 跨 goroutine 修改状态数据的同步由调用方负责。
+type Invalidator interface {
+	Invalidate()
+}
 
 // withDefaults 补齐零值。
 func (c Config) withDefaults() Config {
@@ -113,12 +128,18 @@ func loop(w *app.Window, view View, th *material.Theme) {
 	}
 }
 
-// RunWindow 与 RunWith 相同，但**不调用 app.Main()**，只驱动事件循环。
+// RunWindowWithInvalidator 与 RunWindow 相同，另外把窗口的失效入口
+// 交给调用方（状态更新契约 §2）。
 //
-// 存在的唯一理由：让测试进程能够可控退出（契约 §3）。
-// 收到 stop 信号后返回。**生产代码不得使用**——它不调用 app.Main()，
-// 平台窗口可能不显示。
-func RunWindow(view View, th *material.Theme, cfg Config, stop <-chan struct{}) error {
+// 存在的理由：状态变化后，持有 ViewModel 的 goroutine 需要一个
+// 并发安全的「请求重新布局」入口。Runtime 不修改状态、不感知 vm——
+// 它只把 Gio 的 Invalidate 交给持有状态的人。
+//
+// inv 为 nil 时等同 RunWindow（不交付失效入口）。
+//
+// 仍为**测试与集成**形态：不调用 app.Main()。生产代码用 Run/RunWith
+// （S3 将在真实主循环形态中提供同一失效入口）。
+func RunWindowWithInvalidator(view View, th *material.Theme, cfg Config, stop <-chan struct{}, inv func(Invalidator)) error {
 	if view == nil {
 		return fmt.Errorf("app: nil view")
 	}
@@ -136,14 +157,17 @@ func RunWindow(view View, th *material.Theme, cfg Config, stop <-chan struct{}) 
 		app.Size(cfg.Width, cfg.Height),
 	)
 
-	// stop 到达时通知窗口关闭，从而让阻塞中的 w.Event() 返回。
+	// 交付失效入口：在事件循环启动前回调，调用方持有它即可请求重布局。
 	//
-	// 不能只在循环里 select stop——w.Event() 会阻塞到下一个事件到来，
-	// 无事件时循环永远回不到 select。
+	// 注意：必须在 goroutine 之外同步回调，保证 inv 返回后窗口已就绪。
+	if inv != nil {
+		inv(w)
+	}
+
+	// stop 到达时通知窗口关闭。
 	go func() {
 		<-stop
 		w.Perform(system.ActionClose)
-		// Invalidate 确保窗口产生一次帧事件，让 Event 循环有机会处理关闭。
 		w.Invalidate()
 	}()
 
@@ -159,4 +183,13 @@ func RunWindow(view View, th *material.Theme, cfg Config, stop <-chan struct{}) 
 			e.Frame(gtx.Ops)
 		}
 	}
+}
+
+// RunWindow 与 RunWith 相同，但**不调用 app.Main()**，只驱动事件循环。
+//
+// 存在的唯一理由：让测试进程能够可控退出（契约 §3）。
+// 收到 stop 信号后返回。**生产代码不得使用**——它不调用 app.Main()，
+// 平台窗口可能不显示。
+func RunWindow(view View, th *material.Theme, cfg Config, stop <-chan struct{}) error {
+	return RunWindowWithInvalidator(view, th, cfg, stop, nil)
 }

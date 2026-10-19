@@ -20,14 +20,14 @@ import (
 
 // b3Probe 是五场景共用的探测框架。
 const b3Probe = `
-func b3Layout(v *GoxmlDashboardView, th *material.Theme, vm *fixture.ViewModel, w, h int) (int, *textCache) {
+func b3Layout(v *GoxmlDashboardView, th *material.Theme, w, h int) (int, *textCache) {
 	win, err := headless.NewWindow(w, h)
 	if err != nil {
 		return -1, nil
 	}
 	defer win.Release()
 	var ops op.Ops
-	v.Layout(rtGtx(&ops, w, h), th, vm)
+	v.Layout(rtGtx(&ops, w, h), th)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	if err := win.Screenshot(img); err != nil {
 		return -1, nil
@@ -41,13 +41,17 @@ func TestB3Scene1_StableValue(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeScene1(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 
-	n1, c1 := b3Layout(v, th, vm, 240, 60)
+	n1, c1 := b3Layout(v, th, 240, 60)
 	t1, call1 := c1.text, c1.call
-	n2, _ := b3Layout(v, th, vm, 240, 60)
-	n3, c3 := b3Layout(v, th, vm, 240, 60)
+	n2, _ := b3Layout(v, th, 240, 60)
+	n3, c3 := b3Layout(v, th, 240, 60)
 
 	t.Logf("三帧像素: %d %d %d；text=%q", n1, n2, n3, c3.text)
 	if n1 <= 0 {
@@ -76,15 +80,19 @@ func TestB3Scene2_ValueChange(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeScene2(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 
-	n1, _ := b3Layout(v, th, vm, 240, 60)
+	n1, _ := b3Layout(v, th, 240, 60)
 	before := v.slots[0].text
 
 	// 改值
 	vm.Title = "WWWWWWWWWWWW"
-	n2, c := b3Layout(v, th, vm, 240, 60)
+	n2, c := b3Layout(v, th, 240, 60)
 
 	t.Logf("改前=%d 像素(text=%q) 改后=%d 像素(text=%q)", n1, before, n2, c.text)
 	if n1 <= 0 || n2 <= 0 {
@@ -118,15 +126,19 @@ func TestB3Scene3_SameDisplay(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeScene3(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 
-	n1, c1 := b3Layout(v, th, vm, 240, 60)
+	n1, c1 := b3Layout(v, th, 240, 60)
 	call1 := c1.call
 
 	// 显示串不变（重新赋相同值）
 	vm.Title = "AAAA"
-	n2, c2 := b3Layout(v, th, vm, 240, 60)
+	n2, c2 := b3Layout(v, th, 240, 60)
 
 	t.Logf("两次像素: %d %d；call 相同=%v", n1, n2, c2.call == call1)
 	if n1 <= 0 {
@@ -153,17 +165,21 @@ func TestB3Scene4_InputsChange(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeScene4(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 
 	// 约束变化 → renderKey 变化 → 必须重录
 	var o1 op.Ops
-	v.Layout(rtGtx(&o1, 240, 60), th, vm)
+	v.Layout(rtGtx(&o1, 240, 60), th)
 	k1 := v.slots[0].key
 	call1 := v.slots[0].call
 
 	var o2 op.Ops
-	v.Layout(rtGtx(&o2, 100, 40), th, vm)
+	v.Layout(rtGtx(&o2, 100, 40), th)
 	k2 := v.slots[0].key
 	call2 := v.slots[0].call
 
@@ -173,7 +189,7 @@ func TestProbeScene4(t *testing.T) {
 	}
 	// 回到原约束 → key 回到原值，但缓存已被覆盖（只保留最新一份）
 	var o3 op.Ops
-	v.Layout(rtGtx(&o3, 240, 60), th, vm)
+	v.Layout(rtGtx(&o3, 240, 60), th)
 	k3 := v.slots[0].key
 	if k3 != k1 {
 		t.Error("恢复约束后 key 应与最初相同")
@@ -181,7 +197,7 @@ func TestProbeScene4(t *testing.T) {
 	// 主题变化 → 失效
 	th2 := material.NewTheme()
 	var o4 op.Ops
-	v.Layout(rtGtx(&o4, 240, 60), th2, vm)
+	v.Layout(rtGtx(&o4, 240, 60), th2)
 	if v.slots[0].key.theme != th2 {
 		t.Error("主题变化后 key.theme 未更新")
 	}
@@ -202,14 +218,18 @@ func TestB3Scene5_EmptyValue(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeScene5(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 
-	n1, _ := b3Layout(v, th, vm, 240, 60)
+	n1, _ := b3Layout(v, th, 240, 60)
 
 	// 空值
 	vm.Title = ""
-	n2, c := b3Layout(v, th, vm, 240, 60)
+	n2, c := b3Layout(v, th, 240, 60)
 
 	t.Logf("有值=%d 空值=%d text=%q", n1, n2, c.text)
 	if n1 <= 0 {
@@ -220,7 +240,7 @@ func TestProbeScene5(t *testing.T) {
 	}
 	// 恢复有值
 	vm.Title = "AAAA"
-	n3, c3 := b3Layout(v, th, vm, 240, 60)
+	n3, c3 := b3Layout(v, th, 240, 60)
 	if c3.text != "AAAA" || n3 != n1 {
 		t.Errorf("恢复后应回到原渲染: n1=%d n3=%d", n1, n3)
 	}
@@ -259,13 +279,17 @@ func TestB3_StableFrameAlloc(t *testing.T) {
 	out := rtProbe(t, `<Text Value="{Title}"/>`, b3Probe+`
 func TestProbeAlloc(t *testing.T) {
 	th := material.NewTheme()
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 t.Fatal(err)
+	}
+	_ = v
 	const w, h = 240, 60
 
 	// 预热：触发首次录制
 	var warm op.Ops
-	v.Layout(rtGtx(&warm, w, h), th, vm)
+	v.Layout(rtGtx(&warm, w, h), th)
 
 	b := testing.Benchmark(func(b *testing.B) {
 		var o op.Ops
@@ -273,7 +297,7 @@ func TestProbeAlloc(t *testing.T) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			o.Reset()
-			v.Layout(g, th, vm)
+			v.Layout(g, th)
 		}
 	})
 	// testing.Benchmark 的结果用 AllocsPerOp/AllocedBytesPerOp 读取

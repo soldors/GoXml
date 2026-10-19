@@ -119,6 +119,13 @@ func rtNonZero(p []byte) int {
 }
 
 var _ = material.NewTheme
+
+func fatal(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 var _ = fixture.ViewModel{}
 var _ = unit.Metric{}
 `
@@ -138,18 +145,27 @@ func TestProbeBindingRead(t *testing.T) {
 	}
 	defer win.Release()
 
-	v := &GoxmlDashboardView{}
 
 	// 短值
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 fatal(t, err)
+	}
+	_ = v
 	var o1 op.Ops
-	v.Layout(rtGtx(&o1, w, h), th, vm)
+	v.Layout(rtGtx(&o1, w, h), th)
 	n1 := rtNonZero(rtShot(t, win, &o1, w, h))
 
 	// 长值
 	vm2 := &fixture.ViewModel{Title: "WWWWWWWWWWWWWWWW"}
+	v2, err := NewGoxmlDashboardView(vm2)
+	if err != nil {
+		 fatal(t, err)
+	}
+	_ = v2
 	var o2 op.Ops
-	v.Layout(rtGtx(&o2, w, h), th, vm2)
+	v2.Layout(rtGtx(&o2, w, h), th)
 	n2 := rtNonZero(rtShot(t, win, &o2, w, h))
 
 	t.Logf("短值像素=%d 长值像素=%d", n1, n2)
@@ -194,22 +210,31 @@ func TestProbePath(t *testing.T) {
 	}
 	defer win.Release()
 
-	v := &GoxmlDashboardView{}
 
 	vm := &fixture.ViewModel{}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 fatal(t, err)
+	}
+	_ = v
 	vm.Owner = &fixture.User{Name: "AAAA"}
 	vm.User.Name = "AAAA"
 	vm.Title = "AAAA"
 	var o1 op.Ops
-	v.Layout(rtGtx(&o1, w, h), th, vm)
+	v.Layout(rtGtx(&o1, w, h), th)
 	n1 := rtNonZero(rtShot(t, win, &o1, w, h))
 
 	vm2 := &fixture.ViewModel{}
+	v2, err := NewGoxmlDashboardView(vm2)
+	if err != nil {
+		 fatal(t, err)
+	}
+	_ = v2
 	vm2.Owner = &fixture.User{Name: "WWWWWWWWWWWWWWWW"}
 	vm2.User.Name = "WWWWWWWWWWWWWWWW"
 	vm2.Title = "WWWWWWWWWWWWWWWW"
 	var o2 op.Ops
-	v.Layout(rtGtx(&o2, w, h), th, vm2)
+	v2.Layout(rtGtx(&o2, w, h), th)
 	n2 := rtNonZero(rtShot(t, win, &o2, w, h))
 
 	t.Logf("短值=%d 长值=%d", n1, n2)
@@ -250,12 +275,16 @@ func TestProbeValueChange(t *testing.T) {
 	}
 	defer win.Release()
 
-	v := &GoxmlDashboardView{}
 	vm := &fixture.ViewModel{Title: "AAAA"}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		 fatal(t, err)
+	}
+	_ = v
 
 	// 第一次布局
 	var o1 op.Ops
-	v.Layout(rtGtx(&o1, w, h), th, vm)
+	v.Layout(rtGtx(&o1, w, h), th)
 	n1 := rtNonZero(rtShot(t, win, &o1, w, h))
 
 	// 修改值
@@ -263,12 +292,12 @@ func TestProbeValueChange(t *testing.T) {
 
 	// **显式**重新布局
 	var o2 op.Ops
-	v.Layout(rtGtx(&o2, w, h), th, vm)
+	v.Layout(rtGtx(&o2, w, h), th)
 	n2 := rtNonZero(rtShot(t, win, &o2, w, h))
 
 	// 第三次：确认仍渲染新值
 	var o3 op.Ops
-	v.Layout(rtGtx(&o3, w, h), th, vm)
+	v.Layout(rtGtx(&o3, w, h), th)
 	n3 := rtNonZero(rtShot(t, win, &o3, w, h))
 
 	t.Logf("改前=%d 改后=%d 再次=%d", n1, n2, n3)

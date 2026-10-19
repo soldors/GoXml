@@ -16,7 +16,8 @@
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
-| TASK-STATE-001 | codegen | 实现编译期 AOT 浅对比 Diff 与 MacroOp 缓存 | TASK-CODEGEN-001 | go test -v -run TestAOTStateDiff ./internal/compiler/codegen/... |
+| TASK-STATE-001 | codegen/runtime | 状态更新与 UI 自动刷新（AOT Diff 降为 S5 评估项） | TASK-CODEGEN-001 | 见 `TASK-STATE-001` 分阶段验收 |
+| TASK-STATE-IMPLEMENT-001 | codegen/runtime | S2 最小状态通知机制与统一绑定 View 接口 | TASK-STATE-001、ADR-0010 | 真实窗口端到端验收；当前进行中，未签收 |
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开 | TASK-CODEGEN-001 | go test -v ./internal/compiler/macro/... ./pkg/runtime/theme/... |
 | TASK-FONT-001 | theme/font | 实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收 | TASK-STYLE-001 | go test -v ./pkg/runtime/theme/... |
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |
