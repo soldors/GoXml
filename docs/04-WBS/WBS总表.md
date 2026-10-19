@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | TASK-CONTRACT-001 | contracts | 定义编译器 IR 与运行时核心接口契约 | - | go test -v ./contracts/... |
 | TASK-PARSER-001 | parser | 实现带行列号的 GXML 语法分析与控制流解析 | TASK-CONTRACT-001 | go test -v ./internal/compiler/parser/... |
-| TASK-PARSER-002 | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding) | TASK-PARSER-001 | go test -v -run TestAttrUnmarshal ./internal/compiler/parser/... |
+| TASK-PARSER-002 | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding) | TASK-PARSER-001 | go test -v ./internal/compiler/parser/... |
 | TASK-EXPANDER-001 | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | go test -v ./internal/compiler/expander/... |
 | TASK-ANALYZER-001 | analyzer | 实现语义校验（绑定路径、事件签名、For 作用域） | TASK-EXPANDER-001 | go test -v ./internal/compiler/analyzer/... |
 | TASK-CODEGEN-001 | codegen | 实现 Gio 布局（含 Align/Justify/Gap/尺寸/Grid）与控件代码生成器 | TASK-ANALYZER-001 | go test -v ./internal/compiler/codegen/... |
