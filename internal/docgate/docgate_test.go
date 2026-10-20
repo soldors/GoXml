@@ -113,9 +113,16 @@ func itoa(n int) string {
 // 因此只看提交改了哪些文件，不看提交信息措辞（措辞可以被随意书写）。
 //
 // 判定：本次提交的文件改动**全部**落在 dev-log 目录或 CHANGELOG.md 内。
+//
+// `-c core.quotePath=false` 不是可选项：默认开启时，git 会把非 ASCII 路径
+// 输出成 `docs/05-\345\274\200\345\217\221/dev-log/...`，下面的
+// `strings.Contains(f, "docs/05-开发/dev-log/")` 永远匹配不上，
+// 于是**每一个**只改 dev-log 的提交都会被误判为「非维护提交」而报红
+// （a02edd6 就是这样被抓出来的——它此前是 HEAD，被门禁排除，直到 HEAD 前移）。
 func isLogMaintenance(t *testing.T, root, hash string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "-C", root, "show", "--name-only", "--format=", hash)
+	cmd := exec.Command("git", "-c", "core.quotePath=false", "-C", root,
+		"show", "--name-only", "--format=", hash)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git show %s 失败（拒绝以通过蒙混）: %v", hash, err)
