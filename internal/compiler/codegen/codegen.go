@@ -283,7 +283,7 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 	// 这里不存在「漏了对齐」的问题：<Page> 按 ADR-0008 §2.8.1 沿用 <Column> 的
 	// 默认交叉轴对齐（Start），而 Gio 的零值 Alignment 恰好就是 Start，
 	// 因此省略字段与显式写出 `Alignment: layout.Start` 视觉等价。
-	expr, err := g.containerExpr(n.Children, "layout.Vertical", ops, "")
+	expr, err := g.containerExpr(n.Children, false, ops, "")
 	if err != nil {
 		return "", err
 	}
@@ -296,29 +296,35 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 
 // containerExpr 生成一个 Flex 容器的表达式（契约 §4.7.2）。
 //
-// 子节点顺序严格等于声明顺序；每个直接子节点一个 layout.Rigid。
+// 子节点顺序严格等于声明顺序；每个直接子节点进入 `sizeWrap`（layout.go），
+// 由它统一决定包成 `layout.Rigid` 还是 `layout.Flexed`，以及是否在闭包内
+// 改写 `gtx.Constraints`（`Width` / `Height` 的语义）。
 //
 // 含 <For> 时子项数编译期不可知，必须先运行时组装 `[]layout.FlexChild`
 // （<For> 列表契约 §2：内联展开，不引入嵌套 Flex）。
 // fields 是已拼好的 `, Alignment: ..., Gap: ...` 片段（无布局属性时为空串），
 // 由 layout.go 的 flexFieldsExpr 生成；主生成器不参与布局属性的语义决策。
-func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, fields string) (string, error) {
+//
+// mainIsHorizontal 是**本容器**的主轴方向，同时决定两件事：Flex 的 Axis，
+// 以及传给 sizeWrap 的「子项主轴方向」。两者取自同一个 bool，避免出现
+// 「Axis 写成 Horizontal 却按 Vertical 解释尺寸」这种只错一半的组合。
+func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
 	g.imports.add("gioui.org/layout", "layout")
 
 	if hasForChild(children) || hasIfChild(children) {
-		return g.dynamicContainerExpr(children, axis, ops, fields)
+		return g.dynamicContainerExpr(children, mainIsHorizontal, ops, fields)
 	}
 
 	var b strings.Builder
-	b.WriteString("layout.Flex{Axis: " + axis + fields + "}.Layout(" + ops)
+	b.WriteString("layout.Flex{Axis: " + axisIdent(mainIsHorizontal) + fields + "}.Layout(" + ops)
 	for _, c := range children {
 		inner, err := g.nodeExpr(c)
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(",\n\t\tlayout.Rigid(func(gtx layout.Context) layout.Dimensions {\n\t\t\treturn ")
-		b.WriteString(inner)
-		b.WriteString("\n\t\t})")
+		// 尺寸语义（含「无界不抬 Min」的唯一判据）全部在 sizeWrap 内，
+		// 本函数只负责按声明顺序拼接，不复制任何条件表达式。
+		b.WriteString(",\n\t\t" + sizeWrap(c, inner, mainIsHorizontal))
 	}
 	b.WriteString(")")
 	return b.String(), nil
@@ -334,7 +340,12 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, field
 //		{ items := ...; for _, item := range items { ... } }  // <For> 内联展开
 //		return layout.Flex{Axis: ...}.Layout(gtx, children...)
 //	}()
-func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops, fields string) (string, error) {
+//
+// ⚠️ 本路径（以及 emitForChildren / emitIfChildren）**尚未**接入 sizeWrap，
+// 因此含 <For>/<If> 的容器目前仍一律生成 `layout.Rigid`，`Width`/`Height`
+// 在这条路径上被忽略。接入是 TASK-CODEGEN-001-10 的下一步，接入时
+// 必须复用 sizeWrap 而不是在本函数里另写一份条件表达式。
+func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
@@ -369,7 +380,7 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops
 		b.WriteString("\t\t\t}))\n")
 	}
 
-	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + fields + "}.Layout(" + ops + ", children...)\n")
+	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axisIdent(mainIsHorizontal) + fields + "}.Layout(" + ops + ", children...)\n")
 	b.WriteString("\t\t}()")
 	return b.String(), nil
 }
@@ -567,14 +578,14 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return g.containerExpr(n.Children, "layout.Vertical", "gtx", fields)
+		return g.containerExpr(n.Children, false, "gtx", fields)
 
 	case "Row":
 		fields, err := flexFieldsExpr(n.Tag, n)
 		if err != nil {
 			return "", err
 		}
-		return g.containerExpr(n.Children, "layout.Horizontal", "gtx", fields)
+		return g.containerExpr(n.Children, true, "gtx", fields)
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)

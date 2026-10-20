@@ -202,11 +202,32 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 // 本文件只做一件事：把 Plan 翻译成 Gio 语句。
 // ============================================================================
 
+// axisIdent 把「主轴是否水平」翻译成 `layout.Flex.Axis` 的标识符。
+//
+// 之所以用 bool 而不是直接传 `"layout.Horizontal"` 字符串：尺寸映射必须知道
+// 主轴方向（`Width` 在主轴上还是交叉轴上），而字符串既无法在类型上区分、
+// 也无法阻止调用方传一个与语义不符的值（比如把 `<Column>` 的 axis 写成
+// Horizontal 时，编译器不会报错，只会静默生成一个方向错误的容器）。
+// 由 bool 单向派生字符串，就只有一个事实来源。
+func axisIdent(mainIsHorizontal bool) string {
+	if mainIsHorizontal {
+		return "layout.Horizontal"
+	}
+	return "layout.Vertical"
+}
+
 // sizeWrap 把一个子节点包装成 `layout.FlexChild` 表达式。
 //
-// **这是唯一的尺寸生成模板**：`containerExpr`、`dynamicContainerExpr`、
-// `emitForChildren`、`emitIfChildren` 都必须经由它。四处各写一份条件表达式
-// 会立刻产生规范禁止的「多处判定」——即使四份当前相同，也会在下次修改时分叉。
+// **这是唯一的尺寸生成模板**。当前接入状态：
+//
+//	containerExpr         ✔ 已接入（Row / Column / Page 的静态子项）
+//	dynamicContainerExpr  ✘ 待接入（含 <For>/<If> 的容器）
+//	emitForChildren       ✘ 待接入
+//	emitIfChildren        ✘ 待接入
+//
+// 四个入口各写一份条件表达式会立刻产生规范禁止的「多处判定」——即使四份
+// 当前相同，也会在下次修改时分叉。未接入的三处目前一律生成 `layout.Rigid`
+// 且忽略 `Width`/`Height`，这是**已知缺口**，不是已实现。
 //
 // 参数 mainIsHorizontal 是**父容器**的主轴方向（Row=true，Column/Page=false），
 // 由调用方在编译期确定。本函数据此得出两个方向分别对应 X 还是 Y；
@@ -266,5 +287,3 @@ func writeExactConstraint(b *strings.Builder, axis sizelayout.Axis2D, v float32)
 	b.WriteString("\t\t\tgtx.Constraints.Min." + a + " = gtx.Dp(" + formatDp(v) + ")\n")
 	b.WriteString("\t\t\tgtx.Constraints.Max." + a + " = gtx.Constraints.Min." + a + "\n")
 }
-
-// gioAlignment 把 GXML 的交叉轴对齐映射为 Gio `layout.Alignment` 的标识符。
