@@ -25,8 +25,9 @@
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen/runtime | 状态更新与 UI 自动刷新（AOT Diff 降为 S5 评估项） | TASK-CODEGEN-001 | 见 `TASK-STATE-001` 分阶段验收 |
 | TASK-STATE-IMPLEMENT-001 | codegen/runtime | S2 最小状态通知机制与统一绑定 View 接口 | TASK-STATE-001、ADR-0010 | `f5c45bd` 已归档生成构造函数 nil 回归；定向和 Codegen 全包测试通过 |
-| TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开 | TASK-CODEGEN-001 | go test -v ./internal/compiler/macro/... ./pkg/runtime/theme/... |
-| TASK-FONT-001 | theme/font | 实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收 | TASK-STYLE-001 | go test -v ./pkg/runtime/theme/... |
+| TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` 已实现于 `expander`；剩余：Theme + Codegen 主题色渲染） | TASK-CODEGEN-001 | go test ./internal/compiler/expander/ ./internal/compiler/codegen/ |
+| TASK-THEME-SEAM-001 | theme/contract | 冻结主题/字体接缝（路线 B）：`FontProvider` 契约、`pkg/runtime/theme` 包边界、主题构建入口、文档一致性门禁 | TASK-CODEGEN-001、ADR-0012 | go test ./contracts/... ./internal/docgate/ |
+| TASK-FONT-001 | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/ 懒加载（D）；IME 已移出，归 WIDGET-001 | TASK-THEME-SEAM-001 | go test ./pkg/runtime/theme/... （该包待创建，命令当前空转） |
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |
 | TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v -race ./cmd/goxml/watch/... ./pkg/runtime/hydration/... |

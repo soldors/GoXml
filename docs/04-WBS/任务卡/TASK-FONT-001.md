@@ -1,10 +1,13 @@
 # TASK-FONT-001：实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收
 
 ## 元信息
-- 状态：Todo | 优先级：P0 | 预计：8h
+- 状态：Todo（**已拆卡**，见 §3；实现等待 `TASK-THEME-SEAM-001` 的 -5）| 优先级：P0 | 预计：8h
 - 分支：feature/TASK-FONT-001
-- 依赖：TASK-STYLE-001
-- 规范依据：`docs/03-架构/字体与文本渲染策略.md`（v1 冻结）
+- 依赖：`TASK-THEME-SEAM-001`（接口与包边界）｜**不再是 `TASK-STYLE-001`**
+  - 审计结论（`docs/05-开发/STYLE-FONT依赖审计.md`）：`<Def>/<Slot>` 宏展开与字体无代码耦合，
+    且已实现于 `internal/compiler/expander/expand_def.go`；真依赖只有「主题/FontConfig/主题构建入口」，
+    已归入 `TASK-THEME-SEAM-001`。
+- 规范依据：`docs/03-架构/字体与文本渲染策略.md`（v1 冻结，§6.2 已按 ADR-0012 修订）
 
 ## 1. 背景与上下文
 
@@ -52,13 +55,27 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 
 ## 3. Subtask 清单与验收命令
 
-| 子任务ID | 内容 | 验收命令 |
-|---|---|---|
-| TASK-FONT-001-1 | 实现各平台 CJK 系统字体探测（带超时与诊断） | `go test -v -run TestFontProbe ./pkg/runtime/theme/...` |
-| TASK-FONT-001-2 | 实现嵌入兜底字体与 `//go:embed` 子集构建（≤3MB） | `go test -v -run TestEmbeddedFallback ./pkg/runtime/theme/...` |
-| TASK-FONT-001-3 | 实现按字形覆盖的 fallback 链与中英混排 | `go test -v -run TestFontFallbackChain ./pkg/runtime/theme/...` |
-| TASK-FONT-001-4 | 实现懒加载与加载失败诊断（不得静默空白） | `go test -v -run TestFontLazyLoad ./pkg/runtime/theme/...` |
-| TASK-FONT-001-5 | 中文 IME 输入、候选框定位与组合文本验收 | `go test -v -run TestIMEComposition ./pkg/widgets/...` |
+按 2026-10-20 裁决拆成四张独立卡，顺序推进；IME **已移出本卡**（见 §3.1）。
+
+| 子任务ID | 内容 | 验收命令 | 前置 |
+|---|---|---|---|
+| TASK-FONT-001-A | 各平台 CJK 系统字体探测（目录、超时、诊断、解析失败继续下一候选）+ `FontProvider` 单元测试 | `go test -run TestFontProbe ./pkg/runtime/theme/...` | `TASK-THEME-SEAM-001-5`（包存在） |
+| TASK-FONT-001-B | 嵌入兜底：`//go:embed` + **构建期**子集化（GB2312 约 6,763 字）+ 增量 ≤3MB 断言 | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | A |
+| TASK-FONT-001-C | 按字形覆盖的 fallback 链（中英混排、emoji） | `go test -run TestFontFallbackChain ./pkg/runtime/theme/...` | A（+ 可选 B） |
+| TASK-FONT-001-D | 懒加载与加载失败诊断（不阻塞首帧、不静默空白） | `go test -run TestFontLazyLoad ./pkg/runtime/theme/...` | A / B |
+
+> ⚠️ 上述四条命令在 `pkg/runtime/theme` 创建前**全部空转**（目录不存在）。
+> 按现行纪律，不能把"命令返回 ok"当成通过。
+
+### 3.1 IME 已移出本卡
+
+| 原 | 现 |
+|---|---|
+| `TASK-FONT-001-5` 中文 IME 输入、候选框定位与组合文本验收（`./pkg/widgets/...`） | 归入 `TASK-WIDGET-001` / `INPUT-001` |
+
+理由：规范 §8 本就把「`<Input>` 必须通过 IME 验收」写在 `TASK-WIDGET-001` 上；
+IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，留在字体卡里等于让
+字体工作等一个更重且无关的前置。字体侧只保留"为 IME 提供字体与降级说明"的责任。
 
 ## 4. 实现要求
 
@@ -96,12 +113,16 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 
 | 文件/模块 | 责任 |
 |---|---|
-| `pkg/runtime/theme/font.go` | 字体探测、fallback 链、懒加载 |
-| `pkg/runtime/theme/font_embed.go` | 嵌入子集与 `//go:embed` |
+| `pkg/runtime/theme/font.go` | 字体探测、fallback 链、懒加载（**待创建**） |
+| `pkg/runtime/theme/font_embed.go` | 嵌入子集与 `//go:embed`（**待创建**） |
+| `pkg/runtime/theme` 的主题构建入口 | 把解析结果装进 `text.Shaper`，产出 `*material.Theme`（路线 B，ADR-0012 决策 1） |
 | `pkg/platform/font/` | 平台字体目录路径（按 build tags 隔离） |
-| `contracts/runtime_api.go` | `FontProvider` 契约（经 `make contract-lint`） |
+| `contracts/runtime_api.go` | `FontProvider` 契约（**已冻结**，经 `make contract-lint`） |
 
-生成代码**不得**包含字体路径、字号常量或 `text.Shaper` 构建逻辑，只能通过主题引用。
+生成代码**不得**包含字体路径、字号常量或 `text.Shaper` 构建逻辑，
+且**不得引用任何字体字段**（原 §6.2 的 `th.Fonts.Family` 要求已按 ADR-0012 删除）；
+字体选择由 `pkg/runtime/theme` 在运行时主题构建过程中完成，
+由 `pkg/runtime/app` 把配好字体的 `*material.Theme` 交给视图。
 
 ## 6. 验收要求
 
@@ -124,9 +145,9 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 
 | 项目 | 内容 |
 |---|---|
-| 当前提交 SHA | |
-| 已完成子任务 | |
-| 未完成子任务 | |
-| 已运行命令及结果 | |
-| 已知失败或风险 | |
-| 下一位接手人 | |
+| 当前提交 SHA | 见 dev-log 2026-10-20 §20 / §21（审计 `b05bb12`、接缝冻结提交） |
+| 已完成子任务 | 无（实现未开始）；已完成的是**前置**：ADR-0012 决策、`FontProvider` 契约冻结、拆卡 |
+| 未完成子任务 | A 探测 / B 嵌入子集 / C fallback 链 / D 懒加载 |
+| 已运行命令及结果 | 依赖审计：`grep`/`ls`/`Read` 核对调用关系，见 `docs/05-开发/STYLE-FONT依赖审计.md`；本轮未跑字体测试（包不存在） |
+| 已知失败或风险 | ① `FontProvider.Resolve` 返回 `string` 标识是否够用，要等 A 的实测；改签名须走 ADR。② `pkg/runtime/theme` 未创建前四条验收命令全部空转。③ 背景里的中文渲染实测为本机 Windows 观测，未在 CI 或其它平台复现 |
+| 下一位接手人 | `TASK-THEME-SEAM-001-5` → `TASK-FONT-001-A` |

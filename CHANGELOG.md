@@ -112,6 +112,10 @@ All notable changes to this project will be documented in this file.
 - `AOT状态Diff语义.md`：新增 §5.1.1 虚拟化可见性窗口；§6.1 补入静态子树固化的强制性与量化依据；验收项增至 19 条。
 - `代码生成输出契约.md`：新增 §15 生成代码的性能约束；验收项增至 19 条。
 - `WBS总表.md`、`TASK-CODEGEN-001`、`TASK-BENCH-001`、`TASK-OS-001`、`TASK-OS-002`：补充静态子树固化、虚拟化、零分配、分平台构建与依赖断言子任务。
+- **ADR-0012（新增）· 主题/字体边界取路线 B**：原 `字体与文本渲染策略.md` §6.2 要求生成代码「只通过主题引用字体 `th.Fonts.Family`」，与 `代码生成输出契约.md` §4.3.1/§4.3.2（主题参数固定为 Gio 的 `*material.Theme`，该类型无 `Fonts` 字段）**不可能同时成立**；§4.3.1 当年只登记冲突未裁决。现裁决保留 `*material.Theme`：字体探测、fallback 链、懒加载与 `Shaper` 配置全部由运行时 `pkg/runtime/theme` 在主题构建过程中完成，生成代码**不引用任何字体字段**（原禁令在路线 B 下更强）。§6.2 相应修订并新增 §6.2.1 记录冲突与取舍，§9.1 记录变更。
+- **ADR-0012 决策 2 · `<Spacer>` 主轴默认值写入规范**：`GXML语言规范.md` 新增 §3.1.1.1——未显式指定主轴尺寸时 `<Spacer>` 作为弹性布局项、权重 1；显式 `Width`/`Height` 优先；交叉轴遵循通用尺寸规则。§3.1.1.2 说明它与 `<Expanded>` 的关系。此前实现（主轴 `Flexed(1)`）与真实布局证据已存在，但规范缺这一句，属澄清而非新语义。
+- **`contracts/runtime_api.go`**：新增 `FontProvider{Resolve(family string) (string, error)}` 与 `ErrFontNotFound`（职责边界、错误语义、调用时机：主题构建期或首次 shaping，不得每帧、不得阻塞首帧）；`ThemeProvider` 判定为**保留**并写明「当前未接线、接线条件为 STYLE-001-1、替换规则」，避免并存两个没有说明的孤儿抽象。
+- **WBS 按依赖审计拆分**（依据 `docs/05-开发/STYLE-FONT依赖审计.md`）：新增 `TASK-THEME-SEAM-001`（接口/包边界/契约修订/验收方案）；`TASK-FONT-001` 依赖由 `TASK-STYLE-001` 改为 `TASK-THEME-SEAM-001`，子任务拆为 A 探测 / B 嵌入子集 / C fallback 链 / D 懒加载，**IME 移回 `TASK-WIDGET-001` / `INPUT-001`**；`TASK-STYLE-001-2/-3` 改判为「已实现于 `internal/compiler/expander`」并修正原验收命令（原指向不存在的 `internal/compiler/macro/...`）。
 
 ### Known Issues
 - **macOS 完全未验证**：无 Apple 硬件，v1 仅保证功能与设计层面的正确性，不承诺运行验证通过。
