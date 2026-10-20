@@ -140,6 +140,8 @@ type generator struct {
 	// currentFor 是当前正在生成的 <For> 节点（nodeExpr 没有祖先链，
 	// 用生成时的作用域标记传递）。
 	currentFor *contracts.NodeIR
+	// guards 是当前所处的 <If> 分支条件（由外到内）。
+	guards []guardCond
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -159,6 +161,9 @@ type clickSlot struct {
 	keyExpr string
 	// poolIndex 是所属行状态池的编号（inFor 时有效）。
 	poolIndex int
+	// guards 是轮询时必须同时成立的条件表达式（If 输出契约 §2.2）。
+	// 由外到内排列；空表示无条件。
+	guards []guardCond
 }
 
 // rowClickSlot 记录一个 <For> 的行状态池（<For> 列表契约 §3）。
@@ -182,6 +187,8 @@ type rowClickSlot struct {
 	args string
 	// fieldIndex 是该池在生成结构体里的编号（rowClicks<N>）。
 	fieldIndex int
+	// guards 是轮询与清理时必须成立的条件（If 输出契约 §4.1）。
+	guards []guardCond
 }
 
 // keyTypeExpr 渲染 map 的键类型；不可比较类型显式报错（契约 §3.2）。
@@ -240,7 +247,7 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
 	g.imports.add("gioui.org/layout", "layout")
 
-	if hasForChild(children) {
+	if hasForChild(children) || hasIfChild(children) {
 		return g.dynamicContainerExpr(children, axis, ops)
 	}
 
@@ -273,7 +280,7 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
-		if !isForNode(c) {
+		if !isForNode(c) && !isIfNode(c) {
 			static++
 		}
 	}
@@ -285,6 +292,12 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops
 	for _, c := range children {
 		if isForNode(c) {
 			if err := g.emitForChildren(&b, c, "\t\t\t"); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if isIfNode(c) {
+			if err := g.emitIfChildren(&b, c, "\t\t\t"); err != nil {
 				return "", err
 			}
 			continue
@@ -364,7 +377,17 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 	for _, c := range n.Children {
 		if isForNode(c) {
 			g.inFor = prevInFor
+			g.currentFor = prevFor
 			return fmt.Errorf("codegen: nested <For> is not supported in this slice")
+		}
+		// 循环体里的 <If> 也要内联展开（If 输出契约 §4.1）。
+		if isIfNode(c) {
+			if err := g.emitIfChildren(b, c, indent+"\t\t"); err != nil {
+				g.inFor = prevInFor
+				g.currentFor = prevFor
+				return err
+			}
+			continue
 		}
 		inner, err := g.nodeExpr(c)
 		if err != nil {
@@ -396,6 +419,24 @@ func isForNode(n *contracts.NodeIR) bool {
 func hasForChild(children []*contracts.NodeIR) bool {
 	for _, c := range children {
 		if isForNode(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIfNode 报告节点是否为 <If> 结构节点。
+func isIfNode(n *contracts.NodeIR) bool {
+	if n == nil {
+		return false
+	}
+	return n.Kind == contracts.KindIf || n.If != nil
+}
+
+// hasIfChild 报告直接子节点中是否含 <If>。
+func hasIfChild(children []*contracts.NodeIR) bool {
+	for _, c := range children {
+		if isIfNode(c) {
 			return true
 		}
 	}
@@ -526,7 +567,7 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		slot := clickSlot{index: idx, method: ev.Method, args: args}
+		slot := clickSlot{index: idx, method: ev.Method, args: args, guards: append([]guardCond(nil), g.guards...)}
 		// 循环内的按钮：**必须**有 Key（<For> 列表契约 §3.1——Parser 的
 		// SCOPE-003 已强制，这里做防御性二次校验），行状态从池取。
 		if g.inFor {
@@ -695,10 +736,21 @@ func (g *generator) assemble(body string) (string, error) {
 			if cs.inFor {
 				continue
 			}
-			b.WriteString(fmt.Sprintf("\tfor v.click%d.Clicked(gtx) {\n", cs.index))
-			b.WriteString("\t\tv.vm." + cs.method + "(" + cs.args + ")\n")
-			b.WriteString("\t\tgtx.Execute(op.InvalidateCmd{})\n")
-			b.WriteString("\t}\n")
+			// 条件守卫（If 输出契约 §2.2）：只在分支会被渲染时才轮询。
+			if gd := guardExpr(cs.guards); gd != "" {
+				b.WriteString("\tif " + gd + " {\n")
+			}
+			ind := "\t"
+			if guardExpr(cs.guards) != "" {
+				ind = "\t\t"
+			}
+			b.WriteString(fmt.Sprintf(ind+"for v.click%d.Clicked(gtx) {\n", cs.index))
+			b.WriteString(ind + "\t v.vm." + cs.method + "(" + cs.args + ")\n")
+			b.WriteString(ind + "\t gtx.Execute(op.InvalidateCmd{})\n")
+			b.WriteString(ind + "}\n")
+			if guardExpr(cs.guards) != "" {
+				b.WriteString("\t}\n")
+			}
 		}
 		// 行状态轮询（<For> 列表契约 §5）：数据驱动。
 		// 与渲染用**同一数据源表达式**（同源）与**同一顺序**（range 切片），
@@ -1066,6 +1118,7 @@ func (g *generator) registerRowClick(rf analyzer.ResolvedFor, method, args, keyE
 		method:     method,
 		args:       args,
 		fieldIndex: len(g.rowClicks),
+		guards:     append([]guardCond(nil), g.guards...),
 	})
 	return len(g.rowClicks) - 1
 }
@@ -1080,12 +1133,22 @@ func (s rowClickSlot) pollCode() string {
 	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
 	b.WriteString("\t\tfor _, rowItem := range rowItems {\n")
 	b.WriteString("\t\t\trowItem := rowItem\n")
-	b.WriteString(fmt.Sprintf("\t\t\tif c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
-	b.WriteString("\t\t\t\tfor c.Clicked(gtx) {\n")
-	b.WriteString("\t\t\t\t\tv.vm." + s.method + "(" + s.rewriteRoot(s.args) + ")\n")
-	b.WriteString("\t\t\t\t\tgtx.Execute(op.InvalidateCmd{})\n")
-	b.WriteString("\t\t\t\t}\n")
-	b.WriteString("\t\t\t}\n")
+	if gd := s.guardRef(); gd != "" {
+		b.WriteString("\t\t\tif " + gd + " {\n")
+	}
+	ind := "\t\t\t"
+	if s.guardRef() != "" {
+		ind = "\t\t\t\t"
+	}
+	b.WriteString(ind + fmt.Sprintf("if c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
+	b.WriteString(ind + "\tfor c.Clicked(gtx) {\n")
+	b.WriteString(ind + "\t\tv.vm." + s.method + "(" + s.rewriteRoot(s.args) + ")\n")
+	b.WriteString(ind + "\t\tgtx.Execute(op.InvalidateCmd{})\n")
+	b.WriteString(ind + "\t}\n")
+	b.WriteString(ind + "}\n")
+	if s.guardRef() != "" {
+		b.WriteString("\t\t\t}\n")
+	}
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n")
 	return b.String()
@@ -1139,7 +1202,14 @@ func (s rowClickSlot) cleanupCode() string {
 	var b strings.Builder
 	b.WriteString("\t{\n")
 	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
-	b.WriteString(fmt.Sprintf("\t\tif len(v.rowClicks%d) > len(rowItems) {\n", s.fieldIndex))
+	if gd := s.scopeGuardRef(); gd != "" {
+		// 外层分支隐藏时**不清理**：条件恢复后行状态仍可用。
+		// 行级条件不参与——清理是键集合的函数，与单行是否渲染无关。
+		b.WriteString("\t\tif " + gd + " && ")
+	} else {
+		b.WriteString("\t\tif ")
+	}
+	b.WriteString(fmt.Sprintf("len(v.rowClicks%d) > len(rowItems) {\n", s.fieldIndex))
 	b.WriteString("\t\t\tkeep := make(map[" + s.keyTypeExprMust() + "]struct{}, len(rowItems))\n")
 	b.WriteString("\t\t\tfor _, rowItem := range rowItems {\n")
 	b.WriteString("\t\t\t\tkeep[" + s.keyRef() + "] = struct{}{}\n")
@@ -1159,4 +1229,147 @@ func (s rowClickSlot) keyTypeExprMust() string {
 		panic("codegen: row key type was validated at registration but failed here: " + err.Error())
 	}
 	return t
+}
+
+// emitIfChildren 把一个 <If> 内联展开为「条件 + 分支 append」的语句块。
+//
+// 结构（If 输出契约 §1/§5）：
+//
+//	{
+//		cond := <condition>
+//		if cond {
+//			children = append(children, ...)   // Then
+//		} else {
+//			children = append(children, ...)   // Else（可无）
+//		}
+//	}
+//
+// Then/Else 自身不产生节点——它们是分组标记。
+func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, indent string) error {
+	if n.If == nil {
+		return fmt.Errorf("codegen: <If> has no If clause; the analyzer result is inconsistent")
+	}
+	condExpr, err := g.ifConditionExpr(n)
+	if err != nil {
+		return err
+	}
+	if len(n.If.Then) == 0 {
+		// Parser 保证 <Then> 存在；空 Then 是合法但无意义的写法。
+		// 不报错——只要求不生成坏代码。
+	}
+
+	b.WriteString(indent + "{\n")
+	b.WriteString(indent + "\tcond := " + condExpr + "\n")
+	b.WriteString(indent + "\tif cond {\n")
+
+	// Then 分支：轮询守卫即条件本身。
+	prev := g.guards
+	g.guards = append(prev, guardCond{expr: condExpr, rowScoped: g.inFor})
+	err = g.emitBranchAppends(b, n.If.Then, indent+"\t\t")
+	g.guards = prev
+	if err != nil {
+		return err
+	}
+
+	if len(n.If.Else) > 0 {
+		b.WriteString(indent + "\t} else {\n")
+		// Else 分支：守卫是条件的否定（读同一表达式，同一帧内等价）。
+		g.guards = append(prev, guardCond{expr: "!(" + condExpr + ")", rowScoped: g.inFor})
+		err = g.emitBranchAppends(b, n.If.Else, indent+"\t\t")
+		g.guards = prev
+		if err != nil {
+			return err
+		}
+	}
+	b.WriteString(indent + "\t}\n")
+	b.WriteString(indent + "}\n")
+	return nil
+}
+
+// guardCond 是一条轮询守卫条件。
+type guardCond struct {
+	// expr 是条件的 Go 表达式（渲染作用域）。
+	expr string
+	// rowScoped 表示该条件在循环作用域内求值（含循环变量）。
+	//
+	// 行级条件只能逐行守卫轮询，**不能**用于整池清理——清理是
+	// 键集合的函数，与某一行是否渲染无关（否则 rowItem 在
+	// 循环外不可见，生成的代码无法编译）。
+	rowScoped bool
+}
+
+// guardExpr 把若干守卫条件合并为单个 Go 表达式；无守卫返回空串。
+func guardExpr(guards []guardCond) string {
+	if len(guards) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(guards))
+	for _, gd := range guards {
+		out = append(out, gd.expr)
+	}
+	return strings.Join(out, " && ")
+}
+
+// emitBranchAppends 生成一个分支内每个子节点的 append 语句。
+func (g *generator) emitBranchAppends(b *strings.Builder, nodes []*contracts.NodeIR, indent string) error {
+	for _, c := range nodes {
+		// 分支内再嵌套 For/If 也走内联展开（契约 §4.3）。
+		if isForNode(c) {
+			if err := g.emitForChildren(b, c, indent); err != nil {
+				return err
+			}
+			continue
+		}
+		if isIfNode(c) {
+			if err := g.emitIfChildren(b, c, indent); err != nil {
+				return err
+			}
+			continue
+		}
+		inner, err := g.nodeExpr(c)
+		if err != nil {
+			return err
+		}
+		b.WriteString(indent + "children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
+		b.WriteString(indent + "\treturn " + inner + "\n")
+		b.WriteString(indent + "}))\n")
+	}
+	return nil
+}
+
+// ifConditionExpr 渲染 <If Condition> 的布尔表达式。
+//
+// 事实来源：Analyzer 已把 Condition 解析为 ResolvedAttr{Target: PropBool}，
+// 因此直接复用绑定取值渲染（If 输出契约 §0.1）。
+func (g *generator) ifConditionExpr(n *contracts.NodeIR) (string, error) {
+	ra, ok := lookupAttr(n, "Condition", g.facts)
+	if !ok || ra.Path == nil {
+		return "", fmt.Errorf("codegen: <If> has no resolved Condition path; the analyzer result is inconsistent")
+	}
+	g.usesVM = true
+	return pathExpr(ra.Path, "v.vm", "<If Condition>")
+}
+
+// guardRef 把该池的守卫条件改写到轮询变量 rowItem 上（轮询用）。
+func (s rowClickSlot) guardRef() string {
+	if len(s.guards) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(s.guards))
+	for _, gd := range s.guards {
+		out = append(out, s.rewriteRoot(gd.expr))
+	}
+	return strings.Join(out, " && ")
+}
+
+// scopeGuardRef 只保留**非行级**守卫（清理用）。
+func (s rowClickSlot) scopeGuardRef() string {
+	out := make([]string, 0, len(s.guards))
+	for _, gd := range s.guards {
+		if gd.rowScoped {
+			continue
+		}
+		out = append(out, gd.expr)
+	}
+	return strings.Join(out, " && ")
 }

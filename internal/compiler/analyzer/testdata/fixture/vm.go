@@ -25,6 +25,8 @@ type User struct {
 type Item struct {
 	ID   int
 	Name string
+	// Done 是布尔字段，用于 <If Condition="{item.Done}"> 类用例。
+	Done bool
 }
 
 // Status 是命名类型且实现 fmt.Stringer。

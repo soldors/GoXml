@@ -175,6 +175,10 @@ func hasDynamic(n *contracts.NodeIR) bool {
 	if n.For != nil {
 		return true
 	}
+	// <If> 同理：条件与分支内容都依赖运行时数据（If 输出契约 §3）。
+	if n.If != nil || n.Kind == contracts.KindIf {
+		return true
+	}
 	if len(n.Events) > 0 {
 		return true
 	}
