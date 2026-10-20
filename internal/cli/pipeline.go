@@ -202,6 +202,9 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 }
 
 // findModuleRoot 从 start 向上找 go.mod。
+//
+// 失败信息必须给出**可执行的修复动作**（AC-002-01 实测：临时目录试用时
+// 「未找到 go.mod」不告知解法，用户无从下手）。
 func findModuleRoot(start string) (string, error) {
 	dir, err := filepath.Abs(start)
 	if err != nil {
@@ -216,7 +219,7 @@ func findModuleRoot(start string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("未找到 go.mod（%s 不在任何 Go module 内）", start)
+			return "", fmt.Errorf("%s 不在任何 Go module 内：Goxml 生成文件必须落在 Go 包里；请先在工程根执行 `go mod init <module路径>`", start)
 		}
 		dir = parent
 	}

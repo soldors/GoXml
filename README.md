@@ -33,9 +33,37 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 
 - 前端三阶段（Parser / Expander / Analyzer）已实现并有测试；
 - 管线四阶段已串联，失败门禁有实测证据（Codegen 未被调用、不产生文件）；
-- `examples/demo` 已能**打开真实窗口**并渲染静态文本，证明端到端链路可用；
-- 但 Codegen 只支持 `<Page>` + 单个静态 `<Text>`，尚不能表达真实界面；
-- 没有 CLI：demo 内嵌 `.gxml` 源码，不读盘、不写盘。
+- `examples/demo` 已能**打开真实窗口**并交互（绑定、事件、`<For>`、`<If>`）；
+- CLI 已可用：`goxml generate` 支持单文件与目录批量生成、确定性输出、
+  两阶段事务回滚与 `--clean`（见下方使用说明）；
+- 尚未实现：Grid 生成、`<Def>`/`<Slot>` 生成侧完整覆盖、Input 控件、Watch。
+
+### goxml generate 使用说明
+
+```text
+go generate 需 Go module 工程。在仓库根构建：
+
+  go build -o goxml.exe ./cmd/goxml/
+
+生成（单文件或目录，目录递归发现 .gxml）：
+
+  goxml.exe generate ui/home.gxml          # 单文件，输出到同目录
+  goxml.exe generate ./ui                  # 目录批量，按相对路径排序处理
+  goxml.exe generate ./ui --out-dir ./gen  # 输出映射到指定根目录
+
+参数：
+  --check      提交前检查（当前承诺：语法/展开/语义分析 + 生成成功与格式化；
+               尚不包含 go/types 与 go build —— 见代码生成输出契约 §12）
+  --clean      按 Manifest 清理「已登记且带保护头」的孤儿产物；
+               保护头被改动的文件视为用户接管，绝不删除
+  --no-cache   忽略增量缓存（仍更新 Manifest）
+
+退出码：0 成功（含 skipped）；1 用法错误；2 运行失败。
+
+行为保证（详见 docs/03-架构/代码生成输出契约.md）：
+  - 同一输入重复生成逐字节一致（SHA-256 实测）；
+  - 批次内任一文件失败，整批放弃，已有文件内容与 mtime 原样；
+  - 生成登记写入 .goxml/generate-manifest.json，损坏即拒绝清理。
 
 各阶段的实现进度与验收证据，以任务卡为唯一权威来源（见下方导航）。
 
@@ -114,7 +142,7 @@ go run ./examples/demo
 | 限制 | 说明 |
 |---|---|
 | Codegen 覆盖极小 | 仅 `<Page>` + 单个静态 `<Text>`；绑定、事件、布局、`<For>` 均未支持 |
-| 无 CLI | demo 内嵌 `.gxml` 源码，不支持目录发现与写盘 |
+| CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`；Watch 未做（归 TASK-DEVX-001/002） |
 | 窗口渲染未自动验证 | 自动化只验证「启动不崩溃」，窗口显示与文字渲染需人工确认 |
 | 仅 Windows 验证 | 未在 macOS / Linux 上运行过测试 |
 | `<Def Events>` 不传播事件 | v1 只做契约声明，调用点处理器签名不被校验 |

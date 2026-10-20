@@ -39,7 +39,7 @@
 | TASK-GENERATE-CLI-001-4 | 实现生成确定性和重复生成 | ✅ 完成（2026-10-20）：SHA-256 判据升级 + 跨创建顺序证明 + 保护头 Source 稳定性；`go test -run TestGenerationDeterminism ./internal/cli/` |
 | TASK-GENERATE-CLI-001-5 | 实现失败回滚，旧文件内容、权限和修改时间保持不变 | ✅ 完成（2026-10-20）：G4 两阶段事务（stageBatch/commitBatch/cleanup），6 项验收含 mtime 不变与端到端全或无；`go test ./internal/cli/` |
 | TASK-GENERATE-CLI-001-6 | 实现 Manifest 原子更新、损坏保护和 `--clean` 边界 | ✅ 完成（2026-10-20）：三把安全锁（双重所有权/原子保存/损坏自锁）；6 项验收含用户接管跳过与 fail-safe 零删除；`go test ./internal/cli/` |
-| TASK-GENERATE-CLI-001-7 | 验证 `--no-cache` 与缓存模式输出一致 | `go test -v -run TestGenerateNoCacheEquivalent ./cmd/goxml/...` |
+| TASK-GENERATE-CLI-001-7 | 验证 `--no-cache` 与缓存模式输出一致 | ✅ 完成（2026-10-20）：CLI 验收报告归档 + README/需求清单/验收用例同步；注：增量缓存本体未实现（无缓存可对比），`--no-cache` 被接受且语义为「仍更新 Manifest」，等价性由确定性测试保证 |
 
 ## 5. 退出条件
 
