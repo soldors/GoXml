@@ -308,7 +308,7 @@ const (
 	//
 	// 适用范围严格限定（规范 §3.1.3）：
 	//   - 仅 <Row Align="Baseline"> 合法；
-	//   - <Column>、<Grid> 上使用是编译错误（GXML-ATTR-002）；
+	//   - <Column>、<Grid> 上使用是编译错误（GXML-ATTR-003）；
 	AlignBaseline
 )
 
@@ -711,7 +711,9 @@ type NodeIR struct {
 	// Align 是交叉轴对齐；缺省值取决于 Tag（Row=Center，Column/Grid=Start）。
 	// 使用 AlignUnset 表示未显式设置，由 Codegen 按标签补默认值。
 	Align CrossAlign
-	// Justify 是主轴剩余空间分布；AlignUnset 之外只对 Column/Row 有效。
+	// Justify 是主轴剩余空间分布，仅对 Column/Row 有效。
+	// JustifyUnset 等价于 JustifyStart；由 Codegen 显式写出默认值
+	// （不依赖 Gio 零值，见 codegen/layout.go 的 flexFieldsExpr）。
 	Justify MainJustify
 	// Width 是横向尺寸；缺省为内容自然尺寸。
 	Width SizeSpec
