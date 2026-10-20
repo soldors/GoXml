@@ -481,3 +481,129 @@ func TestSizeGuardAppearsOncePerFillChild(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// 动态路径接入验证（<For> / <If>）
+//
+// 动态路径的子项不是 Flex 的实参，而是先 `children = append(children, X)`
+// 再 `Layout(gtx, children...)`，所以 flexCallsOf 看不到它们。
+// 这里改为解构每个 append 的第二个实参，逐项断言：
+//   - 都经过 sizeWrap（是 layout.Rigid / layout.Flexed 调用，不是裸闭包）；
+//   - 尺寸约束改写落在该子项的闭包内，轴与容器方向一致。
+//
+// 只做结构断言是不够的：真实布局行为由 size_runtime_test.go 的像素几何覆盖，
+// 本文件的断言只证明「接线正确」，不证明「布局正确」。
+// ============================================================================
+
+// appendSite 是一个 `children = append(children, X)` 的解构结果。
+type appendSite struct {
+	kind   string
+	assign []string
+	axis   string
+}
+
+// appendSitesOf 解构生成源码中所有 append 到 children 的 FlexChild。
+func appendSitesOf(t *testing.T, src []byte) []appendSite {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), "gen.go", src, 0)
+	if err != nil {
+		t.Fatalf("生成源码不合法: %v", err)
+	}
+
+	var out []appendSite
+	ast.Inspect(f, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+			return true
+		}
+		// `children := make(...)` 也是给 children 赋值，但它是初始化而非子项追加
+		if as.Tok != token.ASSIGN {
+			return true
+		}
+		if selChain(as.Lhs[0]) != "children" {
+			return true
+		}
+		call, ok := as.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "append" || len(call.Args) != 2 {
+			t.Fatalf("children 赋值右侧不是 append(children, X)：%T", call.Fun)
+		}
+		wrapped, ok := call.Args[1].(*ast.CallExpr)
+		if !ok {
+			t.Fatalf("append 的元素不是构造调用，而是 %T（说明有子项漏过 sizeWrap）", call.Args[1])
+		}
+		sel, ok := wrapped.Fun.(*ast.SelectorExpr)
+		if !ok || selChain(sel) != "layout."+sel.Sel.Name {
+			t.Fatalf("append 元素不是 layout.Xxx(...)：%T", wrapped.Fun)
+		}
+		if sel.Sel.Name != "Rigid" && sel.Sel.Name != "Flexed" {
+			t.Fatalf("append 元素构造只能是 Rigid/Flexed，实际 %s", sel.Sel.Name)
+		}
+		var fn *ast.FuncLit
+		for _, a := range wrapped.Args {
+			if fl, ok := a.(*ast.FuncLit); ok {
+				fn = fl
+			}
+		}
+		if fn == nil {
+			t.Fatalf("append 元素 %s 缺少布局闭包", sel.Sel.Name)
+		}
+		assign, axis := childSummary(t, fn)
+		out = append(out, appendSite{kind: sel.Sel.Name, assign: assign, axis: axis})
+		return true
+	})
+	return out
+}
+
+// TestDynamicPathsRouteThroughSizeWrap 锁住 <For>/<If> 三条动态路径的接线。
+func TestDynamicPathsRouteThroughSizeWrap(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []appendSite
+	}{
+		{
+			name: "For 内主轴 Fill（Page 为垂直）",
+			body: `<For Each="item" In="{Items}"><Text Value="{item.Name}" Height="Fill"/></For>`,
+			want: []appendSite{{kind: "Flexed"}},
+		},
+		{
+			name: "For 内交叉轴 Fill（X）",
+			body: `<For Each="item" In="{Items}"><Text Value="{item.Name}" Width="Fill"/></For>`,
+			want: []appendSite{{kind: "Rigid", assign: []string{"gtx.Constraints.Min.X"}, axis: "X"}},
+		},
+		{
+			name: "If Then 内固定宽度",
+			body: `<If Condition="{Dirty}"><Then><Text Value="A" Width="120"/></Then></If>`,
+			want: []appendSite{{kind: "Rigid", assign: []string{
+				"gtx.Constraints.Min.X", "gtx.Constraints.Max.X",
+			}}},
+		},
+		{
+			name: "If 两个分支各自带尺寸",
+			body: `<If Condition="{Dirty}"><Then><Text Value="A" Width="Fill"/></Then><Else><Text Value="B" Height="Fill"/></Else></If>`,
+			want: []appendSite{
+				{kind: "Rigid", assign: []string{"gtx.Constraints.Min.X"}, axis: "X"},
+				{kind: "Flexed"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 含绑定/控制流的页面需要 ViewModel 的 module 路径
+			src := mustGen(t, tc.body, bindingOpts())
+			got := appendSitesOf(t, src)
+			if len(got) != len(tc.want) {
+				t.Fatalf("append 站点数 = %d, want %d（每个渲染子项恰好一个）", len(got), len(tc.want))
+			}
+			for i := range tc.want {
+				if !reflect.DeepEqual(got[i], tc.want[i]) {
+					t.Errorf("第 %d 个 append 站点 = %+v\nwant %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

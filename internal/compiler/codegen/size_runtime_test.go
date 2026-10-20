@@ -429,3 +429,105 @@ func TestSizesExampleGeneratesSizedChildren(t *testing.T) {
 
 	buildInTempModule(t, out)
 }
+
+// ============================================================================
+// 动态路径的真实布局验证（<For>，需要 repo 内临时包以使用 fixture ViewModel）
+//
+// 与上面的静态用例同样的观测思路：让兄弟节点的落点反映 Flexed 的实际占位。
+// 结构断言只能证明「append 时包了 Flexed」，不能证明「Flexed 真的分配到了剩余空间」。
+// ============================================================================
+
+// rtSize 在 repo 内临时包中跑像素几何探针。
+//
+// 无 headless 后端时 skip（不静默 pass）：本测试的结论全部来自像素。
+func rtSize(t *testing.T, gxmlBody, probeBody string) {
+	t.Helper()
+	out := rtProbe(t, gxmlBody, probeBody)
+	if strings.Contains(out, "NO_HEADLESS") {
+		t.Skipf("本机无 headless 后端，动态路径几何验证跳过:\n%s", out)
+	}
+	if strings.Contains(out, "--- FAIL") || strings.Contains(out, "FAIL\t") {
+		t.Fatalf("探针断言失败:\n%s", out)
+	}
+	t.Logf("%s", lastLogLines(out, 8))
+}
+
+// TestSizeDynamicForMainFillRuntime <For> 内的 Height="Fill" 必须是真 Flexed。
+//
+// GXML: <For> 两项 + 紧随其后的 Z。Page 是垂直容器，Height 是**主轴**。
+// 若每项 Flexed(1)：Rigid 的 Z 先占 16px → 剩余 284 由两项均分（各 142），
+//
+//	于是 item2 落在 y≈147、Z 落在 y≈284。
+//
+// 若退化为 Rigid：三项都挤在顶部（y≈5 / 21 / 37），底部区域无像素。
+func TestSizeDynamicForMainFillRuntime(t *testing.T) {
+	rtSize(t,
+		`<For Each="item" In="{Items}"><Text Value="{item.Name}" Height="Fill"/></For><Text Value="Z"/>`, `
+type box3 struct{ n, minY, maxY int }
+
+func bboxIn(img *image.RGBA, r image.Rectangle) box3 {
+	b := box3{minY: r.Max.Y, maxY: r.Min.Y - 1}
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if img.Pix[y*img.Stride+x*4+3] == 0 {
+				continue
+			}
+			b.n++
+			if y < b.minY {
+				b.minY = y
+			}
+			if y > b.maxY {
+				b.maxY = y
+			}
+		}
+	}
+	return b
+}
+
+func TestProbeForMainFill(t *testing.T) {
+	const fbW, fbH = 300, 1200
+	th := material.NewTheme()
+	vm := &fixture.ViewModel{Items: []fixture.Item{{Name: "aa"}, {Name: "bb"}}}
+	v, err := NewGoxmlDashboardView(vm)
+	if err != nil {
+		t.Fatalf("构造: %v", err)
+	}
+
+	var ops op.Ops
+	gtx := layout.Context{
+		Ops:         &ops,
+		Constraints: layout.Exact(image.Pt(200, 300)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+	}
+	v.Layout(gtx, th)
+
+	win, err := headless.NewWindow(fbW, fbH)
+	if err != nil {
+		t.Fatalf("NO_HEADLESS: %v", err)
+	}
+	defer win.Release()
+	if err := win.Frame(&ops); err != nil {
+		t.Fatalf("Frame: %v", err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, fbW, fbH))
+	if err := win.Screenshot(img); err != nil {
+		t.Fatalf("Screenshot: %v", err)
+	}
+
+	top := bboxIn(img, image.Rect(0, 0, 200, 100))
+	mid := bboxIn(img, image.Rect(0, 120, 200, 190))
+	bottom := bboxIn(img, image.Rect(0, 260, 200, 340))
+	t.Logf("top=%+v mid=%+v bottom=%+v", top, mid, bottom)
+
+	if top.n == 0 {
+		t.Fatal("列表项未渲染")
+	}
+	if mid.n == 0 {
+		t.Fatalf("y≈147 处无文本：第二项未被 Flexed 分配 142px 高度（可能退化成了 Rigid）")
+	}
+	if bottom.n == 0 {
+		t.Fatalf("Z 未出现在 y≈284：<For> 内的 Height=Fill 未真正占用剩余空间")
+	}
+}
+`)
+}

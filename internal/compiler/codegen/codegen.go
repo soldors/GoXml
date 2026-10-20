@@ -341,10 +341,9 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal
 //		return layout.Flex{Axis: ...}.Layout(gtx, children...)
 //	}()
 //
-// ⚠️ 本路径（以及 emitForChildren / emitIfChildren）**尚未**接入 sizeWrap，
-// 因此含 <For>/<If> 的容器目前仍一律生成 `layout.Rigid`，`Width`/`Height`
-// 在这条路径上被忽略。接入是 TASK-CODEGEN-001-10 的下一步，接入时
-// 必须复用 sizeWrap 而不是在本函数里另写一份条件表达式。
+// 子项一律经 sizeWrap 包装（与静态路径同一模板）：动态路径曾经硬编码
+// `layout.Rigid(...)` 并静默忽略 Width/Height，现在由 sizeWrap 统一决定
+// Rigid/Flexed 与约束改写，主轴方向由调用方逐层透传。
 func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
@@ -360,13 +359,13 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHor
 
 	for _, c := range children {
 		if isForNode(c) {
-			if err := g.emitForChildren(&b, c, "\t\t\t"); err != nil {
+			if err := g.emitForChildren(&b, c, "\t\t\t", mainIsHorizontal); err != nil {
 				return "", err
 			}
 			continue
 		}
 		if isIfNode(c) {
-			if err := g.emitIfChildren(&b, c, "\t\t\t"); err != nil {
+			if err := g.emitIfChildren(&b, c, "\t\t\t", mainIsHorizontal); err != nil {
 				return "", err
 			}
 			continue
@@ -375,9 +374,8 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHor
 		if err != nil {
 			return "", err
 		}
-		b.WriteString("\t\t\tchildren = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		b.WriteString("\t\t\t\treturn " + inner + "\n")
-		b.WriteString("\t\t\t}))\n")
+		// 与静态路径共用同一 sizeWrap：动态路径不得另写一份尺寸判断。
+		b.WriteString("\t\t\tchildren = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
 	}
 
 	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axisIdent(mainIsHorizontal) + fields + "}.Layout(" + ops + ", children...)\n")
@@ -389,7 +387,7 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHor
 //
 // 关键一致性（<For> 列表契约 §5）：数据源只求值一次并存入局部变量 items，
 // 供后续事件轮询与渲染共用——两处各写一遍取数表达式会在并发修改下串位。
-func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, indent string) error {
+func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, indent string, mainIsHorizontal bool) error {
 	nf, ok := lookupFor(n, g.facts)
 	if !ok {
 		return fmt.Errorf("codegen: <%s> has no resolved for-clause facts; the analyzer result is inconsistent", n.Tag)
@@ -451,7 +449,7 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 		}
 		// 循环体里的 <If> 也要内联展开（If 输出契约 §4.1）。
 		if isIfNode(c) {
-			if err := g.emitIfChildren(b, c, indent+"\t\t"); err != nil {
+			if err := g.emitIfChildren(b, c, indent+"\t\t", mainIsHorizontal); err != nil {
 				g.inFor = prevInFor
 				g.currentFor = prevFor
 				return err
@@ -464,9 +462,8 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 			g.currentFor = prevFor
 			return err
 		}
-		b.WriteString(indent + "\t\tchildren = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		b.WriteString(indent + "\t\t\treturn " + inner + "\n")
-		b.WriteString(indent + "\t\t}))\n")
+		// 逐项 append 与静态子项共用 sizeWrap：循环内的尺寸语义不另起一套。
+		b.WriteString(indent + "\t\tchildren = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
 	}
 	g.inFor = prevInFor
 	g.currentFor = prevFor
@@ -640,7 +637,11 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 				"codegen: event %q on <%s> has no resolved facts; the analyzer result is inconsistent",
 				ev.Name, n.Tag)
 		}
-		args, err := g.renderEventArgs(resolved.CallArgs)
+		// 经通用层组装实参（TASK-EVENT-PAYLOAD-001）：
+		// Button 的 Click 无载荷，因此不提供载荷表达式；若 Schema 将来给
+		// Click 加载荷，这里会因 payload==nil 报内部错误——即"控件未接线"，
+		// 而不是静默生成少参数的调用。
+		args, err := g.renderInvocationArgs(resolved, nil)
 		if err != nil {
 			return "", err
 		}
@@ -1322,7 +1323,7 @@ func (s rowClickSlot) keyTypeExprMust() string {
 //	}
 //
 // Then/Else 自身不产生节点——它们是分组标记。
-func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, indent string) error {
+func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, indent string, mainIsHorizontal bool) error {
 	if n.If == nil {
 		return fmt.Errorf("codegen: <If> has no If clause; the analyzer result is inconsistent")
 	}
@@ -1342,7 +1343,7 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 	// Then 分支：轮询守卫即条件本身。
 	prev := g.guards
 	g.guards = append(prev, guardCond{expr: condExpr, rowScoped: g.inFor})
-	err = g.emitBranchAppends(b, n.If.Then, indent+"\t\t")
+	err = g.emitBranchAppends(b, n.If.Then, indent+"\t\t", mainIsHorizontal)
 	g.guards = prev
 	if err != nil {
 		return err
@@ -1352,7 +1353,7 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 		b.WriteString(indent + "\t} else {\n")
 		// Else 分支：守卫是条件的否定（读同一表达式，同一帧内等价）。
 		g.guards = append(prev, guardCond{expr: "!(" + condExpr + ")", rowScoped: g.inFor})
-		err = g.emitBranchAppends(b, n.If.Else, indent+"\t\t")
+		err = g.emitBranchAppends(b, n.If.Else, indent+"\t\t", mainIsHorizontal)
 		g.guards = prev
 		if err != nil {
 			return err
@@ -1388,17 +1389,17 @@ func guardExpr(guards []guardCond) string {
 }
 
 // emitBranchAppends 生成一个分支内每个子节点的 append 语句。
-func (g *generator) emitBranchAppends(b *strings.Builder, nodes []*contracts.NodeIR, indent string) error {
+func (g *generator) emitBranchAppends(b *strings.Builder, nodes []*contracts.NodeIR, indent string, mainIsHorizontal bool) error {
 	for _, c := range nodes {
 		// 分支内再嵌套 For/If 也走内联展开（契约 §4.3）。
 		if isForNode(c) {
-			if err := g.emitForChildren(b, c, indent); err != nil {
+			if err := g.emitForChildren(b, c, indent, mainIsHorizontal); err != nil {
 				return err
 			}
 			continue
 		}
 		if isIfNode(c) {
-			if err := g.emitIfChildren(b, c, indent); err != nil {
+			if err := g.emitIfChildren(b, c, indent, mainIsHorizontal); err != nil {
 				return err
 			}
 			continue
@@ -1407,9 +1408,7 @@ func (g *generator) emitBranchAppends(b *strings.Builder, nodes []*contracts.Nod
 		if err != nil {
 			return err
 		}
-		b.WriteString(indent + "children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		b.WriteString(indent + "\treturn " + inner + "\n")
-		b.WriteString(indent + "}))\n")
+		b.WriteString(indent + "children = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
 	}
 	return nil
 }

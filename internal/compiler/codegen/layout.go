@@ -220,14 +220,14 @@ func axisIdent(mainIsHorizontal bool) string {
 //
 // **这是唯一的尺寸生成模板**。当前接入状态：
 //
-//	containerExpr         ✔ 已接入（Row / Column / Page 的静态子项）
-//	dynamicContainerExpr  ✘ 待接入（含 <For>/<If> 的容器）
-//	emitForChildren       ✘ 待接入
-//	emitIfChildren        ✘ 待接入
+//	containerExpr         ✔ 静态子项（Row / Column / Page）
+//	dynamicContainerExpr  ✔ 运行时组装容器里的静态子项
+//	emitForChildren       ✔ <For> 循环体逐项 append
+//	emitIfChildren        ✔ <Then>/<Else> 分支 append（经 emitBranchAppends）
 //
-// 四个入口各写一份条件表达式会立刻产生规范禁止的「多处判定」——即使四份
-// 当前相同，也会在下次修改时分叉。未接入的三处目前一律生成 `layout.Rigid`
-// 且忽略 `Width`/`Height`，这是**已知缺口**，不是已实现。
+// 四处各写一份条件表达式会立刻产生规范禁止的「多处判定」——即使四份
+// 当前相同，也会在下次修改时分叉。主轴方向由调用方逐层透传，模板本身
+// 不做任何轴向判断。
 //
 // 参数 mainIsHorizontal 是**父容器**的主轴方向（Row=true，Column/Page=false），
 // 由调用方在编译期确定。本函数据此得出两个方向分别对应 X 还是 Y；
