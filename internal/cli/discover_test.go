@@ -30,8 +30,11 @@ func writeProject(t *testing.T, dir string, gxmlRel string) {
 		t.Fatal(err)
 	}
 	// 同包 ViewModel：每个含 .gxml 的目录都需要（G2 按文件解析）。
+	// 包名取目录名并净化为合法 Go 标识符——测试目录名（tmp-TestXxx）
+	// 含连字符，不是合法标识符。
 	vmDir := filepath.Dir(gxmlPath)
-	if err := os.WriteFile(filepath.Join(vmDir, "vm.go"), []byte("package "+filepath.Base(vmDir)+"\n\ntype VM struct{ Title string }\n"), 0o644); err != nil {
+	pkg := sanitizePackageName(filepath.Base(vmDir))
+	if err := os.WriteFile(filepath.Join(vmDir, "vm.go"), []byte("package "+pkg+"\n\ntype VM struct{ Title string }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -184,4 +187,27 @@ func TestGenerateOutDirPreservesSourceHeader(t *testing.T) {
 	if !strings.Contains(string(data), "// Source: home.gxml") {
 		t.Errorf("保护头 Source 应为相对目标包目录的文件名:\n%.140s", data)
 	}
+}
+
+// sanitizePackageName 把目录名净化为合法 Go 包名：
+// 非字母数字下划线的字符转下划线；数字开头补前缀。
+func sanitizePackageName(name string) string {
+	var b strings.Builder
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteByte('p')
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "p"
+	}
+	return b.String()
 }

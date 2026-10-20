@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goxml/goxml/internal/compiler/codegen"
 	"github.com/goxml/goxml/internal/compiler/pipeline"
 )
 
@@ -52,6 +53,20 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		}
 	}
 
+	// 所有输入必须属于**同一个 Go module**（Manifest 在项目根维护，契约 §10）。
+	var moduleRoot string
+	for _, in := range inputs {
+		mr, err := findModuleRoot(in.abs)
+		if err != nil {
+			return err
+		}
+		if moduleRoot == "" {
+			moduleRoot = mr
+		} else if moduleRoot != mr {
+			return fmt.Errorf("输入跨越多个 Go module（%s 与 %s）；Manifest 在项目根维护，不支持跨 module 批次", moduleRoot, mr)
+		}
+	}
+
 	// 输出冲突检测：不同输入不得映射到同一目标文件。
 	seen := make(map[string]string, len(inputs))
 
@@ -66,11 +81,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	targets := make([]string, 0, len(inputs))
 
 	for _, in := range inputs {
-		// 输入侧：SourceDir 是该文件所在目录（G2）。
-		moduleRoot, err := findModuleRoot(in.abs)
-		if err != nil {
-			return err
-		}
+		// 输入侧：SourceDir 是该文件所在目录（G2）；moduleRoot 已统一校验。
 		pkgName, err := packageDirName(in.sourceDir)
 		if err != nil {
 			return err
@@ -114,7 +125,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——批次全部放弃，磁盘无任何变更", in.rel, res.Status, len(res.Diags))
 		}
 
-		preparedFiles = append(preparedFiles, prepared{in: in, artifact: res.Artifact, target: target})
+		preparedFiles = append(preparedFiles, prepared{in: in, source: src, artifact: res.Artifact, target: target})
 		targets = append(targets, target)
 	}
 
@@ -144,6 +155,48 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	}
 	if len(sorted) > 1 {
 		fmt.Fprintf(stdout, "共 %d 个文件生成成功（按路径排序处理）\n", len(sorted))
+	}
+
+	// ---------- Manifest 登记（契约 §10）----------
+	// Source/Output 用项目相对路径（/ 分隔）；inputHash 用本次源内容。
+	entries := make([]entry, 0, len(preparedFiles))
+	for _, p := range preparedFiles {
+		srcRel, err := filepath.Rel(moduleRoot, p.in.abs)
+		if err != nil {
+			return fmt.Errorf("计算源相对路径: %w", err)
+		}
+		outRel, err := filepath.Rel(moduleRoot, p.target)
+		if err != nil {
+			return fmt.Errorf("计算输出相对路径: %w", err)
+		}
+		entries = append(entries, entry{
+			Source:          filepath.ToSlash(srcRel),
+			Output:          filepath.ToSlash(outRel),
+			InputHash:       inputHashOf(p.source),
+			CompilerVersion: codegen.GoxmlVersion,
+		})
+	}
+	if err := updateManifestAfterGenerate(moduleRoot, entries); err != nil {
+		return fmt.Errorf("更新 Manifest: %w", err)
+	}
+
+	// ---------- --clean（在本次登记之后执行，保证 keep 集合正确）----------
+	if opts.clean {
+		keep := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			keep[e.Source] = true
+		}
+		deleted, skipped, err := cleanOrphans(moduleRoot, keep)
+		if err != nil {
+			return fmt.Errorf("清理失败: %w", err)
+		}
+		for _, d := range deleted {
+			fmt.Fprintf(stdout, "已清理 %s\n", d)
+		}
+		for _, s := range skipped {
+			fmt.Fprintf(stdout, "跳过 %s\n", s)
+		}
+		fmt.Fprintf(stdout, "清理完成：删除 %d，跳过 %d\n", len(deleted), len(skipped))
 	}
 	return nil
 }

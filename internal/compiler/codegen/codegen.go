@@ -41,11 +41,15 @@ type Options struct {
 	SourcePath string
 }
 
-// goxmlVersion 是保护头里的语言版本字段（契约 §3.1）。
+// GoxmlVersion 是保护头与 Manifest 共用的语言版本字段（契约 §3.1）。
 //
 // 它是 GXML 语言版本，不是编译器构建版本——同一语言版本的不同构建
 // 必须产生逐字节相同的保护头（契约 §6 确定性）。
-const goxmlVersion = "1"
+// G3 决策：版本来源显式单一，Manifest 与保护头从这里取值。
+const GoxmlVersion = "1"
+
+// goxmlVersion 是包内引用别名。
+const goxmlVersion = GoxmlVersion
 
 // headerFor 生成文件的保护头（契约 §3.1，三行格式）：
 //

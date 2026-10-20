@@ -42,6 +42,9 @@ func tempProjectInRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// Manifest 隔离：所有用例的 moduleRoot 都是仓库根，若共享真实
+	// .goxml/generate-manifest.json 会互相污染（1-6 实测）。
+	isolateManifest(t)
 	return dir
 }
 
