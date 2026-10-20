@@ -90,7 +90,11 @@ func implementedCodes() []codeEntry {
 // 实现 Analyzer 时：把这些条目从 frozenCodes 移到 implementedCodes，
 // 并补上常量与测试。门禁会在两边都不匹配时报错，因此不会漏掉。
 var frozenCodes = []codeEntry{
-	// 当前没有「已定稿但未实现」的码：Analyzer 的 11 个码已全部实现。
+	// GXML-SCOPE-005：`<For>` 内含 `<Input>` 的编译期拒绝（v1 静态 Input only）。
+	//
+	// 语义已由《Input 输出契约》§7 冻结（2026-10-20），实现属于 C/D 阶段。
+	// 实现时把它移到 implementedCodes 并补常量与 Parser 测试。
+	{Code: "GXML-SCOPE-005", Name: "parser.CodeInputInFor"},
 	//
 	// 这个清单会随阶段推进而清空，但**不能只靠维护它来保证正确性**——
 	// 它曾经声称 Analyzer 未实现，而实际早已发射（因为旧门禁只校验
@@ -200,7 +204,7 @@ func TestFrozenCodesHaveNoImplementation(t *testing.T) {
 func TestCodeCounts(t *testing.T) {
 	const (
 		wantImpl   = 34
-		wantFrozen = 0
+		wantFrozen = 1
 		wantTotal  = wantImpl + wantFrozen
 	)
 	if got := len(implementedCodes()); got != wantImpl {
@@ -335,7 +339,7 @@ func TestCodesAreGrouped(t *testing.T) {
 	count(frozenCodes)
 
 	want := map[string]int{
-		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 6, "DEF": 11, "SCOPE": 3, "BIND": 5,
+		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 6, "DEF": 11, "SCOPE": 4, "BIND": 5,
 	}
 	var keys []string
 	for k := range want {
