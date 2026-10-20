@@ -478,7 +478,7 @@ v1 内置基础控件标签：
 | `Hint` | 字面量 | 空串 | 占位提示 |
 | `ReadOnly` | 静态 bool | `false` | 只读 |
 | `SingleLine` | 静态 bool | `true` | 单行模式 |
-| `Submit` | 静态 bool | `false` | 启用回车提交（声明 `Submit` 事件时自动为 `true`） |
+
 | `MaxLen` | 静态 int | `0`（不限） | 最大字符数 |
 | `Filter` | 字面量 | 空串 | 允许的字符集 |
 | `Enabled` | 静态 bool | — | **v1 不支持**：Schema 可识别，但生成阶段报错（与 `<Button Enabled>` 同一裁决） |
@@ -490,6 +490,11 @@ v1 内置基础控件标签：
 **绑定方向**：`Value="{Path}"` 是**单向**的（ViewModel → 编辑器）。
 GXML v1 **不存在自动双向绑定**（见 §9）；回写只能经 `ValueChanged`
 或 `Submit` 事件方法显式完成。
+
+> **`Submit` 只作事件，不作属性**：编辑器的回车提交能力由「是否声明
+> `Submit` 事件」自动决定，不提供独立 bool 属性（理由见
+> [`Input输出契约.md`](Input输出契约.md) §2.3：同名属性与事件在
+> Expander 的分类顺序下不可共存）。
 
 **两条事件的区别**：
 

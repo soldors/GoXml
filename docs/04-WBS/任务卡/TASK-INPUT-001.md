@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**C 阶段（接口同步）已完成（2026-10-20）。契约见 [Input输出契约.md](../../03-架构/Input输出契约.md) v1 + [ADR-0011](../../03-架构/adr/ADR-0011-Input受控输入与事件分派.md)；验收见 AC-002-10..24（全部未执行）。D 阶段（实现拆分）待启动；`GXML-SCOPE-005` 为定稿态、未实现；`TASK-EVENT-PAYLOAD-001` 为 Input 事件生成的前置任务** | 优先级：P1
+- 状态：**D 阶段进行中（2026-10-20）**。C 阶段已完成；D1（通用载荷）✅ `6491774`；D2（`GXML-SCOPE-005`）✅ `cc6f341`，该码**已从定稿态转入实现态**；D3 进行中。契约见 [Input输出契约.md](../../03-架构/Input输出契约.md) v1 + [ADR-0011](../../03-架构/adr/ADR-0011-Input受控输入与事件分派.md)；验收 AC-002-10..24 中 **20/21/22 已在 Parser 层通过**，其余未执行。**Input 的 Schema/Analyzer/Codegen 仍未实现** | 优先级：P1
 - 依赖：`TASK-STATE-001`（失效机制）、`TASK-BINDING-IMPLEMENT-001`（绑定）、
   `TASK-GENERATE-CLI-001`（CLI，已关闭）
 - 规范依据：[`GXML语言规范.md`](../../03-架构/GXML语言规范.md) §6.1、
@@ -145,6 +145,61 @@ Input 同时触及语言语义（I-02 双向绑定边界）、事件系统（I-0
 |---|---|---|
 | D1 | `TASK-EVENT-PAYLOAD-001`：通用载荷生成能力 + 独立测试 | 无（可先做） |
 | D2 | `GXML-SCOPE-005` 常量与 Parser 检测 + 测试 | ✅ **完成（2026-10-20）**：`parser.CodeInputInFor` + `containsInputNode`（递归覆盖 Children/If.Then/If.Else/Def.Body）；优先级顺序固定（无 Key → SCOPE-003 优先，不叠加）；11 项测试 |
-| D3 | Schema 属性扩展（7 属性 + Submit 事件） | C1 已同步 |
+| D3 | Schema 属性扩展（7 属性 + `Submit` 事件；**`Submit` 无属性**） | ✅ **完成（2026-10-20）**：`expander/schema.go` 扩至 7 属性 + 2 事件；6 项 Schema 层测试（含 Submit 事件路径的关键回归） |
 | D4 | Codegen：Input 分支（Editor 字段、同步算法、控件自持消费） | D1、D3 |
 | D5 | 验收：AC-002-10..23 自动化 + AC-002-24 人工 | D4 |
+---
+
+## 10. D3-0 审计：`Submit` 命名冲突（2026-10-20）
+
+### 10.1 冲突是机械的，不是笔误
+
+契约初版把 `Submit` 同时定义为**静态 bool 属性**（§2）与**事件**（§4）。
+Expander 的分类顺序是固定的：
+
+```text
+1. 全局布局属性 → 2. schema.Prop(name) → 3. schema.Event(name) → 4. 未知名称
+```
+
+**属性检查在事件之前**，因此同名时 `Submit="OnSubmit"` 会被当作 bool 属性
+解析而报类型错，事件声明**永远不可达**。
+
+### 10.2 裁决：删属性，只保留事件
+
+契约自身已写明「声明 `Submit` 事件时 `Editor.Submit` 自动为 true」
+（原 §2.2、§4.3），说明该能力本来就是**事件声明的派生效果**。
+
+| 方案 | 结论 |
+|---|---|
+| **删属性、只留事件** | **采纳**：契约自洽、分类器零改动、用户无需写两处 |
+| 保留属性、事件改名 | 否决：与 Gio `SubmitEvent` 易混，仍需改契约与规范 |
+| 扩分类器支持同名 | 否决：需按值形态判定（方法名 vs `true`/`false`），引入隐式歧义，与「未知名称绝不退化为事件」原则冲突 |
+
+### 10.3 同步范围
+
+模块/契约/规范三处必须一起改，否则会有文档漂移：
+
+- 契约 §2 属性表：删 `Submit` 行
+- 契约 §2.2 对应表：删 `Submit` 行
+- 契约新增 **§2.3**：记录裁决理由与三方案对比
+- 契约 §4.3：明确「`Submit` 只有事件形式，没有属性」
+- 规范 §3.2.1：删属性行 + 加说明
+
+### 10.4 D3 实现
+
+`expander/schema.go` Input：
+
+- 属性 7 个：`Value`/`Hint`/`ReadOnly`/`SingleLine`/`MaxLen`/`Filter`/`Enabled`
+- 事件 2 个：`ValueChanged(value:string)`、`Submit(text:string)`
+- **无 `Submit` 属性**（代码注释写明原因，防后人误加）
+
+### 10.5 验收（6 项）
+
+| 测试 | 内容 |
+|---|---|
+| TestInputSchemaProperties | 7 属性齐全且类型正确；**数量断言**防多声明 |
+| **TestInputSchemaNoSubmitProperty** | Submit 不得是属性、必须是事件（同名冲突回归防线） |
+| TestInputSchemaEvents | 两事件及载荷名/类型 |
+| TestInputSchemaUnknownAttrStillRejected | 扩属性后未知名称仍拒绝（`Placeholder` 不是属性） |
+| **TestSubmitEventParsesAsEvent** | `Submit="OnSubmit"` 端到端走事件路径，且不出现在 Attrs |
+| TestInputAllPropsParse | 6 个属性全部被正确分类 |

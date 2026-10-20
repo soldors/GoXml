@@ -143,13 +143,24 @@ var builtinSchemas = map[string]*ComponentSchema{
 	},
 	"Input": {
 		Tag: "Input",
+		// 属性集见《Input 输出契约》§2 与语言规范 §3.2.1。
+		//
+		// 注意：**没有 `Submit` 属性**——它只作为事件存在（契约 §2.3：
+		// Expander 先查 Prop 再查 Event，同名会让事件永远不可达）。
 		Properties: []PropertySchema{
 			{Name: "Value", Type: contracts.PropString},
+			{Name: "Hint", Type: contracts.PropString},
+			{Name: "ReadOnly", Type: contracts.PropBool},
+			{Name: "SingleLine", Type: contracts.PropBool},
+			{Name: "MaxLen", Type: contracts.PropInt},
+			{Name: "Filter", Type: contracts.PropString},
 			{Name: "Enabled", Type: contracts.PropBool},
 		},
 		// Input 是受控或非受控控件，回写由事件完成；v1 不引入双向绑定。
 		Events: []contracts.EventSchema{
 			{Name: "ValueChanged", Params: []contracts.EventParam{{Name: "value", Type: contracts.PropString}}},
+			// Submit：回车提交（契约 §4.3）。声明即启用 Editor.Submit。
+			{Name: "Submit", Params: []contracts.EventParam{{Name: "text", Type: contracts.PropString}}},
 		},
 	},
 	"Image": {

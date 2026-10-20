@@ -34,15 +34,41 @@
 | `Hint` | 字面量（string） | 空串 | `material.Editor` 的 `hint` | 占位提示 |
 | `ReadOnly` | 静态 bool | `false` | `Editor.ReadOnly` | 只读 |
 | `SingleLine` | 静态 bool | **`true`** | `Editor.SingleLine` | 单行模式 |
-| `Submit` | 静态 bool | `false` | `Editor.Submit` | 启用回车提交（见 §4.3） |
+
 | `MaxLen` | 静态 int | `0`（不限） | `Editor.MaxLen` | 最大字符数（Gio 内置截断） |
 | `Filter` | 字面量 | 空串（不过滤） | `Editor.Filter` | 允许字符集（Gio 内置过滤） |
 | `Enabled` | 静态 bool | — | — | **v1 明确报错**（沿用 `<Button Enabled>` 裁决） |
+
+> **`Submit` 不是属性**（2026-10-20 修订）：它只作为**事件**存在（§4.3）。
+> 编辑器的提交能力由「是否声明 `Submit` 事件」自动决定，不提供独立的
+> bool 属性。原因见 §2.3。
 
 ### 2.1 不定义的属性
 
 - **`Text`**：与 `Value` 同义冲突，Gio 无此概念——**不定义**。
   出现即按未知属性诊断（ATTR 组）。
+
+### 2.3 `Submit` 为何不设属性（修订记录）
+
+初版契约曾把 `Submit` 同时定义为**静态 bool 属性**（§2）与**事件**（§4）。
+Expander 的分类器按固定顺序判定：
+
+```text
+1. 全局布局属性 → 2. schema.Prop(name) → 3. schema.Event(name) → 4. 未知
+```
+
+**属性检查在事件之前**。同名时 `Submit="OnSubmit"` 会被当成 bool 属性解析
+（类型错误），事件声明**永远不可达**——这是机械冲突，不是风格问题。
+
+契约自身也已写明「声明 `Submit` 事件时 `Editor.Submit` 自动为 true」
+（§2.2 原表、§4.3 矩阵），即该能力本来就是**事件声明的派生效果**。
+因此裁决：**删除属性，只保留事件**。
+
+| 方案 | 结论 |
+|---|---|
+| 删属性、只留事件 | **采纳**：契约自洽、分类器零改动、用户无需同时写两处 |
+| 保留属性、事件改名 | 否决：与 Gio `SubmitEvent` 命名易混，且仍要改契约与规范 |
+| 扩分类器支持同名 | 否决：需按值形态判定（方法名 vs `true`/`false`），引入隐式歧义，与「未知名称绝不退化为事件」的既有原则冲突 |
 
 ### 2.2 属性与 Gio 字段的对应表（供 C 阶段核对）
 
@@ -52,7 +78,7 @@
 | `Hint` | `material.Editor(th, ed, hint)` 第 3 参 | |
 | `ReadOnly` | `Editor.ReadOnly` | |
 | `SingleLine` | `Editor.SingleLine` | |
-| `Submit` | `Editor.Submit` | 声明 `Submit` 事件时自动置 true |
+
 | `MaxLen` | `Editor.MaxLen` | |
 | `Filter` | `Editor.Filter` | |
 
@@ -97,9 +123,12 @@
 
 ### 4.3 回车行为矩阵
 
+`Submit` **只有事件形式，没有属性**（见 §2.3）。编辑器提交能力的开关即
+「是否声明该事件」。
+
 | `Submit` 事件声明 | `SingleLine` | 回车行为 |
 |---|---|---|
-| 是 | 任意 | 产生 `SubmitEvent`，调用 `S`；`Editor.Submit=true` |
+| 是 | 任意 | 产生 `SubmitEvent`，调用 `S`；生成器置 `Editor.Submit=true` |
 | 否 | `true`（默认） | **不产生 GXML 事件**；Editor 不插入换行（单行模式） |
 | 否 | `false` | **不产生 GXML 事件**；Editor 插入换行 |
 
