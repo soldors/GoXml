@@ -1,4 +1,4 @@
-# 安装 post-commit 钩子：每次提交成功后自动推送到 origin。
+﻿# 安装 post-commit 钩子：每次提交成功后自动推送到 origin。
 #
 # 用法：.\scripts\install-hooks.ps1
 # 卸载：Remove-Item .git/hooks/post-commit

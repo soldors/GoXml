@@ -1,4 +1,4 @@
-# 提交并推送到 GitHub（origin/master）。
+﻿# 提交并推送到 GitHub（origin/master）。
 #
 # 用法：
 #   .\scripts\commit-push.ps1 -Message "feat: xxx" -Files "a.go","b.md"
