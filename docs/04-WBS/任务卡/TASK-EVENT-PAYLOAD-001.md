@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**Todo（契约已冻结，实现未开始）** | 优先级：P1
+- 状态：**Done（2026-10-20）** | 优先级：P1 | 证据：`internal/compiler/codegen/payload.go` + `payload_test.go`（5+2 项测试全过，codegen 覆盖率 84.3%）
 - 依赖：`TASK-BINDING-IMPLEMENT-001`（Facts 体系）、`TASK-CODEGEN-001`
 - 被依赖：`TASK-INPUT-001` 的 D4（Input 事件生成**必须**等本卡通过独立验收）
 - 规范依据：
@@ -115,3 +115,54 @@ TASK-EVENT-PAYLOAD-001（本卡）──独立验收通过──→ TASK-INPUT-0
 
 **不得**把载荷实现塞进 Input 的 D4 一起做——那会让"通用能力"退化为控件特例，
 且失去独立验收的可能。
+
+---
+
+## 7. 实现记录（2026-10-20）
+
+### 7.1 实现前核查（D1.1）发现的真实缺口
+
+| 事实 | 影响 |
+|---|---|
+| `Payload []ResolvedParam` 只有 Name/Type/Span，**无运行时值** | 载荷取值必须由控件提供——本层输入是「载荷表达式」 |
+| `Mapping []ParamOrigin` 已由 Analyzer 填好 | 顺序由它决定，Codegen 不需要猜 |
+| Codegen 原来直接 `renderEventArgs(CallArgs)` | **完全忽略 Mapping 与 Payload**——带载荷事件会生成少参数/乱序的调用 |
+
+即：本卡补的不是"新功能"，而是**已有的错误**。
+
+### 7.2 实现（`payload.go`）
+
+`renderInvocationArgs(ev, payload)`：
+
+- 输入：`ResolvedEvent` + 控件提供的 `payloadExprFunc`
+- 内部一致性四查（全部报 `codegen: internal:`，**不含 GXML 码**）：
+  Mapping↔形参数量、Mapping 载荷数↔Payload 长度、Mapping 实参数↔CallArgs 长度、
+  声明了载荷但控件未提供表达式
+- 按 Mapping 逐项组装：`FromPayload` 取控件表达式，`FromCallArg` 走既有
+  `renderEventArg`（字面量/路径渲染复用）
+- **不重复诊断**用户错误（数量/类型/返回值归 Analyzer）
+
+### 7.3 Button 接入（零载荷回归）
+
+`buttonExpr` 改为调用通用层并传 `nil` 载荷——Click 无载荷所以行为不变；
+若 Schema 将来给 Click 加载荷，会立即报「控件未提供载荷表达式」，
+而不是静默生成少参调用。
+
+### 7.4 验收（7 项）
+
+| 测试 | 内容 |
+|---|---|
+| TestPayloadZeroArgs | 零参 → 空实参 |
+| TestPayloadSingleArg | 单载荷 → 注入表达式 |
+| TestPayloadThenCallArgs | 载荷在前、实参在后 |
+| TestPayloadMappingOrderIsAuthoritative | **顺序严格由 Mapping**（载荷不在首位也正确） |
+| TestPayloadTwoEventsIndependent | 两事件互不回退 |
+| TestPayloadMappingInconsistencyIsInternalError | 4 个内部错误子例，均断言「标记 internal + 无 GXML 码」 |
+| TestPayloadUnknownOrigin | 未知来源 → 内部错误 |
+| TestPayloadButtonRegression | Button 生成形态不变 |
+| TestPayloadGeneratedCodeCompiles | 多实参调用在临时包中**真实编译运行** |
+
+### 7.5 边界
+
+D1 通过**不代表** Input 已实现：`AC-002-10..24` 仍全部「未执行」，
+D4 仍需等 D1 + D3。
