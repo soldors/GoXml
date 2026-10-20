@@ -462,10 +462,46 @@ v1 内置基础控件标签：
 |---|---|---|
 | `Text` | `Value` | `Color` |
 | `Button` | `Text` | `Enabled` |
-| `Input` | 无 | `Value`、`Enabled` |
+| `Input` | 无 | `Value`、`Hint`、`ReadOnly`、`SingleLine`、`Submit`、`MaxLen`、`Filter`（`Enabled` 见下） |
 | `Image` | `Src` | `Width`、`Height` |
 
 控件的具体绘制实现属于组件库，不改变 GXML 语义。
+
+#### 3.2.1 `<Input>` 的属性与语义
+
+`<Input>` 的输入语义、状态同步与事件分派由
+[`Input输出契约.md`](Input输出契约.md)（v1 冻结）唯一定义。本规范只列语言面：
+
+| 属性 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `Value` | 绑定或字面量 | 空串 | **外部值**：把 ViewModel 的值显示到编辑器 |
+| `Hint` | 字面量 | 空串 | 占位提示 |
+| `ReadOnly` | 静态 bool | `false` | 只读 |
+| `SingleLine` | 静态 bool | `true` | 单行模式 |
+| `Submit` | 静态 bool | `false` | 启用回车提交（声明 `Submit` 事件时自动为 `true`） |
+| `MaxLen` | 静态 int | `0`（不限） | 最大字符数 |
+| `Filter` | 字面量 | 空串 | 允许的字符集 |
+| `Enabled` | 静态 bool | — | **v1 不支持**：Schema 可识别，但生成阶段报错（与 `<Button Enabled>` 同一裁决） |
+
+> **`Enabled` 的区分**：「Schema 可识别」与「可被成功编译」是两件事。
+> `Enabled` 能被解析与校验，但 v1 的 Input 生成不实现禁用语义，
+> 编译期显式报错而非静默忽略。
+
+**绑定方向**：`Value="{Path}"` 是**单向**的（ViewModel → 编辑器）。
+GXML v1 **不存在自动双向绑定**（见 §9）；回写只能经 `ValueChanged`
+或 `Submit` 事件方法显式完成。
+
+**两条事件的区别**：
+
+| 事件 | 触发时机 | 载荷 |
+|---|---|---|
+| `ValueChanged` | 用户**编辑过程中**文本变化 | 编辑器的当前文本 |
+| `Submit` | 用户**明确提交**（回车，且 `Submit=true`） | 提交时的文本 |
+
+两者**互不回退**：只声明 `Submit` 时不会有值回写；只声明 `ValueChanged`
+时回车不产生 `Submit` 事件。
+
+**`<For>` 内禁止使用**：见 §6.2。
 
 ### 3.3 控制流标签
 
@@ -638,7 +674,7 @@ Click="{Save}"
 |---|---|---|
 | `Text` | `Value`（必填）、`Color` | — |
 | `Button` | `Text`、`Enabled` | `Click` |
-| `Input` | `Value`、`Enabled` | `ValueChanged(value:string)` |
+| `Input` | `Value`、`Hint`、`ReadOnly`、`SingleLine`、`Submit`、`MaxLen`、`Filter` | `ValueChanged(value:string)`、`Submit(text:string)` |
 | `Image` | `Src` | — |
 
 ### 5.4 自定义组件必须显式声明事件
@@ -769,7 +805,21 @@ EventName(ParamName:Type, ParamName:Type)
 | `Virtualize` | 否 | v1.1 扩展，`true` 时启用虚拟化，缺省 `false`（见 ADR-0006） |
 | `ItemExtent` | 条件必选 | v1.1 扩展，固定行高（dp），启用虚拟化时使用 |
 
-当循环体包含 `<Button>`、`<Input>` 或声明为有状态的自定义组件时，`Key` 必须存在。`Key` 必须是稳定且可比较的绑定路径。
+当循环体包含 `<Button>` 或声明为有状态的自定义组件时，`Key` 必须存在。`Key` 必须是稳定且可比较的绑定路径。
+
+> **`<Input>` 是例外**：v1 的 `<Input>` **不得出现在 `<For>` 内**
+> （行内编辑器的生命周期尚未裁决，见
+> [`Input输出契约.md`](Input输出契约.md) §7）。
+>
+> 与 `Key` 规则的关系：`Key` 是**通用身份规则**，`<Input>` 的限制是
+> **v1 能力边界**，后者优先。两种输入各自命中不同诊断码：
+>
+> | 输入 | 命中码 |
+> |---|---|
+> | `<For>` 无 `Key` + 含 `<Input>` | `GXML-SCOPE-003`（缺 Key，既有规则先命中） |
+> | `<For>` 有 `Key` + 含 `<Input>` | `GXML-SCOPE-005`（v1 不支持行内 Input） |
+>
+> 两条规则不叠加——同一处只报一条。
 
 `Virtualize` 与 `ItemExtent` 是对 v1 基线的**向后兼容扩展**：未指定时行为与 v1 完全一致。启用虚拟化后的行状态生命周期设计以 `docs/03-架构/AOT状态Diff语义.md` §5.1.1 为参考，待对应列表实现批次重新验证；决策依据见 `docs/03-架构/adr/ADR-0006-列表虚拟化与静态子树宏固化.md`。
 
