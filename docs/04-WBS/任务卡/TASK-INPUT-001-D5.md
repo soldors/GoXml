@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**A 阶段完成，B–E 待做**（2026-10-20）
+- 状态：**A–E 全部完成（2026-10-20）** | 证据：`internal/compiler/codegen/input_acceptance_test.go`（4 项运行时用例，含重复执行稳定性验证）
 - 父卡：[TASK-INPUT-001.md](TASK-INPUT-001.md)
 - 前置：D4-C ✅ `46accb9`、Demo ✅ `a07fd24`
 
@@ -73,10 +73,27 @@ frame2: Queue(NameReturn Press/Release) → frame()  // 提交触发
 
 | 切片 | 内容 | 状态 |
 |---|---|---|
-| D5-B | AC-16 MaxLen 截断 + ChangeEvent 行为 | 待做（路径已验证） |
-| D5-C | AC-17 Filter 过滤 + ChangeEvent 行为 | 待做（路径已验证） |
-| D5-D | AC-18 Submit 运行时触发（次数/载荷/不重复） | 待做（路径已验证） |
-| D5-E | AC-14 外部值改回旧值 | 待做 |
+| D5-B | AC-16 MaxLen 截断 + ChangeEvent 行为 | ✅ `TestInputAcceptanceMaxLen` |
+| D5-C | AC-17 Filter 过滤 + ChangeEvent 行为 | ✅ `TestInputAcceptanceFilter` |
+| D5-D | AC-18 Submit 运行时触发（次数/载荷/不重复） | ✅ `TestInputAcceptanceSubmit` |
+| D5-E | AC-14 外部值改回旧值 | ✅ `TestInputAcceptanceExternalRevert` |
+
+### 2.1 四个用例的实测观测（D5-B~E）
+
+| 用例 | 观测值 | 关键断言 |
+|---|---|---|
+| MaxLen | `text=abc len=3`；超限后 `LastText` 不变 | 截断生效 + **超限不产生 ChangeEvent** |
+| Filter | `text=123`；非法输入后仍 `123` | 只留合法字符 + 非法输入不改文本 |
+| Submit | 帧1 输入 `42` → 帧2 回车 → `payload=42`；无回车帧 `SENTINEL` 保持；二次回车再触发 | **载荷正确 + 不重复触发 + 可重复触发** |
+| 改回旧值 | `AAA→BBB→INTERMEDIATE→AAA`，改回时覆盖为 `AAA`；稳定帧不变 | **完整往返 + 覆盖中间态 + 稳定** |
+
+**D5-E 的中间态设计**：先 `SetText("INTERMEDIATE")`（用户未回写编辑），
+再改回旧值。若实现漏更新，文本会停在 `INTERMEDIATE`——这打破了
+"未同步"与"同步后碰巧相等"的歧义。
+
+### 2.2 重复执行稳定性
+
+`go test -count=1 -run TestInputAcceptance` 连续两次均 PASS。
 
 ## 3. D5-F：人工验收（单独登记）
 

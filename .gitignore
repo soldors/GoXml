@@ -48,6 +48,10 @@ desktop.ini
 tmp/
 .tmp/
 
+# codegen 探测用的临时包（建在 testdata/ 下使 ./... 通配忽略；
+# 测试结束由 defer 清理，此处兜底防止中断残骸入库）
+internal/compiler/codegen/testdata/tmp*/
+
 # ---- AI 工具本地状态 ----
 # 助手工具的长期记忆目录，属本地环境而非项目源码。
 .workbuddy/

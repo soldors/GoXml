@@ -40,8 +40,14 @@ func rtProbe(t *testing.T, gxmlBody, probeBody string) string {
 		t.Fatalf("生成失败: %v", err)
 	}
 
+	// 必须建在 testdata/ 之下：go 工具通配（./...）忽略 testdata，
+	// 但显式路径（./<dir>/...）仍可构建测试。
+	// 若直接放在 codegen/ 下，探测包在运行期是「活包」，
+	// 并发/嵌套的 ./... 通配会把它当成真实包去构建，
+	// 观察到「构建中/半写」状态 → 全量 go test ./... 随机红灯
+	// （2026-10-20 已两次出现 tmprt* 残骸误报）。
 	dir := filepath.Join(repoRoot, "internal", "compiler", "codegen",
-		"tmprt"+randomSuffix())
+		"testdata", "tmprt"+randomSuffix())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

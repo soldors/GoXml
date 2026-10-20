@@ -32,8 +32,9 @@ func TestBindingGeneratedCompiles(t *testing.T) {
 		t.Fatalf("生成失败: %v", err)
 	}
 
+	// 同 rtProbe：建在 testdata/ 之下，避免被 ./... 通配在运行期扫到。
 	dir := filepath.Join(repoRoot, "internal", "compiler", "codegen",
-		"tmpcompile"+randomSuffix())
+		"testdata", "tmpcompile"+randomSuffix())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
