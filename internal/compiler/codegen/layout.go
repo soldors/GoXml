@@ -108,10 +108,63 @@ func gioAlignment(a contracts.CrossAlign) (string, error) {
 	}
 }
 
+// ============================================================================
+// TASK-CODEGEN-001-9：`Justify` 主轴剩余空间分布
+// ============================================================================
+
+// gioSpacing 把 GXML 的主轴分布映射为 Gio `layout.Spacing` 的标识符。
+//
+// ⚠️ **方向相反**（ADR-0008 §2.4）——这是本映射唯一的坑，也是必须有一张表的原因：
+//
+//	Gio 的 Spacing 描述的是「空白留在哪」，而 GXML 的 Justify 描述的是「元素靠哪」。
+//
+// | GXML `Justify` | Gio `Spacing`  | 语义                 |
+// |----------------|----------------|----------------------|
+// | `Start`        | `SpaceEnd`     | 元素靠前 → 空白在末尾 |
+// | `Center`       | `SpaceSides`   | 元素居中 → 空白在两边 |
+// | `End`          | `SpaceStart`   | 元素靠后 → 空白在开头 |
+// | `SpaceBetween` | `SpaceBetween` | 同名                 |
+// | `SpaceAround`  | `SpaceAround`  | 同名                 |
+// | `SpaceEvenly`  | `SpaceEvenly`  | 同名                 |
+//
+// 因此**绝不可**按名字直接赋值（`layout.` + GXML 取值）。那样对后三个是对的、
+// 对前三个全错；而前三个里有两个恰好存在同名常量（SpaceStart / SpaceEnd），
+// 编译照样通过、只断言「字段存在」的测试也照样通过——只有视觉上反了。
+//
+// 另注：Gio 的枚举顺序是 SpaceEnd(0) / SpaceStart / SpaceSides / SpaceAround /
+// SpaceBetween / SpaceEvenly，与 GXML 的枚举顺序不同，故按**名字**映射，不依赖序号。
+func gioSpacing(j contracts.MainJustify) (string, error) {
+	switch j {
+	case contracts.JustifyStart:
+		return "layout.SpaceEnd", nil
+	case contracts.JustifyCenter:
+		return "layout.SpaceSides", nil
+	case contracts.JustifyEnd:
+		return "layout.SpaceStart", nil
+	case contracts.JustifySpaceBetween:
+		return "layout.SpaceBetween", nil
+	case contracts.JustifySpaceAround:
+		return "layout.SpaceAround", nil
+	case contracts.JustifySpaceEvenly:
+		return "layout.SpaceEvenly", nil
+	default:
+		// 同 Align：非法枚举必须明确失败，不静默退回 SpaceEnd。
+		return "", fmt.Errorf("codegen: unsupported main-justify value %d on <%s>",
+			uint8(j), j)
+	}
+}
+
 // flexFieldsExpr 拼出 `layout.Flex` 的布局字段片段，供主生成器插入 `Axis: ...` 之后。
 //
 // 字段顺序按 Gio 结构体声明顺序（Axis → Spacing → Alignment → ... → Gap），
-// 生成代码读起来与 `layout.Flex` 的定义对应，后续接入 Justify（Spacing）时插在前面即可。
+// 生成代码读起来与 `layout.Flex` 的定义对应。
+//
+// **默认值一律显式写出**，不依赖 Gio 的零值：
+//
+//	Justify 的默认值 Start 映射到 SpaceEnd，而 SpaceEnd 恰好是 Gio 的零值，
+//	所以省略字段在行为上等价——但那样就把「默认分布是什么」这一语言语义
+//	藏进了「碰巧等于零值」的实现细节里。与 Align 保持同一规则
+//	（见 defaultCrossAlign）更一致，也让生成代码能自解释。
 //
 // 本函数的输出恒为「, <字段>: <标识符或数值>」形态，无字段时是空串，
 // 因此调用方只需无条件拼接，不需要判断。
@@ -119,6 +172,16 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 	if n == nil {
 		return "", nil
 	}
+	// JustifyUnset 等价于 JustifyStart（contracts 的 MainJustify 枚举注释）。
+	justify := n.Justify
+	if justify == contracts.JustifyUnset {
+		justify = contracts.JustifyStart
+	}
+	spacing, err := gioSpacing(justify)
+	if err != nil {
+		return "", err
+	}
+
 	align := n.Align
 	if align == contracts.AlignUnset {
 		align = defaultCrossAlign(tag)
@@ -127,6 +190,7 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Alignment 在前、Gap 在后：与 Gio 结构体字段顺序一致。
-	return ", Alignment: " + name + gapFieldExpr(n), nil
+	return ", Spacing: " + spacing + ", Alignment: " + name + gapFieldExpr(n), nil
 }
+
+// gioAlignment 把 GXML 的交叉轴对齐映射为 Gio `layout.Alignment` 的标识符。

@@ -469,6 +469,167 @@ func TestAlignGeneratedCodeCompiles(t *testing.T) {
 }
 
 // ============================================================================
+// TASK-CODEGEN-001-9：`Justify` 主轴剩余空间分布
+//
+// 契约依据：规范 §3.1.2（六个取值、缺省 Start）、ADR-0008 §2.4（映射表与反转警告）。
+// ============================================================================
+
+// TestJustifyMapping 是 -9 的主验收：六个取值在两个轴向上的映射。
+//
+// 映射表（ADR-0008 §2.4）：
+//
+//	Start→SpaceEnd、Center→SpaceSides、End→SpaceStart，
+//	SpaceBetween/SpaceAround/SpaceEvenly 同名。
+func TestJustifyMapping(t *testing.T) {
+	cases := []struct {
+		justify string
+		want    string
+	}{
+		{"Start", "SpaceEnd"},
+		{"Center", "SpaceSides"},
+		{"End", "SpaceStart"},
+		{"SpaceBetween", "SpaceBetween"},
+		{"SpaceAround", "SpaceAround"},
+		{"SpaceEvenly", "SpaceEvenly"},
+	}
+
+	for _, tag := range []string{"Column", "Row"} {
+		for _, tc := range cases {
+			t.Run(tag+"/"+tc.justify, func(t *testing.T) {
+				body := `<` + tag + ` Justify="` + tc.justify + `">` +
+					`<Text Value="a"/><Text Value="b"/></` + tag + `>`
+				out := mustGen(t, body, defaultOpts())
+
+				spacings := flexFieldValues(t, out, "Spacing")
+				if len(spacings) != 1 {
+					t.Fatalf("Spacing 字段应恰好出现 1 次（外层 <Page> 不消费 Justify），"+
+						"实际 %d 次\n%s", len(spacings), out)
+				}
+				if got := selectorName(spacings[0]); got != tc.want {
+					t.Errorf("<%s Justify=%q> 应生成 layout.%s，实际: %s",
+						tag, tc.justify, tc.want, exprText(spacings[0]))
+				}
+
+				// 同一字面量上的轴向：主轴方向错了，分布作用的就是另一个轴。
+				wantAxis := "Vertical"
+				if tag == "Row" {
+					wantAxis = "Horizontal"
+				}
+				cl := flexWithField(t, out, "Spacing")
+				if got := selectorName(flexField(cl, "Axis")); got != wantAxis {
+					t.Errorf("<%s> 的 Axis 应为 layout.%s，实际: %s",
+						tag, wantAxis, exprText(flexField(cl, "Axis")))
+				}
+			})
+		}
+	}
+}
+
+// TestJustifySpacingDirectionIsReversed 专门锁住 ADR-0008 §2.4 的反转警告。
+//
+// 与 TestJustifyMapping 的区别：那条证明「映射正确」，这条证明「不是同名赋值」——
+// 后者才是真实世界里会犯的错，因为 `layout.SpaceStart` / `layout.SpaceEnd` 两个
+// 常量**确实存在**，按名字直译能编译、能跑，只是视觉上前后颠倒。
+func TestJustifySpacingDirectionIsReversed(t *testing.T) {
+	// 键是 GXML 取值，值是「按名字直译会得到的错值」。
+	naive := map[string]string{
+		"Start":  "SpaceStart",
+		"End":    "SpaceEnd",
+		"Center": "SpaceCenter", // Gio 无此常量，直译会编译失败（较好的失败）
+	}
+	for justify, wrong := range naive {
+		body := `<Row Justify="` + justify + `"><Text Value="a"/><Text Value="b"/></Row>`
+		out := mustGen(t, body, defaultOpts())
+		spacings := flexFieldValues(t, out, "Spacing")
+		if len(spacings) != 1 {
+			t.Fatalf("Justify=%q 应生成 1 处 Spacing，实际 %d 处", justify, len(spacings))
+		}
+		if got := selectorName(spacings[0]); got == wrong {
+			t.Errorf("Justify=%q 被按名字直译为 layout.%s——"+
+				"Gio 的 Spacing 描述空白的位置，方向相反（ADR-0008 §2.4）", justify, wrong)
+		}
+	}
+}
+
+// TestJustifyDefaultsToStart 规范 §3.1.2：Justify 缺省为 Start（剩余空间留在末尾），
+// 即 layout.SpaceEnd。
+//
+// 这里刻意**显式生成**默认值，尽管 SpaceEnd 恰是 Gio 的零值、省略也等价——
+// 理由见 flexFieldsExpr 的注释：不把语言语义藏进「碰巧等于零值」的实现细节。
+func TestJustifyDefaultsToStart(t *testing.T) {
+	for _, tag := range []string{"Column", "Row"} {
+		out := mustGen(t, `<`+tag+`><Text Value="a"/><Text Value="b"/></`+tag+`>`,
+			defaultOpts())
+		spacings := flexFieldValues(t, out, "Spacing")
+		if len(spacings) != 1 {
+			t.Fatalf("未写 Justify 的 <%s> 也应显式生成默认分布，实际 %d 处\n%s",
+				tag, len(spacings), out)
+		}
+		if got := selectorName(spacings[0]); got != "SpaceEnd" {
+			t.Errorf("<%s> 默认 Justify 应为 layout.SpaceEnd，实际: %s",
+				tag, exprText(spacings[0]))
+		}
+	}
+}
+
+// TestJustifyInvalidValuesRejected 映射边界的非法值防御。
+func TestJustifyInvalidValuesRejected(t *testing.T) {
+	bad := []string{
+		"spacebetween",  // 大小写敏感
+		"SPACEBETWEEN",  // 大小写敏感
+		"space-between", // CSS 惯性
+		"FlexStart",     // CSS 惯性
+		"Middle",        // 那是 Align 的语义
+		"Stretch",       // CSS 惯性
+		"",              // 空
+		"{User.J}",      // 绑定
+		"Start End",     // 多值
+	}
+	for _, raw := range bad {
+		src := `<Goxml Version="1">
+  <Page Route="/"><Row Justify="` + raw + `"><Text Value="a"/></Row></Page>
+</Goxml>`
+		if diags := frontendDiags(t, src); len(diags) == 0 {
+			t.Errorf("Justify=%q 必须被前端拒绝，实际无诊断", raw)
+		}
+	}
+}
+
+// TestJustifyWithAlignAndGap 三个布局字段必须落在**同一个** Flex 字面量上。
+//
+// 分开写会各自断言全绿而视觉全错（间距/对齐/分布作用在错误的层级）。
+func TestJustifyWithAlignAndGap(t *testing.T) {
+	out := mustGen(t,
+		`<Row Gap="8" Align="Center" Justify="SpaceBetween">`+
+			`<Text Value="a"/><Text Value="b"/></Row>`, defaultOpts())
+	cl := flexWithField(t, out, "Spacing")
+	for _, field := range []string{"Alignment", "Gap"} {
+		if flexField(cl, field) == nil {
+			t.Errorf("%s 应与 Spacing 在同一个 layout.Flex 上\n%s", field, out)
+		}
+	}
+	if got := selectorName(flexField(cl, "Spacing")); got != "SpaceBetween" {
+		t.Errorf("Justify=SpaceBetween 应生成 layout.SpaceBetween，实际: %s",
+			exprText(flexField(cl, "Spacing")))
+	}
+	if got := selectorName(flexField(cl, "Alignment")); got != "Middle" {
+		t.Errorf("Align=Center 应生成 layout.Middle，实际: %s",
+			exprText(flexField(cl, "Alignment")))
+	}
+}
+
+// TestJustifyGeneratedCodeCompiles 真实编译验证：证明 SpaceEvenly 等常量确实存在。
+func TestJustifyGeneratedCodeCompiles(t *testing.T) {
+	for _, src := range []string{
+		`<Column Justify="SpaceEvenly"><Text Value="a"/><Text Value="b"/></Column>`,
+		`<Row Justify="End"><Text Value="a"/><Text Value="b"/></Row>`,
+		`<Row Gap="8" Align="Center" Justify="SpaceAround"><Text Value="a"/></Row>`,
+	} {
+		buildInTempModule(t, mustGen(t, src, defaultOpts()))
+	}
+}
+
+// ============================================================================
 // 辅助
 // ============================================================================
 
