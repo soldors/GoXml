@@ -186,6 +186,21 @@ func TestGapValueIsParsedNumber(t *testing.T) {
 	}
 }
 
+// TestGapGeneratedCodeCompiles 真实编译验证（`buildInTempModule` 在临时模块执行 go build）。
+//
+// 这一条不是冗余：静态页面走的是「录制到 rec」路径，而 Gap 换算用的是 `gtx.Dp`。
+// 若 gtx 在该作用域不可用，或类型不匹配（Flex.Gap 是 int 而传了 unit.Dp），
+// 只有真实编译能发现——单元测试的字符串/AST 断言看不出来。
+func TestGapGeneratedCodeCompiles(t *testing.T) {
+	// 只验静态路径：它才是作用域最容易出错的地方（布局录到 rec，换算却用 gtx）。
+	// 含绑定的动态路径需要 Options.ModulePath，该集成属另一条线的开放项，
+	// 不在这里顺带引入（避免把无关失败混进本任务的验收）。
+	buildInTempModule(t, mustGen(t,
+		`<Column Gap="8"><Text Value="a"/><Text Value="b"/></Column>`, defaultOpts()))
+	buildInTempModule(t, mustGen(t,
+		`<Row Gap="12.5"><Text Value="a"/><Text Value="b"/></Row>`, defaultOpts()))
+}
+
 // TestGapInjectionInputsRejected 安全准入第 5 项：每个新生成的字面量都要有注入测试。
 //
 // 这里证明**恶意值到不了生成器**——Parser 已拒绝，因此 Codegen 不可能收到原始文本。
