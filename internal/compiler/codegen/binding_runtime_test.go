@@ -85,6 +85,7 @@ import (
 	"gioui.org/f32"
 	"gioui.org/gpu/headless"
 	"gioui.org/io/input"
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -99,6 +100,7 @@ var (
 	_ = f32.Pt
 	_ = input.Router{}
 	_ = pointer.Press
+	_ = key.NameReturn
 	_ = app.RunWindow
 	_ = time.Second
 	_ = strings.Contains

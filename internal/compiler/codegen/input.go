@@ -23,6 +23,8 @@ import (
 type inputSlot struct {
 	// index 对应生成字段 input<index> / applied<index>。
 	index int
+	// valueExpr 是外部值绑定表达式（V）；空表示非受控形态（无 Value 或字面量）。
+	valueExpr string
 	// hint 是 material.Editor 的第三参（已引号化）。
 	hint string
 	// readOnly/singleLine/maxLen/filter 是属性透传语句（可为空）。
@@ -68,6 +70,19 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 	slot := inputSlot{index: g.inputSlots, hint: `""`}
 	g.inputSlots++
 	g.usesVM = true
+
+	// ---- 属性：Value（外部值，D4-B）----
+	//
+	// 只有**绑定**才参与同步算法：`Value="{Path}"` → V 来自 ViewModel。
+	// 字面量 `Value="x"` 视为初始文本（一次性），不参与逐帧比较——
+	// 否则静态字面量会与用户编辑无限冲突。
+	if ra, ok := lookupAttr(n, "Value", g.facts); ok && ra.Path != nil {
+		expr, err := bindingExpr(ra, "v.vm")
+		if err != nil {
+			return "", err
+		}
+		slot.valueExpr = expr
+	}
 
 	// ---- 属性：Hint ----
 	if raw, ok := staticAttr(n, "Hint"); ok {
@@ -154,18 +169,45 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 	for _, s := range slot.setters {
 		b.WriteString("\t\t\t\t" + s + "\n")
 	}
+
+	// ---- 外部值同步（契约 §5.3 步骤 ①②，路径 1）----
+	//
+	// 只有绑定形态才同步：V 来自 ViewModel，A 是上次应用值。
+	// 判据是 V != A（不是 V != ed.Text()）——后者会被用户回写触发重置。
+	// 临时变量名用 cur 而不是 v：生成的 View receiver 就叫 v，
+	// 用 `if v := ...` 会在条件右侧就遮蔽 receiver，且 v.applied0 编译失败。
+	if slot.valueExpr != "" {
+		idx := fmt.Sprint(slot.index)
+		b.WriteString("\t\t\t\tif cur := " + slot.valueExpr + "; cur != v.applied" + idx + " {\n")
+		b.WriteString("\t\t\t\t\ted.SetText(cur)\n")
+		b.WriteString("\t\t\t\t\tv.applied" + idx + " = cur\n")
+		b.WriteString("\t\t\t\t}\n")
+	}
 	if slot.change != "" || slot.submit != "" {
 		b.WriteString("\t\t\t\tfor {\n")
 		b.WriteString("\t\t\t\t\tev, ok := ed.Update(gtx)\n")
 		b.WriteString("\t\t\t\t\tif !ok {\n\t\t\t\t\t\tbreak\n\t\t\t\t\t}\n")
-		b.WriteString("\t\t\t\t\tswitch e := ev.(type) {\n")
+		// 只有 Submit 分支需要事件值（e.Text）；仅 Change 时用 ev 避免
+		// "declared and not used"——这是生成的代码能否编译的关键。
+		if slot.submit != "" {
+			b.WriteString("\t\t\t\t\tswitch e := ev.(type) {\n")
+		} else {
+			b.WriteString("\t\t\t\t\tswitch ev.(type) {\n")
+		}
+		// 路径 2（契约 §5.2）：处理器执行后**重新求值 V** 并令 A = V。
+		// 不能用事件实参——MaxLen 截断/Filter 过滤下实参 != 编辑器实际文本。
+		idx := fmt.Sprint(slot.index)
+		reapply := ""
+		if slot.valueExpr != "" {
+			reapply = "\n\t\t\t\t\t\tv.applied" + idx + " = " + slot.valueExpr
+		}
 		if slot.change != "" {
 			b.WriteString("\t\t\t\t\tcase widget.ChangeEvent:\n")
-			b.WriteString("\t\t\t\t\t\t" + slot.change + "\n")
+			b.WriteString("\t\t\t\t\t\t" + slot.change + reapply + "\n")
 		}
 		if slot.submit != "" {
 			b.WriteString("\t\t\t\t\tcase widget.SubmitEvent:\n")
-			b.WriteString("\t\t\t\t\t\t" + slot.submit + "\n")
+			b.WriteString("\t\t\t\t\t\t" + slot.submit + reapply + "\n")
 		}
 		b.WriteString("\t\t\t\t\t}\n")
 		b.WriteString("\t\t\t\t}\n")
