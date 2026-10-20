@@ -3,8 +3,10 @@ package codegen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/goxml/goxml/contracts"
+	"github.com/goxml/goxml/internal/compiler/sizelayout"
 )
 
 // 本文件是布局属性映射的落点（TASK-CODEGEN-001-8 ~ -13、-21 ~ -25）。
@@ -191,6 +193,78 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 		return "", err
 	}
 	return ", Spacing: " + spacing + ", Alignment: " + name + gapFieldExpr(n), nil
+}
+
+// ============================================================================
+// TASK-CODEGEN-001-10 / -22：`Width` / `Height` 的生成
+//
+// 决策全部来自 `sizelayout.PlanFor`（规范 §3.1.7：无界识别「只有一处」）。
+// 本文件只做一件事：把 Plan 翻译成 Gio 语句。
+// ============================================================================
+
+// sizeWrap 把一个子节点包装成 `layout.FlexChild` 表达式。
+//
+// **这是唯一的尺寸生成模板**：`containerExpr`、`dynamicContainerExpr`、
+// `emitForChildren`、`emitIfChildren` 都必须经由它。四处各写一份条件表达式
+// 会立刻产生规范禁止的「多处判定」——即使四份当前相同，也会在下次修改时分叉。
+//
+// 参数 mainIsHorizontal 是**父容器**的主轴方向（Row=true，Column/Page=false），
+// 由调用方在编译期确定。本函数据此得出两个方向分别对应 X 还是 Y；
+// 生成代码里只出现确定的 `.X` / `.Y` 字面量，不含任何轴向判断。
+//
+// 生成形态（契约 §15.6.3）：
+//
+//	layout.Rigid(func(gtx layout.Context) layout.Dimensions {   // 或 layout.Flexed(1, func...)
+//		<Exact：Min.A = gtx.Dp(v); Max.A = Min.A>              // 固定尺寸，不裁剪
+//		<FillCross：if Max.A < 阈值 { Min.A = Max.A }>          // 无界时不抬
+//		return <inner>
+//	})
+func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
+	// 主轴/交叉轴各对应哪个属性：Row 的主轴是 Width，Column/Page 的主轴是 Height。
+	mainSpec, crossSpec := n.Height, n.Width
+	if mainIsHorizontal {
+		mainSpec, crossSpec = n.Width, n.Height
+	}
+
+	plan := sizelayout.PlanFor(n.Width, n.Height, mainIsHorizontal)
+
+	var pre strings.Builder
+	if plan.Main == sizelayout.DirectiveExact {
+		writeExactConstraint(&pre, plan.MainAxis, mainSpec.Value)
+	}
+	if plan.Cross == sizelayout.DirectiveExact {
+		writeExactConstraint(&pre, plan.CrossAxis, crossSpec.Value)
+	}
+	if plan.Fill != nil {
+		// 无界判定的内联展开：判据 `Max < Threshold` 与 sizelayout.IsUnbounded
+		// 互为否定（sizelayout 的 TestBoundedCheckComplementsIsUnbounded 锁住）。
+		// 阈值只能来自 plan.Fill.Threshold，本文件不得出现任何数字常量。
+		a := plan.CrossAxis.String()
+		pre.WriteString("\t\t\tif gtx.Constraints.Max." + a + " < " +
+			strconv.Itoa(plan.Fill.Threshold) + " {\n")
+		pre.WriteString("\t\t\t\tgtx.Constraints.Min." + a + " = gtx.Constraints.Max." + a + "\n")
+		pre.WriteString("\t\t\t}\n")
+	}
+
+	body := pre.String() + "\t\t\treturn " + inner + "\n\t\t})"
+
+	// 主轴 Fill 才用 Flexed(1)；交叉轴 Fill 仍是 Rigid + 约束转换。
+	if plan.Main == sizelayout.DirectiveFlex {
+		return "layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {\n" + body
+	}
+	return "layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n" + body
+}
+
+// writeExactConstraint 生成固定尺寸的两行约束。
+//
+// 只写该方向，另一方向不受影响（规范 §3.1.7：两个方向独立解析）。
+// **不生成任何裁剪**：固定尺寸超出父容器时允许溢出（规范 §3.1.5）。
+//
+// 数值经 formatDp 输出为解析后的十进制字面量（安全准入第 1 项：不得拼接原始文本）。
+func writeExactConstraint(b *strings.Builder, axis sizelayout.Axis2D, v float32) {
+	a := axis.String()
+	b.WriteString("\t\t\tgtx.Constraints.Min." + a + " = gtx.Dp(" + formatDp(v) + ")\n")
+	b.WriteString("\t\t\tgtx.Constraints.Max." + a + " = gtx.Constraints.Min." + a + "\n")
 }
 
 // gioAlignment 把 GXML 的交叉轴对齐映射为 Gio `layout.Alignment` 的标识符。
