@@ -144,7 +144,7 @@ Input 同时触及语言语义（I-02 双向绑定边界）、事件系统（I-0
 | 子任务 | 内容 | 前置 |
 |---|---|---|
 | D1 | `TASK-EVENT-PAYLOAD-001`：通用载荷生成能力 + 独立测试 | 无（可先做） |
-| D2 | `GXML-SCOPE-005` 常量与 Parser 检测 + 测试 | 无（可先做） |
+| D2 | `GXML-SCOPE-005` 常量与 Parser 检测 + 测试 | ✅ **完成（2026-10-20）**：`parser.CodeInputInFor` + `containsInputNode`（递归覆盖 Children/If.Then/If.Else/Def.Body）；优先级顺序固定（无 Key → SCOPE-003 优先，不叠加）；11 项测试 |
 | D3 | Schema 属性扩展（7 属性 + Submit 事件） | C1 已同步 |
 | D4 | Codegen：Input 分支（Editor 字段、同步算法、控件自持消费） | D1、D3 |
 | D5 | 验收：AC-002-10..23 自动化 + AC-002-24 人工 | D4 |

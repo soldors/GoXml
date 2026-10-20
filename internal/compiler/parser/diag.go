@@ -25,9 +25,14 @@ const (
 	CodeAttrCall = contracts.CodePrefixProp + "-003"
 	CodeControl  = contracts.CodePrefixScope + "-002"
 	CodeKey      = contracts.CodePrefixScope + "-003"
-	CodeDef      = contracts.CodePrefixDef + "-001"
-	CodeDefName  = contracts.CodePrefixDef + "-002"
-	CodeTextNode = contracts.CodePrefixSyntax + "-004"
+	// CodeInputInFor 是「<For> 内含 <Input>」的拒绝码（v1 静态 Input only）。
+	//
+	// 语义见《Input 输出契约》§7；诊断码目录中登记为**定稿态**，
+	// 本常量的存在即表示已进入实现态（目录同步由 diagdoc 门禁保证）。
+	CodeInputInFor = contracts.CodePrefixScope + "-005"
+	CodeDef        = contracts.CodePrefixDef + "-001"
+	CodeDefName    = contracts.CodePrefixDef + "-002"
+	CodeTextNode   = contracts.CodePrefixSyntax + "-004"
 )
 
 // diag 构造带源码范围的诊断。

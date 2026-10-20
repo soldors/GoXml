@@ -197,13 +197,48 @@ func (p *parser) parseFor(el element) (*contracts.NodeIR, *contracts.CompilerErr
 		return nil, &e
 	}
 
-	// 有状态循环必须提供 Key（AOT Diff §5.1）。
+	// 校验优先级（Input 输出契约 §7.3，两码不叠加）：
+	//   1) 无 Key + 含状态控件 → SCOPE-003（既有规则优先）
+	//   2) 有 Key + 含 <Input>  → SCOPE-005（v1 不支持行内 Input）
+	//
+	// 顺序不可调换：无 Key 时只报 SCOPE-003，不再叠加 SCOPE-005。
 	if !n.For.HasKey && containsStatefulNode(children) {
 		e := p.diag(n.Span, CodeKey,
 			"<%s> contains stateful controls and requires a Key attribute to keep per-item state stable", tagFor)
 		return nil, &e
 	}
+	if n.For.HasKey && containsInputNode(children) {
+		e := p.diag(n.Span, CodeInputInFor,
+			"<%s> contains <Input>, which is not supported in v1; "+
+				"input controls must be static (outside <%s>) until per-row editor lifecycle is specified",
+			tagFor, tagFor)
+		return nil, &e
+	}
 	return n, nil
+}
+
+// containsInputNode 报告子树中是否含 <Input>。
+//
+// 递归范围与 containsStatefulNode 一致（Children / If.Then / If.Else / Def.Body），
+// 避免 Input 藏在嵌套容器或 <If> 分支里绕过检测。
+//
+// 与 containsStatefulNode 分开实现：两者语义不同——前者管「v1 不支持」，
+// 后者管「缺 Key」。
+func containsInputNode(nodes []*contracts.NodeIR) bool {
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if n.Kind == contracts.KindElement && n.Tag == "Input" {
+			return true
+		}
+		if containsInputNode(n.Children) ||
+			(n.If != nil && (containsInputNode(n.If.Then) || containsInputNode(n.If.Else))) ||
+			(n.Def != nil && containsInputNode([]*contracts.NodeIR{n.Def.Body})) {
+			return true
+		}
+	}
+	return false
 }
 
 // containsStatefulNode 报告子树中是否含有需要身份保持的交互控件。
