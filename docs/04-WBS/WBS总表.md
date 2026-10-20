@@ -17,6 +17,7 @@
 | TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口）| TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-GENERATE-CLI-001 | cli/generate | 实现 Generate CLI、Manifest 与输出清理边界 | TASK-CODEGEN-001、TASK-ORCH-001、TASK-SEC-001 | go test -v ./cmd/goxml/... |
+| TASK-GENERATE-CACHE-001 | cli/cache | 增量生成与缓存（契约 §11：缓存键、命中条件、失效、原子性、可观测性；**边界已冻结，未实施**） | TASK-GENERATE-CLI-001 | go test -run TestCache ./internal/cli/ |
 | TASK-INPUT-001 | compiler/input | Input 控件契约阶段：现状审计、语义裁决、输出契约冻结（先契约后实现） | TASK-STATE-001、TASK-BINDING-IMPLEMENT-001、TASK-GENERATE-CLI-001 | go test ./internal/cli/ ./internal/compiler/codegen/ |
 | TASK-EVENT-PAYLOAD-001 | compiler/codegen | 事件载荷的通用生成能力（FromPayload 渲染 + 独立测试），先于 Input 事件实现 | TASK-BINDING-IMPLEMENT-001、TASK-CODEGEN-001 | go test -run TestEventPayload ./internal/compiler/codegen/ |
 | TASK-INPUT-001-D4-A | compiler/codegen | Input 控件结构与事件接线（Editor 字段、属性透传、控件自持消费、载荷接线） | TASK-EVENT-PAYLOAD-001、TASK-INPUT-001 | go test -run TestInputCodegen ./internal/compiler/codegen/ |
