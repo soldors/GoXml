@@ -273,8 +273,12 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 		// （没有静态缓存，也不得把动态结果固化）。
 		ops = "gtx"
 	}
-	// <Page> 不消费 Gap：契约 §3.1/§4.7.2 定义它等价于「没有 Gap/Padding 的 <Column>」，
-	// 且 Gap 的适用标签只有 Column/Row/Grid（expander 的布局属性表）。
+	// <Page> 不消费布局属性：契约 §3.1/§4.7.2 定义它等价于「没有 Gap/Padding 的 <Column>」，
+	// 且 Gap/Align 的适用标签只有 Column/Row/Grid（expander 的布局属性表）。
+	//
+	// 这里不存在「漏了对齐」的问题：<Page> 按 ADR-0008 §2.8.1 沿用 <Column> 的
+	// 默认交叉轴对齐（Start），而 Gio 的零值 Alignment 恰好就是 Start，
+	// 因此省略字段与显式写出 `Alignment: layout.Start` 视觉等价。
 	expr, err := g.containerExpr(n.Children, "layout.Vertical", ops, "")
 	if err != nil {
 		return "", err
@@ -292,17 +296,17 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 //
 // 含 <For> 时子项数编译期不可知，必须先运行时组装 `[]layout.FlexChild`
 // （<For> 列表契约 §2：内联展开，不引入嵌套 Flex）。
-// gap 是已拼好的 `, Gap: gtx.Dp(N)` 片段（无 Gap 时为空串），由 layout.go 的
-// gapFieldExpr 生成；主生成器不参与布局属性的语义决策。
-func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, gap string) (string, error) {
+// fields 是已拼好的 `, Alignment: ..., Gap: ...` 片段（无布局属性时为空串），
+// 由 layout.go 的 flexFieldsExpr 生成；主生成器不参与布局属性的语义决策。
+func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, fields string) (string, error) {
 	g.imports.add("gioui.org/layout", "layout")
 
 	if hasForChild(children) || hasIfChild(children) {
-		return g.dynamicContainerExpr(children, axis, ops, gap)
+		return g.dynamicContainerExpr(children, axis, ops, fields)
 	}
 
 	var b strings.Builder
-	b.WriteString("layout.Flex{Axis: " + axis + gap + "}.Layout(" + ops)
+	b.WriteString("layout.Flex{Axis: " + axis + fields + "}.Layout(" + ops)
 	for _, c := range children {
 		inner, err := g.nodeExpr(c)
 		if err != nil {
@@ -326,7 +330,7 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, gap s
 //		{ items := ...; for _, item := range items { ... } }  // <For> 内联展开
 //		return layout.Flex{Axis: ...}.Layout(gtx, children...)
 //	}()
-func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops, gap string) (string, error) {
+func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops, fields string) (string, error) {
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
@@ -361,7 +365,7 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops
 		b.WriteString("\t\t\t}))\n")
 	}
 
-	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + gap + "}.Layout(" + ops + ", children...)\n")
+	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + fields + "}.Layout(" + ops + ", children...)\n")
 	b.WriteString("\t\t}()")
 	return b.String(), nil
 }
@@ -555,10 +559,18 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
-		return g.containerExpr(n.Children, "layout.Vertical", "gtx", gapFieldExpr(n))
+		fields, err := flexFieldsExpr(n.Tag, n)
+		if err != nil {
+			return "", err
+		}
+		return g.containerExpr(n.Children, "layout.Vertical", "gtx", fields)
 
 	case "Row":
-		return g.containerExpr(n.Children, "layout.Horizontal", "gtx", gapFieldExpr(n))
+		fields, err := flexFieldsExpr(n.Tag, n)
+		if err != nil {
+			return "", err
+		}
+		return g.containerExpr(n.Children, "layout.Horizontal", "gtx", fields)
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)
