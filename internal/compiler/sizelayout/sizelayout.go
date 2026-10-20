@@ -125,3 +125,118 @@ func ResolveMainCross(
 	return Resolve(height, AxisMain, availHeight),
 		Resolve(width, AxisCross, availWidth)
 }
+
+// ============================================================================
+// 编译期计划（供 Codegen 使用）
+//
+// 上面两个函数是**运行时语义**的 oracle：输入包含可用空间，输出该方向的指令，
+// 用于回答「在给定的可用空间下应该怎么布局」。
+//
+// 但 Codegen 是编译期的，运行时的可用空间尚不存在。它需要的不是这个问题的答案，
+// 而是「运行时需要检查什么」。下面的 PlanFor 就是这个问题的答案——
+// 它不复用运行时的判断结果，只复用**与可用空间无关的那部分语义**。
+// ============================================================================
+
+// Axis2D 是 Gio 约束中的某一维。
+//
+// 与 Axis 的区别：Axis 描述「相对父容器的主轴/交叉轴」这一**角色**，
+// 而 Axis2D 描述**具体的维**（X 或 Y）。生成代码里要做的是后者：
+// 交叉轴可能是 X 也可能是 Y，取决于容器方向。
+type Axis2D uint8
+
+const (
+	// AxisX 水平维（gtx.Constraints.*.X）。
+	AxisX Axis2D = iota
+	// AxisY 垂直维（gtx.Constraints.*.Y）。
+	AxisY
+)
+
+// String 便于测试与诊断输出。
+func (a Axis2D) String() string {
+	switch a {
+	case AxisX:
+		return "X"
+	case AxisY:
+		return "Y"
+	default:
+		return "Unknown"
+	}
+}
+
+// CrossFillPlan 是交叉轴 Fill 在运行时执行所需的参数。
+//
+// 它存在的前提是「需要做一次有界性检查」——这一点由 Plan.Cross 是否为
+// DirectiveFillCross 决定，因此本结构**只在那种情况下非 nil**，
+// 不用零值字段去表示「不适用」，避免调用方误读。
+//
+// 比较方向的约定（契约 §15.6.5）：
+//
+//	IsUnbounded(max) 等价于 max >= Threshold；
+//	因此「有界」的判据是 max < Threshold。
+//
+// 生成器按此约定输出 `if gtx.Constraints.Max.<A> < Threshold { ... }`。
+// 两者的互补性由 TestBoundedCheckComplementsIsUnbounded 锁住。
+type CrossFillPlan struct {
+	// Threshold 是无界判定的阈值，唯一来源是 UnboundedThreshold。
+	//
+	// 生成器必须原样使用它，不得另写常量：无界这个概念在仓库里只有这一处定义
+	// （规范 §3.1.7「识别无界……只有一处」）。
+	Threshold int
+}
+
+// Plan 是 Codegen 使用的编译期尺寸计划。
+//
+// 只描述决策，**不执行任何运行时判断**：构造 Plan 不需要、也不接受运行时约束。
+type Plan struct {
+	// Main 是主轴方向的布局指令，Cross 是交叉轴方向的布局指令。
+	Main, Cross Directive
+
+	// MainAxis / CrossAxis 是这两个方向对应的**具体维**（X 或 Y）。
+	//
+	// 单独给出而不是让生成器从容器方向推导：规范 §3.1.7 要求无界识别「只有一处」，
+	// 而轴向是这项识别的一部分（哪一维需要检查）。生成器去推导就等于第二处定义。
+	MainAxis, CrossAxis Axis2D
+
+	// Fill 仅在 Cross == DirectiveFillCross 时非 nil，携带运行时检查的阈值。
+	//
+	// 用指针而非「零值字段」表达「不适用」：Threshold 为 0 是合法数值，
+	// 若用零值表示不适用，调用方无法区分「不需要检查」和「检查阈值为 0」。
+	Fill *CrossFillPlan
+}
+
+// PlanFor 计算编译期尺寸计划。
+//
+// # 前提：假定两个方向都**有界**
+//
+// 编译期不存在运行时约束，这是唯一能做的假设。因此交叉轴 Fill 得到
+// DirectiveFillCross（「需要填充，但要先确认有界」），其无界退化由生成代码
+// 依据 Plan.Fill 的参数在运行时完成。
+//
+// # 为什么可以传 0 给 Resolve
+//
+// Resolve 的 max 只影响 Fill+Cross 一个分支（Fixed 与 Natural 不读 max，
+// Fill+Main 也不读）。传 0 的意思是「有界且无可用空间」，而
+// IsUnbounded(0) == false 是由 0 >= UnboundedThreshold 直接成立的，
+// **不是碰巧落进某个分支**。
+//
+// 这一点由两条测试锁住，防止将来 Resolve 或阈值变化后 PlanFor 静默改变决策：
+//   - TestZeroIsBounded：IsUnbounded(0) 必须为 false；
+//   - TestPlanForMatchesResolveWhenBounded：Plan 的 Main/Cross 必须与
+//     Resolve 在「有界」输入下逐项相等。
+//
+// 换句话说，PlanFor 不复制任何判断分支——它调用 Resolve 拿到语义，
+// 再补上 Resolve 不处理的编译期元信息（两个方向分别是哪一维、阈值是多少）。
+func PlanFor(width, height contracts.SizeSpec, mainIsHorizontal bool) Plan {
+	main, cross := ResolveMainCross(width, height, mainIsHorizontal, 0, 0)
+
+	mainAxis, crossAxis := AxisY, AxisX
+	if mainIsHorizontal {
+		mainAxis, crossAxis = AxisX, AxisY
+	}
+
+	p := Plan{Main: main, Cross: cross, MainAxis: mainAxis, CrossAxis: crossAxis}
+	if cross == DirectiveFillCross {
+		p.Fill = &CrossFillPlan{Threshold: UnboundedThreshold}
+	}
+	return p
+}
