@@ -216,6 +216,36 @@ func axisIdent(mainIsHorizontal bool) string {
 	return "layout.Vertical"
 }
 
+// sizePlanFor 计算节点的编译期尺寸计划。
+//
+// 除一处标签特例外，它就是 `sizelayout.PlanFor` 的直接调用——尺寸决策仍然
+// 只有 sizelayout 一个来源，本函数不改判任何分支。
+//
+// **唯一特例是 `<Spacer>`**：规范 §3.1 把它定义为「占用剩余空间的弹性空白」，
+// 因此**未显式给尺寸时主轴按 `Fill` 处理**（生成 `Flexed(1)`），而不是像其它
+// 节点那样退化为自然尺寸。若不这样做，`<Row><Text/><Spacer/><Text/></Row>`
+// 里的 `<Spacer>` 会变成 0 宽的空 `Rigid`：右侧内容留在原地，标签名字说
+// 「占用剩余空间」而行为什么都不做——正是规范禁止的名实不符。
+//
+// 显式尺寸优先：`<Spacer Width="8"/>` 是固定 8dp 的间隔，不再是弹性项。
+// 于是 `<Spacer/>` 的语义等于「空的弹性项」，与 `<Expanded>`（把子节点作为
+// 一个弹性布局项）互为特例，两者不冲突。
+//
+// 只改主轴：交叉轴上「弹性」没有意义（Gio 的交叉轴没有分配逻辑），
+// 交叉轴的 `Fill` 仍走 §3.1.7 的「抬 Min」路径。
+func sizePlanFor(n *contracts.NodeIR, mainIsHorizontal bool) sizelayout.Plan {
+	w, h := n.Width, n.Height
+	if n.Tag == "Spacer" {
+		if mainIsHorizontal && w.Mode == contracts.SizeNatural {
+			w = contracts.FillSize()
+		}
+		if !mainIsHorizontal && h.Mode == contracts.SizeNatural {
+			h = contracts.FillSize()
+		}
+	}
+	return sizelayout.PlanFor(w, h, mainIsHorizontal)
+}
+
 // sizeWrap 把一个子节点包装成 `layout.FlexChild` 表达式。
 //
 // **这是唯一的尺寸生成模板**。当前接入状态：
@@ -247,7 +277,7 @@ func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
 		mainSpec, crossSpec = n.Width, n.Height
 	}
 
-	plan := sizelayout.PlanFor(n.Width, n.Height, mainIsHorizontal)
+	plan := sizePlanFor(n, mainIsHorizontal)
 
 	var pre strings.Builder
 	if plan.Main == sizelayout.DirectiveExact {

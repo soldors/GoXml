@@ -5,9 +5,10 @@
 //   - 只返回 []byte，**不写文件**——写入与原子替换由编排层负责；
 //   - 只消费已验证的事实，不重新推导布局语义、不重新判断兼容性。
 //
-// 当前实现范围：静态 Page/Text 缓存、Column/Row 多子节点布局、
-// <Text> 字段/零参方法绑定读取及绑定节点显示缓存。
-// 事件、If/For、交互控件与 Grid 尚未实现，见输出契约 §4.6。
+// 当前实现范围：静态 Page/Text 整页固化、Column/Row/Page 布局、`<Spacer>` 占位、
+// `<Text>`/`<Button>` 的绑定读取与 Click 事件、`<If>`/`<For>` 内联展开，
+// 以及 `Width`/`Height`/`Align`/`Justify`/`Gap` 的映射。
+// `<Grid>`、`<Expanded>` 与 `<Input>`/`<Image>` 尚未实现，见输出契约 §4.6。
 package codegen
 
 import (
@@ -584,9 +585,37 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		}
 		return g.containerExpr(n.Children, true, "gtx", fields)
 
+	case "Spacer":
+		return g.spacerExpr(n)
+
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)
 	}
+}
+
+// spacerExpr 生成 `<Spacer>` 的渲染表达式（TASK-CODEGEN-001-1、规范 §3.1）。
+//
+// 尺寸**不写进** Spacer 字面量：全部由 `sizeWrap` 改写约束，再由
+// `layout.Spacer.Layout` 的 `Constraints.Constrain` 落成实际占位
+// （gioui.org@v0.10.3/layout/layout.go:242）。理由是与其它节点保持同一事实来源——
+// 若这里再写一份 `Width: unit.Dp(8)`，`sizeWrap` 的精确约束与字面量就成了
+// 两个来源，改一处不改另一处会得到「约束 8、占位 12」这种只错一半的结果，
+// 而且 `<Spacer Width="Fill"/>` 根本无法用 `unit.Dp` 表达。
+//
+// 因此本函数只回答一件事：**空白占位用哪个 Gio 原语**。
+func (g *generator) spacerExpr(n *contracts.NodeIR) (string, error) {
+	// Parser 已拒绝这两种形态（`<Spacer> cannot contain children`、
+	// `<Spacer> only accepts Width and Height`）。这里做防御性二次校验：
+	// 上游不变式若被破坏，必须显式失败，而不是生成一个静默忽略属性的占位。
+	if len(n.Children) > 0 {
+		return "", fmt.Errorf("codegen: <Spacer> must not have children; Parser should have rejected this")
+	}
+	if len(n.Attrs) > 0 {
+		return "", fmt.Errorf(
+			"codegen: <Spacer> accepts only Width and Height, but %d other attribute(s) survived the frontend", len(n.Attrs))
+	}
+	g.imports.add("gioui.org/layout", "layout")
+	return "layout.Spacer{}.Layout(gtx)", nil
 }
 
 // buttonExpr 生成 <Button> 的渲染表达式（事件处理输出契约 §6）。
@@ -711,6 +740,11 @@ func staticAttr(n *contracts.NodeIR, name string) (string, bool) {
 func (g *generator) assemble(body string) (string, error) {
 	// 签名始终需要 layout。
 	g.imports.add("gioui.org/layout", "layout")
+	// 签名始终是 `Layout(gtx layout.Context, th *material.Theme)`（契约 §4.3.1），
+	// 因此 material **无条件**需要——即使整页只有布局标签、没有任何文本。
+	// 早前它在生成 Text/Button 时才登记，`<Page><Spacer/></Page>` 这类页面
+	// 会生成「签名引用 material、import 里却没有」的代码，编译直接失败。
+	g.imports.add("gioui.org/widget/material", "material")
 	g.imports.add("gioui.org/io/system", "system")
 	g.imports.add("math", "math")
 	g.imports.add("gioui.org/unit", "unit")

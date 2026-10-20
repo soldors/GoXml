@@ -369,6 +369,144 @@ func TestProbeFixedOverflow(t *testing.T) {
 `)
 }
 
+// ============================================================================
+// `<Spacer>` 的真实布局证据（TASK-CODEGEN-001-1）
+//
+// 结构测试只能证明「生成了 layout.Spacer 与 Flexed/Rigid」；这里证明
+// 「空白真的把兄弟推开了」。两者缺一不可：
+//   - 只做结构断言 → 把 Spacer 写成 0 宽也能过；
+//   - 只做几何断言 → 看不出是 Spacer 起的作用还是别的布局碰巧对。
+//
+// 观测手段：按列扫描非透明像素，得到每段文本的 [起, 止] 列区间。
+// 两段之间没有像素的列宽就是 Spacer 实际占的宽度——不依赖字体度量，
+// 因此不会因为字形宽度变化而误报。
+// ============================================================================
+
+// TestSpacerElasticRuntime 未给尺寸的 `<Spacer/>` 必须吃掉主轴剩余空间。
+//
+// 若按「自然尺寸」默认生成 Rigid，Spacer 宽 0：A 与 B 相邻，B 落在 x≈11；
+// 弹性生效时 B 被推到右边界 x≈289。两者的横向位置差一个数量级。
+func TestSpacerElasticRuntime(t *testing.T) {
+	sizeRuntime(t, `<Row><Text Value="A"/><Spacer/><Text Value="B"/></Row>`, `
+// colRuns 返回区域内「非空列」的连续区间。
+func colRuns(img *image.RGBA, r image.Rectangle) [][2]int {
+	var runs [][2]int
+	inRun, start := false, 0
+	for x := r.Min.X; x < r.Max.X; x++ {
+		any := false
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			if img.Pix[y*img.Stride+x*4+3] != 0 {
+				any = true
+				break
+			}
+		}
+		if any && !inRun {
+			inRun, start = true, x
+		}
+		if !any && inRun {
+			inRun = false
+			runs = append(runs, [2]int{start, x - 1})
+		}
+	}
+	if inRun {
+		runs = append(runs, [2]int{start, r.Max.X - 1})
+	}
+	return runs
+}
+
+func TestProbeSpacerElastic(t *testing.T) {
+	th := material.NewTheme()
+	v := &GoxmlDashboardView{}
+
+	var ops op.Ops
+	v.Layout(sexact(&ops, 300, 40), th)
+
+	win := snew(t)
+	defer win.Release()
+	img := sshot(t, win, &ops)
+
+	runs := colRuns(img, image.Rect(0, 0, 300, 40))
+	t.Logf("文本列区间 = %v", runs)
+	if len(runs) != 2 {
+		t.Fatalf("应有两段文本（A/B），实际 %d 段：%v", len(runs), runs)
+	}
+	if runs[1][0] < 250 {
+		t.Fatalf("B 起点 x=%d：<Spacer/> 未占据剩余空间（退化成 0 宽 Rigid）", runs[1][0])
+	}
+}
+`)
+}
+
+// TestSpacerFixedRuntime 显式 `Width="8"` 必须是**恰好 8px** 的空白。
+//
+// 这一例防的是「把 Spacer 的尺寸写进字面量、sizeWrap 再写一次」造成的双来源：
+// 两处若不一致，间隙会等于其中一处而不是声明值。
+//
+// 测量方法用**差分**而不是绝对值：同一页里画两行，第一行放 `Width="0"`、
+// 第二行放 `Width="8"`，比较两者测得的「文本之间空白宽」。
+// 绝对间隙里含有字形左侧留白（与字体度量有关），差分把它抵消掉，
+// 于是断言可以精确到 8px，而不是「约 7~9px」这种几乎测不出错的区间。
+func TestSpacerFixedRuntime(t *testing.T) {
+	sizeRuntime(t,
+		`<Row Height="40"><Text Value="A"/><Spacer Width="0"/><Text Value="B"/></Row>`+
+			`<Row Height="40"><Text Value="A"/><Spacer Width="8"/><Text Value="B"/></Row>`, `
+func colRuns(img *image.RGBA, r image.Rectangle) [][2]int {
+	var runs [][2]int
+	inRun, start := false, 0
+	for x := r.Min.X; x < r.Max.X; x++ {
+		any := false
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			if img.Pix[y*img.Stride+x*4+3] != 0 {
+				any = true
+				break
+			}
+		}
+		if any && !inRun {
+			inRun, start = true, x
+		}
+		if !any && inRun {
+			inRun = false
+			runs = append(runs, [2]int{start, x - 1})
+		}
+	}
+	if inRun {
+		runs = append(runs, [2]int{start, r.Max.X - 1})
+	}
+	return runs
+}
+
+func gapOf(t *testing.T, img *image.RGBA, band image.Rectangle) int {
+	t.Helper()
+	runs := colRuns(img, band)
+	t.Logf("band %v 的文本列区间 = %v", band, runs)
+	if len(runs) != 2 {
+		t.Fatalf("band %v 应有两段文本（A/B），实际 %d 段：%v", band, len(runs), runs)
+	}
+	return runs[1][0] - runs[0][1] - 1
+}
+
+func TestProbeSpacerFixed(t *testing.T) {
+	th := material.NewTheme()
+	v := &GoxmlDashboardView{}
+
+	var ops op.Ops
+	v.Layout(sexact(&ops, 300, 80), th)
+
+	win := snew(t)
+	defer win.Release()
+	img := sshot(t, win, &ops)
+
+	zero := gapOf(t, img, image.Rect(0, 0, 300, 40))
+	eight := gapOf(t, img, image.Rect(0, 40, 300, 80))
+	t.Logf("Width=0 空白 %d px，Width=8 空白 %d px，差 %d px", zero, eight, eight-zero)
+
+	if d := eight - zero; d != 8 {
+		t.Fatalf("Width=8 与 Width=0 的空白差 %d px，期望恰好 8（dp→px 换算或双来源不一致）", d)
+	}
+}
+`)
+}
+
 // TestSizesExampleGeneratesSizedChildren 用仓库自带示例 `examples/gxml/valid/sizes.gxml`
 // 跑通「有尺寸的容器」这条链路（生成 → 编译）。
 //
