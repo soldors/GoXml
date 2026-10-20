@@ -192,7 +192,7 @@ Input 阶段的关闭条件仍以 D5-F 的独立记录为准。
 | 切片 | 内容 | 验收 |
 |---|---|---|
 | B1 | 键计算与规范化（纯函数，无 I/O） | ✅ **完成（2026-10-21）** `internal/cli/cache_key.go`：`cacheKey`（K1–K7 + 长度自定界）、`validateKeyInput`、`fingerprintExclusion`（T1 排除集）。`go test -count=1 -run '^TestCacheKey' ./internal/cli/` 实测 PASS=10 / RUN=28；四条变异验证能变红（dev-log §83） |
-| B2 | 缓存读写 + 损坏回退 + 原子写 | `go test -count=1 -run '^TestCacheStore' ./internal/cli/` |
+| B2 | 缓存读写 + 损坏回退 + 原子写 | ✅ **完成（2026-10-21）** `internal/cli/cache_store.go`：`cacheRecord`/`cacheLoadStatus`、`loadCacheRecord`（missing/ok/corrupt 三态，损坏不报错且删残骸）、`saveCacheRecord`（tmp+rename）、`removeCacheRecord`、`validateKeyHash`。`go test -count=1 -run '^TestCacheStore' ./internal/cli/` 实测 PASS=10；五条变异验证能变红（dev-log §84）。**证据边界**：崩溃原子性无法进程内测，只覆盖其后果链 |
 | B3 | 命中判定 + reason 枚举 + 跳过接线（含 T1 排除集） | `go test -count=1 -run '^TestCacheHit' ./internal/cli/` 与 `-run '^TestCacheMultiInput'`（**分开跑**，见 §11.1） |
 | B4 | 可观测性输出与汇总 | `go test -count=1 -run '^TestCacheOutput' ./internal/cli/` |
 | B5 | §7 全矩阵 + §8 性能数据 + 契约/运维手册同步 | `go test -count=1 ./internal/cli/` + 基准记录 |
