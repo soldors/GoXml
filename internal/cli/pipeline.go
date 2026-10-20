@@ -1,8 +1,8 @@
 // Package cli 的 generate 执行阶段（任务卡 1-2）：
 // 接通 Parser → Expander → Analyzer → Codegen → Commit。
 //
-// 范围纪律：本文件只做**单文件**真实路径（TASK-GENERATE-CLI-001-2）；
-// 目录发现（1-3）、Manifest 与多文件提交（1-5/1-6）不在这里提前实现。
+// 范围纪律：目录发现与 --out-dir 在 1-3；Manifest 与 --clean 归 1-6。
+// 多文件提交语义 = G4 冻结的两阶段事务（commit.go）：全或无。
 package cli
 
 import (
@@ -55,7 +55,16 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	// 输出冲突检测：不同输入不得映射到同一目标文件。
 	seen := make(map[string]string, len(inputs))
 
-	okCount := 0
+	// ---------- 阶段一：全部生成并暂存（已有文件不被触碰）----------
+	type prepared struct {
+		in       discovered
+		source   []byte
+		artifact *pipeline.Artifact
+		target   string
+	}
+	var preparedFiles []prepared
+	targets := make([]string, 0, len(inputs))
+
 	for _, in := range inputs {
 		// 输入侧：SourceDir 是该文件所在目录（G2）。
 		moduleRoot, err := findModuleRoot(in.abs)
@@ -101,18 +110,40 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "%s: %s: %s\n", d.File, d.Code, d.Message)
 		}
 		if !res.OK() {
-			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——已成功的文件保持原样，无批次回滚", in.rel, res.Status, len(res.Diags))
+			// 阶段一失败：尚未触碰任何磁盘文件（G4：全或无）。
+			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——批次全部放弃，磁盘无任何变更", in.rel, res.Status, len(res.Diags))
 		}
 
-		if _, err := pipeline.Commit(res.Artifact, targetDir); err != nil {
-			return fmt.Errorf("提交生成文件: %w", err)
-		}
-		fmt.Fprintf(stdout, "已生成 %s\n", target)
-		okCount++
+		preparedFiles = append(preparedFiles, prepared{in: in, artifact: res.Artifact, target: target})
+		targets = append(targets, target)
 	}
 
-	if okCount > 1 {
-		fmt.Fprintf(stdout, "共 %d 个文件生成成功（按 %s 顺序处理）\n", okCount, "路径排序")
+	// ---------- 阶段二 A：全部写入临时文件（仍不触碰已有文件）----------
+	sorted := sortTargets(targets)
+	byTarget := make(map[string]prepared, len(preparedFiles))
+	for _, p := range preparedFiles {
+		byTarget[p.target] = p
+	}
+	staged, err := stageBatch(sorted, func(tmpPath string, i int) error {
+		p := byTarget[sorted[i]]
+		return os.WriteFile(tmpPath, p.artifact.Source, 0o644)
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "回滚时清理") {
+			return fmt.Errorf("%w", err)
+		}
+		return fmt.Errorf("暂存失败（磁盘无任何变更）: %w", err)
+	}
+
+	// ---------- 阶段二 B：全部成功，原子提交 ----------
+	if err := commitBatch(staged); err != nil {
+		return fmt.Errorf("提交失败: %w", err)
+	}
+	for _, t := range sorted {
+		fmt.Fprintf(stdout, "已生成 %s\n", t)
+	}
+	if len(sorted) > 1 {
+		fmt.Fprintf(stdout, "共 %d 个文件生成成功（按路径排序处理）\n", len(sorted))
 	}
 	return nil
 }
