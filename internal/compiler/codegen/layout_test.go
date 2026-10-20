@@ -469,6 +469,153 @@ func TestAlignGeneratedCodeCompiles(t *testing.T) {
 }
 
 // ============================================================================
+// TASK-CODEGEN-001-12：`Baseline` 禁止零值兜底
+//
+// 规范 §3.1.3 把 `Baseline == 0` 定为**合法值**。Gio 的
+// `layout.Dimensions.Baseline` 是「从底边上量到首行基线」的距离
+// （`go doc gioui.org/layout.Dimensions`），取 0 即基线压在控件底边。
+// `layout.Flex` 正是这样消费它的（gioui.org@v0.10.3/layout/flex.go）：
+//
+//	:197    b := dims.Size.Y - dims.Baseline
+//	:204    case Baseline: cross = maxBaseline - b
+//
+// 所以 `if d.Baseline == 0 { d.Baseline = d.Size.Y }` 不是「补齐缺失信息」，
+// 而是把一个确定的语义**推翻**成相反的（基线挪到顶边）。这种错误在单字号
+// 排版下几乎看不出来，只在多字号混排时才显现——正是最该用测试钉住的一类。
+// ============================================================================
+
+// baselineScan 是一次 Baseline 扫描的结果。
+type baselineScan struct {
+	writes  []string // 违规写点：赋值 / 自增自减 / 零值比较
+	assigns int      // 全文件赋值语句总数，用于证明扫描确实走到了赋值节点
+	selRefs int      // 以 `.Baseline` 结尾的选择器次数（含 layout.Baseline 常量）
+}
+
+// isBaselineSel 判断表达式是否形如 `xxx.Baseline`。
+func isBaselineSel(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Baseline"
+}
+
+// scanBaseline 扫描源码中的 Baseline 写点。
+//
+// 只把「写」与「零值比较」算违规：`layout.Dimensions{Baseline: x}` 这类
+// 结构体字段**键**是合法的基线声明（将来控件实现要走这条路），它不是
+// 赋值语句，因此这里不会误判——这是本检测器必须区分的地方。
+func scanBaseline(t *testing.T, src []byte) baselineScan {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), "gen.go", src, 0)
+	if err != nil {
+		t.Fatalf("源码不合法: %v", err)
+	}
+	var out baselineScan
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "Baseline" {
+				out.selRefs++
+			}
+		case *ast.AssignStmt:
+			out.assigns++
+			for _, lhs := range x.Lhs {
+				if isBaselineSel(lhs) {
+					out.writes = append(out.writes, "赋值 "+selChain(lhs))
+				}
+			}
+		case *ast.IncDecStmt:
+			if isBaselineSel(x.X) {
+				out.writes = append(out.writes, "自增/自减 "+selChain(x.X))
+			}
+		case *ast.BinaryExpr:
+			if x.Op == token.EQL || x.Op == token.NEQ {
+				if isBaselineSel(x.X) || isBaselineSel(x.Y) {
+					out.writes = append(out.writes, "零值比较 "+exprText(x))
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// TestBaselineNoFallback 是 -12 的主验收：生成代码不得对 `d.Baseline` 做零值兜底。
+//
+// 三个子用例缺一不可：
+//   - 第一个覆盖「只有对齐、没有尺寸」的普通形态；
+//   - 第二个刻意让文件里**确实有**赋值语句，否则「没有 Baseline 赋值」
+//     可能只是因为整份代码压根没有赋值——那种绿是假绿；
+//   - 第三个是检测器自检：手写的违规片段必须被同一个检测器抓到。
+//     没有它，检测器漏看 if 体也会让前两条通过。
+func TestBaselineNoFallback(t *testing.T) {
+	reportWrites := func(t *testing.T, src []byte, got baselineScan) {
+		t.Helper()
+		if len(got.writes) != 0 {
+			t.Errorf("生成代码出现 Baseline 写点（规范 §3.1.3 禁止零值兜底）:\n  %s\n\n%s",
+				strings.Join(got.writes, "\n  "), src)
+		}
+	}
+
+	t.Run("Row/Baseline 只产出对齐常量", func(t *testing.T) {
+		src := mustGen(t, `<Row Align="Baseline"><Text Value="a"/><Text Value="b"/></Row>`,
+			defaultOpts())
+		got := scanBaseline(t, src)
+		reportWrites(t, src, got)
+
+		// 全文件只应有**一个** Baseline 选择器：对齐常量本身。
+		// 多出来的引用必然是新增的兜底逻辑或被写死的基线值。
+		if got.selRefs != 1 {
+			t.Errorf("Baseline 选择器出现 %d 次, want 1（只应有 layout.Baseline）\n%s",
+				got.selRefs, src)
+		}
+
+		aligns := flexFieldValues(t, src, "Alignment")
+		if len(aligns) != 1 {
+			t.Fatalf("应恰好一处 Alignment，实际 %d 处\n%s", len(aligns), src)
+		}
+		if name := selectorName(aligns[0]); name != "Baseline" {
+			t.Errorf("<Row Align=\"Baseline\"> 应生成 layout.Baseline，实际 %s",
+				exprText(aligns[0]))
+		}
+	})
+
+	t.Run("含尺寸约束的容器内同样没有兜底", func(t *testing.T) {
+		// 固定宽度 → 精确约束赋值；Height="Fill" 在 Row 上是交叉轴 →
+		// 有界检查 + 抬 Min。两者都会产生赋值语句。
+		src := mustGen(t,
+			`<Column><Row Align="Baseline"><Text Value="a" Width="120"/>`+
+				`<Text Value="b" Height="Fill"/></Row></Column>`, defaultOpts())
+		got := scanBaseline(t, src)
+		if got.assigns == 0 {
+			t.Fatalf("本例应产生约束赋值；扫描到 0 条赋值说明断言无效\n%s", src)
+		}
+		reportWrites(t, src, got)
+	})
+
+	t.Run("检测器自检：手写违规必须被抓到", func(t *testing.T) {
+		bad := []string{
+			// 任务卡点名禁止的写法
+			"func f(d *layout.Dimensions) {\n\tif d.Baseline == 0 {\n\t\td.Baseline = d.Size.Y\n\t}\n}",
+			// 换一种比较方向
+			"func f(d *layout.Dimensions) {\n\tif d.Baseline != 0 {\n\t\treturn\n\t}\n\td.Baseline = d.Size.Y\n}",
+			// 不走比较，直接累加
+			"func f(d *layout.Dimensions) {\n\td.Baseline += d.Size.Y\n}",
+		}
+		for _, src := range bad {
+			got := scanBaseline(t, []byte("package p\n\n"+src))
+			if len(got.writes) == 0 {
+				t.Errorf("检测器漏报违规片段:\n%s", src)
+			}
+		}
+		// 反向自检：合法的结构体字段键不得被误判，否则检测器会把将来的
+		// 正确实现（由控件自己声明基线）也拦下来。
+		ok := "func f() layout.Dimensions {\n\treturn layout.Dimensions{Baseline: 3}\n}"
+		if got := scanBaseline(t, []byte("package p\n\n"+ok)); len(got.writes) != 0 {
+			t.Errorf("结构体字段键 Baseline: 被误判为兜底: %v", got.writes)
+		}
+	})
+}
+
+// ============================================================================
 // TASK-CODEGEN-001-9：`Justify` 主轴剩余空间分布
 //
 // 契约依据：规范 §3.1.2（六个取值、缺省 Start）、ADR-0008 §2.4（映射表与反转警告）。
