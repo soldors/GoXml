@@ -34,7 +34,7 @@
 | 子任务 ID | 内容 | 验收命令/证据 |
 |---|---|---|
 | TASK-GENERATE-CLI-001-1 | 建立 `cmd/goxml` 与 `generate` 参数解析、退出码和诊断输出 | ✅ 完成（2026-10-20）：`internal/cli` 20 项测试 + 真实二进制退出码实测；`go test ./internal/cli/` |
-| TASK-GENERATE-CLI-001-2 | 接通 Parser → Expander → Analyzer → Codegen → Commit | `go test -v -run TestGeneratePipeline ./cmd/goxml/...` |
+| TASK-GENERATE-CLI-001-2 | 接通 Parser → Expander → Analyzer → Codegen → Commit | ✅ 完成（2026-10-20）：`internal/cli` 单文件真实路径，8 场景验收（含确定性、失败不提交、范围拒绝）；`go test ./internal/cli/` |
 | TASK-GENERATE-CLI-001-3 | 实现输出目录、包名、文件名和保护头校验 | `go test -v -run 'TestGenerateOutputBoundary\|TestGeneratePackageContext' ./cmd/goxml/...` |
 | TASK-GENERATE-CLI-001-4 | 实现生成确定性和重复生成 | `go test -v -run TestGenerationDeterminism ./cmd/goxml/...` |
 | TASK-GENERATE-CLI-001-5 | 实现失败回滚，旧文件内容、权限和修改时间保持不变 | `go test -v -run TestGenerationRollback ./cmd/goxml/...` |

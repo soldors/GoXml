@@ -1,0 +1,6 @@
+<Goxml Version="1" ViewModel="VM">
+  <Page Route="/">
+    <Text Value="{Title}"/>
+    <Button Text="加一" Click="Increment"/>
+  </Page>
+</Goxml>

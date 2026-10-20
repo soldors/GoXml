@@ -108,34 +108,23 @@ func TestParseGenerateFlags(t *testing.T) {
 	})
 }
 
-// TestGenerateNotYetWired 运行阶段在 1-1 返回确定的运行失败（退出码 2），
-// 且**不静默成功**——静默成功会让用户以为已生成。
-func TestGenerateNotYetWired(t *testing.T) {
-	var out, errb bytes.Buffer
-	code := Run([]string{"generate", "a.gxml"}, &out, &errb)
-	if code != ExitFailure {
-		t.Fatalf("退出码 = %d, 期望 %d（管线未接线必须是运行失败）", code, ExitFailure)
-	}
-	if !strings.Contains(errb.String(), "尚未接线") {
-		t.Errorf("stderr 应明确说明未接线:\n%s", errb.String())
-	}
-}
+// TestPipelineFuncInjectedFailure 执行阶段可注入：退出码与输出由注入函数决定。
+//
+// 1-2 后注入点更名为 pipelineFunc（真实实现 runPipeline）。
+func TestPipelineFuncInjectedFailure(t *testing.T) {
+	orig := pipelineFunc
+	t.Cleanup(func() { pipelineFunc = orig })
 
-// TestPipelineStubInjectedFailure 桩可注入：退出码与诊断由桩的错误决定。
-func TestPipelineStubInjectedFailure(t *testing.T) {
-	orig := pipelineStub
-	t.Cleanup(func() { pipelineStub = orig })
-
-	pipelineStub = func(opts *generateOptions, stdout, stderr io.Writer) error {
+	pipelineFunc = func(opts *generateOptions, stdout, stderr io.Writer) error {
 		stdout.Write([]byte("written\n"))
 		return nil
 	}
 	var out, errb bytes.Buffer
 	code := Run([]string{"generate", "a.gxml"}, &out, &errb)
 	if code != ExitOK {
-		t.Fatalf("桩成功时退出码 = %d, 期望 0", code)
+		t.Fatalf("注入成功时退出码 = %d, 期望 0", code)
 	}
 	if !strings.Contains(out.String(), "written") {
-		t.Errorf("stdout 应收到桩输出:\n%s", out.String())
+		t.Errorf("stdout 应收到注入输出:\n%s", out.String())
 	}
 }
