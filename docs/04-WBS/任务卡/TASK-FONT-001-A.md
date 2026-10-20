@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**待实施**（边界与验收矩阵已冻结 2026-10-20，实现未开始）
+- 状态：**实现已落地（2026-10-20）**，门禁复跑中；B/C/D 仍未开始
 - 父卡：[TASK-FONT-001.md](TASK-FONT-001.md)
 - 前置：`TASK-THEME-SEAM-001` ✅（已完成 6/6：`pkg/runtime/theme` 存在、
   `FontProvider` 契约冻结、A..D 占位用例在位、`app.Run` 走 `theme.NewTheme()`）
@@ -99,13 +99,18 @@
 - 要求：非空、稳定、可比较、可用于诊断；
 - **禁止**空串 + nil。
 
-### 4.3 「`string` 够不够用」的判定方式（不许在实现里暗改）
+### 4.3 「`string` 够不够用」的判定结果（A 实现后给出）
 
-A 结束时必须给出书面结论，二选一：
+**结论：在 v1 语义下够用**（2026-10-20）。
+
+- 证据：三族名只需「族」一维；命中集合由 `Provider.Faces(id)` 反查得到，
+  标识本身不需要携带更多信息（A 卡评审要点 1 已落地为同一份缓存）。
+- **限制一并登记**：标识**不含 Style / Weight**。若 C（fallback 链）需要按字重/风格
+  选择 face，或 B 需要区分更多来源维度，`string` 就不够——届时按下表走 ADR。
 
 | 结论 | 处理 |
 |---|---|
-| 够用 | 在 §8 交接记录写明「实测未发现需要额外维度」，契约保持不变 |
+| 够用（**当前结论**） | 契约保持不变；本表即为书面结论 |
 | 不够用 | **记录证据**（例如需要 `Style`/`Weight`/variant 维度，或需要返回多个 face），
   然后走 **ADR** 变更 `contracts.FontProvider`，同步 `contracts/runtime_api.go` 注释、
   字体规范 §6.3、`make contract-lint` 等价命令；**不得**在实现中绕过契约 |
@@ -126,6 +131,20 @@ A 结束时必须给出书面结论，二选一：
 | `TestFontProbeShaperAssembly` | 命中后装配的 Shaper 能解析出 CJK 字形（离屏渲染/字形查询，与 `TASK-FONT-001` §1 的实测方法一致） | **实测（仅 GOOS=windows）** |
 
 **平台差异的诚实分层（强制）**：
+
+### 5.1 实测结果（2026-10-20，GOOS=windows）
+
+| 测试 | 结果 | 证据等级 |
+|---|---|---|
+| `TestFontProbeCandidatePaths` | PASS | 逻辑（三平台表均被断言） |
+| `TestFontProbeContinuesOnParseFailure` | PASS（坏文件 → parse_failed 并记录原因 → 命中下一个） | 逻辑 |
+| `TestFontProbeTimeoutAndDiagnostics` | PASS（Timeout=5ms / Elapsed=41ms / Scanned=1 / 剩余 skipped_timeout） | 逻辑 |
+| `TestFontProbeErrFontNotFound` | PASS | 逻辑 |
+| `TestFontProbeResolveCaching` | PASS（二次 Resolve 不再读盘，同一份集合） | 逻辑 |
+| `TestFontProbeRejectsUnknownAndUnimplementedFamilies` | PASS（未知/未实现族名不触发扫描） | 逻辑 |
+| `TestFontProbeWindowsSystemFonts` | PASS（命中 `C:\Windows\Fonts\msyh.ttc`，2 faces，110.5ms） | **实测** |
+| `TestFontProbeShaperAssembly` | PASS（「中」的 `NominalGlyph` ≠ 0） | **实测** |
+| `TestEmbeddedFallback` / `TestFontFallbackChain` / `TestFontLazyLoad` | **SKIP**（B/C/D 未实现） | — |
 
 | 平台 | 本卡能给出的证据 | 标记 |
 |---|---|---|
@@ -149,18 +168,30 @@ A 结束时必须给出书面结论，二选一：
 ## 7. 已知风险
 
 1. **约束 10 是未闭合项**：A 阶段探测失败不强制失败，B 落地后必须收紧，否则长期违反规范 §1.2。
-2. **`string` 标识可能不够表达**（§4.3）：需要 A 的实测结论；改契约必须走 ADR。
-3. **装配 Shaper 可能影响既有渲染测试**：命中集合进入 Shaper 后字形度量会变，
-   涉及真实布局/离屏渲染的用例需复跑；若变红，先判断是"变化正确"还是"回归"。
-4. **并发工作树**：同一工作树有多条线共写，禁用 `git add -A`（dev-log 10-20 §22.7 / §22.13）。
+2. **`string` 标识可能不够表达**（§4.3）：当前结论「v1 够用」，限制是不含 Style/Weight；
+   需要改契约必须走 ADR。
+3. **装配 Shaper 会改变拉丁文本度量**（已实测）：px=16 下 `"ABCD"` 的 advance
+   `45:26 → 44:13`。原因是 Gio 把 collection 中的 typeface 作为 `defaultFaces`
+   查询首选（`text/gotext.go:392`）。全量测试用于判断「变化」还是「回归」。
+4. **首次探测耗时 110ms，超出规范 §3.2 的 20ms 预算**（Windows 实测 msyh.ttc）。
+   这是 **D（懒加载）必须存在的实测证据**；A 的缓解只是「结果缓存，进程内一次」。
+5. **并发工作树**：同一工作树有多条线共写，禁用 `git add -A`（dev-log 10-20 §22.7 / §22.13）。
+6. **对 §1.1 的一处偏离**：候选表未用 build tag 隔离，改为三表同文件 +
+   `CandidatesFor(goos)`（理由见 dev-log §24.7 与 `pkg/platform/font` 包注释）。
 
 ## 8. 交接记录
 
 | 项目 | 内容 |
 |---|---|
-| 当前提交 SHA | 见 dev-log 2026-10-20 §23 |
-| 已完成 | 边界与验收矩阵冻结（本卡）；前置 `TASK-THEME-SEAM-001` 6/6 |
-| 未完成 | 全部实现工作（探测 / Resolve / 诊断 / 超时 / 装配）+ §5 全部用例 |
-| 已运行命令及结果 | 基线核对：`git status`（干净）、`git log -12`、`git ls-remote origin refs/heads/master` → 本地 HEAD 与远端均为 `a07fd24`；`go build` / `go vet` / `go test ./pkg/runtime/... ./internal/docgate/ ./contracts/` 在 `a07fd24` 基线上全绿 |
+| 当前提交 SHA | 见 dev-log 2026-10-20 §24 |
+| 已完成 | 边界冻结 + **实现落地**：`pkg/platform/font`、`pkg/runtime/theme/font.go`、
+  `NewThemeWithReport()` 装配、验收矩阵 7 项 + 族名严格性 1 项（Windows 实测 2 项、逻辑 6 项） |
+| 未完成 | B 嵌入兜底 / C fallback 链 / D 懒加载（仍是显式 skip 占位）；
+  **约束 10 的收紧**（B 后）；macOS / Linux 真机验证 |
+| 已运行命令及结果 | `go test -count=1 -run TestFontProbe ./pkg/runtime/theme/` → ok（8 项）；
+  `go test ./pkg/runtime/...` → ok；`go vet ./pkg/...` → 无输出；
+  `go test ./internal/docgate/ ./contracts/` → ok；
+  全量 `go test ./...` 中 codegen 包在 600s 默认超时被打断（并发负载，基线 558s），
+  单独以 `-timeout 30m` 复跑验证中，结果登记在 dev-log §24.9 |
 | 已知失败或风险 | 见 §7 |
-| 下一位接手人 | 本卡实现（FONT-001-A）；顺序上**不得**并行开 B/C/D |
+| 下一位接手人 | B（嵌入兜底）；承接约束 10 的收紧义务 |

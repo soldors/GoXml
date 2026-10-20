@@ -221,9 +221,36 @@ func TestThemePackageBoundary(t *testing.T) {
 
 // accCmd 是一条解析后的验收命令。
 type accCmd struct {
-	raw      string
+	raw string
+	// runNames 是 -run 里能被 go test 当正则使用的名字片段。
 	runNames []string
-	pkgs     []string
+	// badRuns 是 -run 里带转义竖线（`\|`）的片段：Markdown 需要它，
+	// 但交给 go test 后会变成字面量，导致 no tests to run（空转）。
+	badRuns []string
+	pkgs    []string
+}
+
+// splitUnescaped 按 sep 切分，但保留被反斜杠转义的 sep（用于识别 `\|`）。
+func splitUnescaped(s string, sep rune) []string {
+	var out []string
+	var cur strings.Builder
+	escaped := false
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			cur.WriteRune(r)
+			escaped = true
+		case r == sep:
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	return append(out, cur.String())
 }
 
 // accCmdRe 抓形如 `go test -run TestX ./pkg/...` 的行内片段（到换行或反引号为止）。
@@ -243,13 +270,20 @@ func parseAccCommands(src string) []accCmd {
 			switch {
 			case f == "-run" && i+1 < len(fields):
 				i++
-				// Markdown 表格里常见 `'A\|B'`（引号 + 转义竖线），
-				// 去引号 → 去转义 → 按 | 切分。
 				val := strings.Trim(fields[i], `'"`)
-				for _, n := range strings.Split(strings.ReplaceAll(val, `\`, ""), "|") {
-					if n != "" {
-						c.runNames = append(c.runNames, n)
+				for _, n := range splitUnescaped(val, '|') {
+					if n == "" {
+						continue
 					}
+					if strings.ContainsRune(n, '\\') {
+						// Markdown 表格里必须把 `|` 写成 `\|`，但**照抄到 shell** 后，
+						// Go 的正则把 `\|` 当成**字面量** '|'，而任何测试名都不含该字符：
+						// 结果就是 `no tests to run` + 退出码 0 —— 典型的空转报绿。
+						// 正确写法：把命令放进代码块（无需转义）或拆成单条命令。
+						c.badRuns = append(c.badRuns, n)
+						continue
+					}
+					c.runNames = append(c.runNames, n)
 				}
 			case strings.HasPrefix(f, "-run="):
 				c.runNames = append(c.runNames, strings.Trim(strings.TrimPrefix(f, "-run="), `'"`))
@@ -309,6 +343,11 @@ func TestFont001AcceptanceCommandsAreNotVacuous(t *testing.T) {
 	}
 
 	for _, c := range cmds {
+		for _, bad := range c.badRuns {
+			t.Errorf("验收命令 `%s` 的 -run 片段 %q 含转义竖线：Markdown 需要 `\\|`，"+
+				"但 go test 会把它当字面量 '|' → `no tests to run` 且退出码 0（空转报绿）。"+
+				"请把命令放进代码块（不转义）或拆成单条命令", c.raw, bad)
+		}
 		for _, pkg := range c.pkgs {
 			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(pkg))); err != nil {
 				t.Errorf("验收命令 `%s` 指向不存在的包 %s——go test 会匹配 0 个包并返回 0（空转报绿）",
@@ -342,14 +381,24 @@ func TestFont001AcceptanceCommandsAreNotVacuous(t *testing.T) {
 			t.Error("检测器未能识别已存在的占位用例 TestFontProbe")
 		}
 
-		// 引号 + 转义竖线的组合形态（卡片 §8 就是这么写的）也必须能拆开。
-		quoted := parseAccCommands("go test -run 'TestFontProbe\\|TestEmbeddedFallback' ./pkg/runtime/theme/...")
+		// 引号 + 未转义竖线的组合形态：必须能拆开并各自命中。
+		quoted := parseAccCommands("go test -run 'TestFontProbe|TestEmbeddedFallback' ./pkg/runtime/theme/...")
 		if len(quoted) != 1 || len(quoted[0].runNames) != 2 ||
 			quoted[0].runNames[0] != "TestFontProbe" || quoted[0].runNames[1] != "TestEmbeddedFallback" {
-			t.Fatalf("带引号/转义的 -run 解析错误: %+v", quoted)
+			t.Fatalf("带引号的 -run 解析错误: %+v", quoted)
 		}
 		if quoted[0].pkgs[0] != "./pkg/runtime/theme" {
 			t.Fatalf("包路径归一化错误: %q", quoted[0].pkgs[0])
+		}
+
+		// Markdown 转义竖线必须被判为「会空转」——这是本门禁自己踩过的坑：
+		// 卡片曾用 `-run 'A\\|B'`，实测输出 no tests to run 且退出码 0。
+		escaped := parseAccCommands("go test -run 'TestFontProbe\\|TestEmbeddedFallback' ./pkg/runtime/theme/...")
+		if len(escaped) != 1 {
+			t.Fatalf("解析失败: %+v", escaped)
+		}
+		if len(escaped[0].badRuns) != 1 || len(escaped[0].runNames) != 0 {
+			t.Fatalf("转义竖线应被判为 badRuns（而非合法 runNames）: %+v", escaped[0])
 		}
 	})
 }

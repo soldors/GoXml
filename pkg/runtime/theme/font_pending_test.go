@@ -19,13 +19,8 @@ import "testing"
 // 任务卡的验收命令才不会失效）。若改名，必须同步改 `docs/04-WBS/任务卡/TASK-FONT-001.md`。
 // ============================================================================
 
-// TestFontProbe 占位：TASK-FONT-001-A 各平台 CJK 系统字体探测。
-func TestFontProbe(t *testing.T) {
-	t.Skip("未执行：TASK-FONT-001-A 未实现。需要覆盖：Windows(mysh/simsun/simhei)、" +
-		"macOS(PingFang/STHeiti/Hiragino)、Linux(NotoSansCJK/wqy/uming) 的目录探测、" +
-		"超时与诊断（探测失败不得阻塞启动）、文件存在但解析失败时继续下一候选，以及 " +
-		"FontProvider.Resolve 的单元测试（含 ErrFontNotFound）")
-}
+// TestFontProbe 已由 TASK-FONT-001-A 实现：占位用例删除，真实断言见 font_test.go。
+// 另外三项（B/C/D）仍是显式 skip 占位，未实现。
 
 // TestEmbeddedFallback 占位：TASK-FONT-001-B 嵌入兜底。
 func TestEmbeddedFallback(t *testing.T) {
