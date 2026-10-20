@@ -247,10 +247,10 @@ Codegen 支持 `<Text Value>` 字段及零参方法绑定读取；多段路径�
 | TASK-CODEGEN-001-5 | `<For Virtualize>` 语法解析与虚拟化代码生成 | go test -v -run TestGenerateVirtualizedFor ./internal/compiler/codegen |
 | TASK-CODEGEN-001-6 | 稳定帧零分配断言（静态页面 allocs/op == 0） | go test -bench=BenchStaticStable -benchmem ./internal/compiler/codegen |
 | TASK-CODEGEN-001-7 | 生成代码禁止在 Layout 内 `fmt.Sprintf`（AST 断言） | go test -v -run TestNoSprintfInLayout ./internal/compiler/codegen |
-| TASK-CODEGEN-001-8 | `Align` 映射含轴向感知默认值 | go test -v -run TestGenerateAlign ./internal/compiler/codegen |
-| TASK-CODEGEN-001-9 | `Justify` → `Flex.Spacing` 方向相反的映射表 | go test -v -run TestJustifyMapping ./internal/compiler/codegen |
+| TASK-CODEGEN-001-8 | `Align` 映射含轴向感知默认值 | go test -v -run TestGenerateAlign ./internal/compiler/codegen | ✅ 完成（2026-10-20，见 dev-log 2026-10-20 §4） |
+| TASK-CODEGEN-001-9 | `Justify` → `Flex.Spacing` 方向相反的映射表 | go test -v -run TestJustifyMapping ./internal/compiler/codegen | ✅ 结构验收完成（2026-10-20，见 dev-log §6）；⚠️ **视觉行为待离屏渲染/人工目检验证** |
 | TASK-CODEGEN-001-10 | `Width`/`Height` 三取值映射，**`Fill` 按主轴/交叉轴分别处理** | go test -v -run TestGenerateSize ./internal/compiler/codegen |
-| TASK-CODEGEN-001-11 | `Gap` 使用原生 `Flex.Gap`（AST 断言无逐项 `Inset`） | go test -v -run TestGapUsesNative ./internal/compiler/codegen |
+| TASK-CODEGEN-001-11 | `Gap` 使用原生 `Flex.Gap`（AST 断言无逐项 `Inset`） | go test -v -run TestGapUsesNative ./internal/compiler/codegen | ✅ 完成（2026-10-20，见 dev-log 2026-10-20） |
 | TASK-CODEGEN-001-12 | `Baseline` **不生成零值兜底**（AST 断言无 `d.Baseline = ...` 赋值） | go test -v -run TestBaselineNoFallback ./internal/compiler/codegen |
 
 ### Grid 专项（规范 §3.1.6 / ADR-0008 §2.7）
