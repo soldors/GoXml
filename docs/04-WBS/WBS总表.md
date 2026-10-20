@@ -22,6 +22,7 @@
 | TASK-INPUT-001-D4-A | compiler/codegen | Input 控件结构与事件接线（Editor 字段、属性透传、控件自持消费、载荷接线） | TASK-EVENT-PAYLOAD-001、TASK-INPUT-001 | go test -run TestInputCodegen ./internal/compiler/codegen/ |
 | TASK-INPUT-001-D4-B | compiler/codegen | Input 的 lastApplied 同步算法（两条更新路径 + 逐帧顺序） | TASK-INPUT-001-D4-A | go test -run TestInputSync ./internal/compiler/codegen/ |
 | TASK-INPUT-001-D4-C | compiler/codegen | Input 集成验收：同帧冲突运行时验证 + 编译门禁矩阵 + AC 映射 | TASK-INPUT-001-D4-B | go test -run 'TestInputSameFrame\|TestInputCompile' ./internal/compiler/codegen/ |
+| TASK-INPUT-001-DEMO | examples/demo | Input 交互样板（手动验收入口，非功能开发） | TASK-INPUT-001-D4-C | go build ./examples/demo/ |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen/runtime | 状态更新与 UI 自动刷新（AOT Diff 降为 S5 评估项） | TASK-CODEGEN-001 | 见 `TASK-STATE-001` 分阶段验收 |
