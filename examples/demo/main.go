@@ -39,11 +39,19 @@ const page = `<Goxml Version="1" ViewModel="demoVM">
     <Text Value="{Title}"/>
     <Text Value="{Status}"/>
     <Button Text="增加一行" Click="AddItem"/>
-    <For Each="item" In="{Items}" Key="{item.ID}">
-      <Text Value="{item.Name}"/>
-      <Button Text="选中" Click="Select(item.ID)"/>
-      <Button Text="删除" Click="Delete(item.ID)"/>
-    </For>
+    <Button Text="清空列表" Click="ClearAll"/>
+    <If Condition="{HasItems}">
+      <Then>
+        <For Each="item" In="{Items}" Key="{item.ID}">
+          <Text Value="{item.Name}"/>
+          <Button Text="选中" Click="Select(item.ID)"/>
+          <Button Text="删除" Click="Delete(item.ID)"/>
+        </For>
+      </Then>
+      <Else>
+        <Text Value="暂无数据——点「增加一行」开始"/>
+      </Else>
+    </If>
   </Page>
 </Goxml>`
 
@@ -76,6 +84,9 @@ type demoVM struct {
 	// selected 是当前选中行的 ID（0 表示未选中）。
 	// 不参与 .gxml 绑定，仅由 Title 反映。
 	selected int
+	// HasItems 是 <If Condition> 的绑定目标：列表非空。
+	// 由增/删/清空统一维护，与 Items 严格同步。
+	HasItems bool
 }
 
 func (m *demoVM) init() {
@@ -85,6 +96,7 @@ func (m *demoVM) init() {
 		{ID: 2, Name: "第二行"},
 		{ID: 3, Name: "第三行"},
 	}
+	m.HasItems = true
 	m.Title = m.summaryLocked()
 	m.Status = "提示：点「增加一行」或行内按钮试试"
 }
@@ -104,6 +116,18 @@ func (m *demoVM) AddItem() {
 	m.next++
 	m.Items = append(m.Items, demoItem{ID: m.next, Name: fmt.Sprintf("第 %d 行", m.next)})
 	m.Status = fmt.Sprintf("已新增 ID=%d", m.next)
+	m.Title = m.summaryLocked()
+}
+
+// ClearAll 清空列表（零参事件）。清空后 <If Condition="{HasItems}"> 切到
+// 空状态分支；行状态池会随下一帧的键清理收缩。
+func (m *demoVM) ClearAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Items = nil
+	m.HasItems = false
+	m.selected = 0
+	m.Status = "列表已清空（<If> 已切换到空状态分支）"
 	m.Title = m.summaryLocked()
 }
 
@@ -127,6 +151,7 @@ func (m *demoVM) Delete(id int) {
 		}
 	}
 	m.Items = out
+	m.HasItems = len(m.Items) > 0
 	if m.selected == id {
 		m.selected = 0
 	}
@@ -208,7 +233,8 @@ type demoView struct {
 	vm *demoVM
 
 	// 全局按钮（Layout 顶部直接轮询）
-	clickAdd widget.Clickable
+	clickAdd   widget.Clickable
+	clickClear widget.Clickable
 
 	// 行状态池：每按钮一池（Key = item.ID）
 	rowSelect map[int]*widget.Clickable
@@ -239,8 +265,16 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		v.vm.AddItem()
 		gtx.Execute(op.InvalidateCmd{})
 	}
+	for v.clickClear.Clicked(gtx) {
+		v.vm.ClearAll()
+		gtx.Execute(op.InvalidateCmd{})
+	}
 
 	title, items, selected := v.vm.snapshot()
+
+	// <If Condition="{HasItems}"> 的分支守卫：与渲染同源（同一字段读取，
+	// 同一帧内无 yield 点，语义等价——If 输出契约 §2.3）。
+	hasItems := v.vm.hasItems()
 
 	// 行状态池惰性初始化（首帧）。
 	if v.rowSelect == nil {
@@ -248,8 +282,12 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		v.rowDelete = make(map[int]*widget.Clickable)
 	}
 
-	// ② 行内轮询：数据驱动，与渲染同源同序
+	// ② 行内轮询：数据驱动，与渲染同源同序；整个 <For> 在 Then 分支内，
+	// 因此轮询被条件守卫（If 输出契约 §4.2）。
 	for _, item := range items {
+		if !hasItems {
+			break
+		}
 		if c := v.rowSelect[item.ID]; c != nil {
 			for c.Clicked(gtx) {
 				v.vm.Select(item.ID)
@@ -289,7 +327,7 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	}
 
 	// ④ 渲染：内联展开子项（不嵌套 Flex）
-	children := make([]layout.FlexChild, 0, 2+3*len(items))
+	children := make([]layout.FlexChild, 0, 3+3*len(items))
 	children = append(children,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return material.Body1(th, title).Layout(gtx)
@@ -300,27 +338,51 @@ func (v *demoView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return material.Button(th, &v.clickAdd, "增加一行").Layout(gtx)
 		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Button(th, &v.clickClear, "清空列表").Layout(gtx)
+		}),
 	)
 
-	for _, item := range items {
-		item := item
-		// 行标题：选中行加标记（不用颜色 API，保持最小依赖）
-		label := item.Name
-		if item.ID == selected {
-			label = "▶ " + item.Name
+	// <If Condition="{HasItems}"> 内联展开：有数据 → For；无数据 → 空状态。
+	if hasItems {
+		for _, item := range items {
+			item := item
+			// 行标题：选中行加标记（不用颜色 API，保持最小依赖）
+			label := item.Name
+			if item.ID == selected {
+				label = "▶ " + item.Name
+			}
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.Body1(th, label).Layout(gtx)
+			}))
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.Button(th, rowClick(v.rowSelect, item.ID), "选中").Layout(gtx)
+			}))
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.Button(th, rowClick(v.rowDelete, item.ID), "删除").Layout(gtx)
+			}))
 		}
+	} else {
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Body1(th, label).Layout(gtx)
-		}))
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Button(th, rowClick(v.rowSelect, item.ID), "选中").Layout(gtx)
-		}))
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Button(th, rowClick(v.rowDelete, item.ID), "删除").Layout(gtx)
+			return material.Body1(th, v.vm.emptyText()).Layout(gtx)
 		}))
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// hasItems 读 <If Condition> 绑定目标。
+func (m *demoVM) hasItems() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.HasItems
+}
+
+// emptyText 是空状态分支的文案。
+func (m *demoVM) emptyText() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return "暂无数据——点「增加一行」开始"
 }
 
 // statusText 读状态文本（单独加锁，避免与 snapshot 的锁交织）。
