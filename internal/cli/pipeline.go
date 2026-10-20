@@ -20,6 +20,13 @@ import (
 // pipelineFunc 是 generate 执行阶段的函数形态，包级变量便于测试注入。
 var pipelineFunc = runPipeline
 
+// pipelineHooks 是传给每个文件管线的钩子；零值即真实实现。
+//
+// 存在的唯一理由与 pipelineFunc 相同：让测试统计 **Codegen 被调用次数**，
+// 用执行计数证明「缓存命中真的没有跑生成」，而不是拿耗时下降来推断
+// （任务卡 §8 第 1 条）。
+var pipelineHooks pipeline.Hooks
+
 // runPipeline 执行生成（1-3）：发现输入 → 逐文件 管线 → Commit。
 //
 // 决策落实（见 GENERATE-CLI-001-短检查记录 §6 与 1-3 边界冻结）：
@@ -70,121 +77,157 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	// 输出冲突检测：不同输入不得映射到同一目标文件。
 	seen := make(map[string]string, len(inputs))
 
-	// ---------- 阶段一：全部生成并暂存（已有文件不被触碰）----------
-	type prepared struct {
-		in       discovered
-		source   []byte
-		artifact *pipeline.Artifact
-		target   string
-	}
-	var preparedFiles []prepared
+	// ---------- 阶段零：解析输入与目标（不写盘、不生成）----------
+	resolved := make([]*resolvedInput, 0, len(inputs))
 	targets := make([]string, 0, len(inputs))
-
 	for _, in := range inputs {
-		// 输入侧：SourceDir 是该文件所在目录（G2）；moduleRoot 已统一校验。
-		pkgName, err := packageDirName(in.sourceDir)
+		r, err := resolveInput(in, moduleRoot, outRoot)
 		if err != nil {
 			return err
 		}
-		src, err := os.ReadFile(in.abs)
+		if prev, dup := seen[r.target]; dup {
+			return fmt.Errorf("输出冲突：%q 与 %q 都映射到 %s", prev, in.rel, r.target)
+		}
+		seen[r.target] = in.rel
+		resolved = append(resolved, r)
+		targets = append(targets, r.target)
+	}
+
+	// ---------- 阶段零 B：缓存判定（读 Manifest、算键、建 K3 排除集）----------
+	man, err := loadManifest(manifestPath(moduleRoot))
+	if err != nil {
+		return err
+	}
+	exclude := fingerprintExclusion(manifestOutputPaths(moduleRoot, man), targets)
+	index := loadSourceIndex(moduleRoot)
+
+	type decision struct {
+		r      *resolvedInput
+		key    string
+		hit    bool
+		reason cacheMissReason
+	}
+	decisions := make([]decision, 0, len(resolved))
+	for _, r := range resolved {
+		key, err := cacheKeyFor(r, exclude)
 		if err != nil {
-			return fmt.Errorf("读取源文件: %w", err)
+			return err
+		}
+		hit, reason, err := decideCacheHit(moduleRoot, r, key, man, index, opts.noCache)
+		if err != nil {
+			return err
+		}
+		decisions = append(decisions, decision{r: r, key: key, hit: hit, reason: reason})
+	}
+
+	// ---------- 阶段一：只生成未命中的，并全部暂存（已有文件不被触碰）----------
+	type prepared struct {
+		r        *resolvedInput
+		key      string
+		artifact *pipeline.Artifact
+	}
+	var preparedFiles []prepared
+	missTargets := make([]string, 0, len(decisions))
+	hits := 0
+
+	for _, d := range decisions {
+		if d.hit {
+			hits++
+			fmt.Fprintf(stdout, "跳过 %s（缓存命中）\n", d.r.outputRel)
+			continue
+		}
+		// 输出目录只为真正要写的文件创建：命中的文件不改动磁盘（连目录都不建）。
+		if err := os.MkdirAll(d.r.targetDir, 0o755); err != nil {
+			return fmt.Errorf("创建输出目录 %s: %w", d.r.targetDir, err)
 		}
 
-		// 输出侧：与输入分开计算。
-		// SourcePath 必须相对**目标包目录**（生成头与符号推导的基准）：
-		// 默认输出 = 源目录 → SourcePath = 文件名；
-		// --out-dir → 目标包目录 = outRoot/<rel 目录> → SourcePath = 文件名。
-		targetDir := in.sourceDir
-		if outRoot != "" {
-			targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
-			if err := os.MkdirAll(targetDir, 0o755); err != nil {
-				return fmt.Errorf("创建输出目录 %s: %w", targetDir, err)
-			}
-		}
-		sourcePath := filepath.Base(in.abs)
-		outputName := strings.TrimSuffix(sourcePath, ".gxml") + "_gen.go"
-		target := filepath.Join(targetDir, outputName)
-		if prev, dup := seen[target]; dup {
-			return fmt.Errorf("输出冲突：%q 与 %q 都映射到 %s", prev, in.rel, target)
-		}
-		seen[target] = in.rel
-
-		res := pipeline.Run(sourcePath, src, pipeline.Config{
+		res := pipeline.Run(d.r.sourcePath, d.r.source, pipeline.Config{
 			ModuleRoot:  moduleRoot,
-			SourceDir:   in.sourceDir,
-			PackageName: pkgName,
-			SourcePath:  sourcePath,
-		}, pipeline.Hooks{})
+			SourceDir:   d.r.in.sourceDir,
+			PackageName: d.r.pkgName,
+			SourcePath:  d.r.sourcePath,
+		}, pipelineHooks)
 
-		for _, d := range res.Diags {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", d.File, d.Code, d.Message)
+		for _, dg := range res.Diags {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", dg.File, dg.Code, dg.Message)
 		}
 		if !res.OK() {
 			// 阶段一失败：尚未触碰任何磁盘文件（G4：全或无）。
-			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——批次全部放弃，磁盘无任何变更", in.rel, res.Status, len(res.Diags))
+			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——批次全部放弃，磁盘无任何变更", d.r.in.rel, res.Status, len(res.Diags))
 		}
-
-		preparedFiles = append(preparedFiles, prepared{in: in, source: src, artifact: res.Artifact, target: target})
-		targets = append(targets, target)
-	}
-
-	// ---------- 阶段二 A：全部写入临时文件（仍不触碰已有文件）----------
-	sorted := sortTargets(targets)
-	byTarget := make(map[string]prepared, len(preparedFiles))
-	for _, p := range preparedFiles {
-		byTarget[p.target] = p
-	}
-	staged, err := stageBatch(sorted, func(tmpPath string, i int) error {
-		p := byTarget[sorted[i]]
-		return os.WriteFile(tmpPath, p.artifact.Source, 0o644)
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "回滚时清理") {
-			return fmt.Errorf("%w", err)
+		// --no-cache 不报原因：用户明确要求绕过，报「未命中」只是噪声。
+		if d.reason != reasonBypassed {
+			fmt.Fprintf(stdout, "缓存未命中 %s：%s\n", d.r.outputRel, d.reason)
 		}
-		return fmt.Errorf("暂存失败（磁盘无任何变更）: %w", err)
+		preparedFiles = append(preparedFiles, prepared{r: d.r, key: d.key, artifact: res.Artifact})
+		missTargets = append(missTargets, d.r.target)
 	}
 
-	// ---------- 阶段二 B：全部成功，原子提交 ----------
-	if err := commitBatch(staged); err != nil {
-		return fmt.Errorf("提交失败: %w", err)
-	}
-	for _, t := range sorted {
-		fmt.Fprintf(stdout, "已生成 %s\n", t)
-	}
-	if len(sorted) > 1 {
-		fmt.Fprintf(stdout, "共 %d 个文件生成成功（按路径排序处理）\n", len(sorted))
-	}
-
-	// ---------- Manifest 登记（契约 §10）----------
-	// Source/Output 用项目相对路径（/ 分隔）；inputHash 用本次源内容。
-	entries := make([]entry, 0, len(preparedFiles))
-	for _, p := range preparedFiles {
-		srcRel, err := filepath.Rel(moduleRoot, p.in.abs)
-		if err != nil {
-			return fmt.Errorf("计算源相对路径: %w", err)
+	// ---------- 阶段二：有未命中才写盘（全或无）；命中不碰任何文件 ----------
+	if len(preparedFiles) > 0 {
+		sorted := sortTargets(missTargets)
+		byTarget := make(map[string]prepared, len(preparedFiles))
+		for _, p := range preparedFiles {
+			byTarget[p.r.target] = p
 		}
-		outRel, err := filepath.Rel(moduleRoot, p.target)
-		if err != nil {
-			return fmt.Errorf("计算输出相对路径: %w", err)
-		}
-		entries = append(entries, entry{
-			Source:          filepath.ToSlash(srcRel),
-			Output:          filepath.ToSlash(outRel),
-			InputHash:       inputHashOf(p.source),
-			CompilerVersion: codegen.GoxmlVersion,
+		staged, err := stageBatch(sorted, func(tmpPath string, i int) error {
+			return os.WriteFile(tmpPath, byTarget[sorted[i]].artifact.Source, 0o644)
 		})
+		if err != nil {
+			if strings.Contains(err.Error(), "回滚时清理") {
+				return fmt.Errorf("%w", err)
+			}
+			return fmt.Errorf("暂存失败（磁盘无任何变更）: %w", err)
+		}
+
+		// ---------- 阶段二 B：全部成功，原子提交 ----------
+		if err := commitBatch(staged); err != nil {
+			return fmt.Errorf("提交失败: %w", err)
+		}
+		for _, t := range sorted {
+			fmt.Fprintf(stdout, "已生成 %s\n", t)
+		}
+		if len(sorted) > 1 {
+			fmt.Fprintf(stdout, "共 %d 个文件生成成功（按路径排序处理）\n", len(sorted))
+		}
+
+		// ---------- Manifest 登记（契约 §10）----------
+		// Source/Output 用项目相对路径（/ 分隔）；inputHash 用本次源内容。
+		entries := make([]entry, 0, len(preparedFiles))
+		for _, p := range preparedFiles {
+			entries = append(entries, entry{
+				Source:          p.r.sourceRel,
+				Output:          p.r.outputRel,
+				InputHash:       p.r.sourceHash,
+				CompilerVersion: codegen.GoxmlVersion,
+			})
+		}
+		if err := updateManifestAfterGenerate(moduleRoot, entries); err != nil {
+			return fmt.Errorf("更新 Manifest: %w", err)
+		}
+
+		// ---------- 缓存登记（顺序：产物 → Manifest → 缓存，任务卡 §4）----------
+		// 顺序不可倒置：先写缓存会让中断后留下「指向旧产物的有效缓存」= 假命中。
+		for _, p := range preparedFiles {
+			rec := newCacheRecordFor(p.r, p.key, p.artifact.Source)
+			if err := saveCacheRecord(moduleRoot, rec); err != nil {
+				// D-4 裁决：缓存写失败只警告——缓存不能成为新的失败源。
+				fmt.Fprintf(stderr, "警告：缓存写入失败（不影响生成结果）：%v\n", err)
+			}
+		}
 	}
-	if err := updateManifestAfterGenerate(moduleRoot, entries); err != nil {
-		return fmt.Errorf("更新 Manifest: %w", err)
+
+	if hits > 0 {
+		fmt.Fprintf(stdout, "命中 %d，生成 %d\n", hits, len(preparedFiles))
 	}
 
 	// ---------- --clean（在本次登记之后执行，保证 keep 集合正确）----------
 	if opts.clean {
-		keep := make(map[string]bool, len(entries))
-		for _, e := range entries {
-			keep[e.Source] = true
+		// keep 必须包含**本轮全部在用源**（命中的也算）：只取 entries 会把
+		// 刚被判为命中、本次没有重写的产物当孤儿删掉。
+		keep := make(map[string]bool, len(resolved))
+		for _, r := range resolved {
+			keep[r.sourceRel] = true
 		}
 		deleted, skipped, err := cleanOrphans(moduleRoot, keep)
 		if err != nil {

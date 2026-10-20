@@ -49,10 +49,25 @@
 
 ### 2.1 两个必须写进卡的陷阱
 
-**T1：K3 若包含「本轮刚写出的产物」，命中率恒为 0。**
-生成后再跑，包目录里多了 `<name>_gen.go`，若它进入 K3，第二次运行键必变。
-→ 冻结：K3 的排除集 = Manifest 已登记的全部 `output` ∪ **本批计划写入的 target**。
-（只排除「已登记」不够：Manifest 在提交后才更新，本批刚写的产物当时还没登记。）
+**T1：K3 必须排除「本工具自己的产物」，否则键会被自己的输出污染。**
+
+（2026-10-21 修正：初版写的是「不排除则命中率恒为 0」，**该论证是错的**。
+实测发现每次运行都在写盘之前就把所有键算完，同批产物的写入发生在算键之后，
+所以正常流程下「本批 target」根本不会进入本次指纹。错误论证已删除，
+以下是被变异测试证实的真实影响。）
+
+真实会发生的场景：产物在磁盘上存在、但 **Manifest 尚未登记**它
+（提交产物后、保存 Manifest 前进程中断；或 Manifest 被误删/被清空）。
+此时该 `_gen.go` 会被当成「包源码」进入 K3：
+
+- 本次键 ≠ 缓存里的键 → 未命中，原因被**误报**成 `package-sources-changed`
+  （真实原因是 Manifest 丢失），诊断误导；
+- 缓存记录被自己的产物「挤掉」，相当于每丢一次 Manifest 就多废一轮缓存。
+
+→ 冻结：K3 排除集 = Manifest 已登记的全部 `output` ∪ **本批计划写入的 target**。
+后者不是冗余：Manifest 在提交后才更新，中断后重跑时本批 target 仍未登记。
+证据见 `TestCacheHitManifestLossKeepsKeyStable`：删空 Manifest 登记后，
+原因必须是 `cache-missing`，**不得**是 `package-sources-changed`。
 
 **T2：K3 会因「改同包任意 `.go`」而频繁失效。**
 这是契约 §11 要求带来的**保守方向**成本：多失效、绝不误命中。
@@ -73,6 +88,8 @@
 
 - 保护头合法但正文被改（H5 不符）→ **重新生成并覆盖**：保护头存在即表示工具拥有所有权
   （与 `--clean` 的「保护头不符 = 用户接管」互为镜像）。
+- 保护头合法但 `// Source:` 指向别的源（改名/搬移后的旧产物）→ 归入
+  `output-modified` 重新生成：文件仍归工具所有，可以覆盖，但不算命中。
 - 保护头**不符**（用户接管该文件）→ **错误退出，不覆盖**。
   契约 §13 第 3 条「用户手写同名文件不会被覆盖」目前**未在覆盖路径落地**
   【项目证据 `internal/cli/commit.go` 的 rename 覆盖无保护头检查】，
@@ -142,7 +159,8 @@
 | C11 | 生成器版本变化 | 手写 Manifest 的 `compilerVersion` 为 `0` | 未命中 reason=`compiler-version-changed` | `TestCacheCompilerVersionChange` |
 | C12 | `--no-cache` 等价性 | 两个隔离目录分别跑 | 产物**逐字节相同**；`--no-cache` 也更新了缓存 | `TestCacheNoCacheEquivalence` |
 | C13 | 失败不留缓存 | 构造 Parser 错误 | 退出非 0；**无新缓存、无新产物**；Manifest 不变 | `TestCacheNoWriteOnFailure` |
-| C14 | 同包多文件批次 | 同目录两个 `.gxml` | 连跑两次**都命中**（验证 T1 排除集正确） | `TestCacheMultiInputSamePackageHits` |
+| C14 | 同包多文件批次 | 同目录两个 `.gxml` | 连跑两次**都命中**（多文件批次的基本命中） | `TestCacheMultiInputSamePackageHitsTwice` |
+| C14b | Manifest 丢失但产物残留 | 清空 entries | 原因必须是 `cache-missing`，**不得**误报 `package-sources-changed`（这才是 T1 排除集的实证） | `TestCacheHitManifestLossKeepsKeyStable` |
 | C15 | 混合批次 | 两个 `.gxml`，只改一个 | 一个命中一个生成；批次仍原子 | `TestCacheMixedBatchAtomic` |
 | C16 | 跳过是真的跳过 | 注入 `pipeline.Hooks.Generate` 计数器 | 命中时**计数为 0**；未命中时为 1（不靠时间推断） | `TestCacheHitSkipsCodegen` |
 | C17 | 删整个缓存目录 | `rm -rf .goxml/cache` | 全未命中、生成结果与之前一致（契约 §11） | `TestCacheDirRemovalIsHarmless` |
@@ -193,7 +211,7 @@ Input 阶段的关闭条件仍以 D5-F 的独立记录为准。
 |---|---|---|
 | B1 | 键计算与规范化（纯函数，无 I/O） | ✅ **完成（2026-10-21）** `internal/cli/cache_key.go`：`cacheKey`（K1–K7 + 长度自定界）、`validateKeyInput`、`fingerprintExclusion`（T1 排除集）。`go test -count=1 -run '^TestCacheKey' ./internal/cli/` 实测 PASS=10 / RUN=28；四条变异验证能变红（dev-log §83） |
 | B2 | 缓存读写 + 损坏回退 + 原子写 | ✅ **完成（2026-10-21）** `internal/cli/cache_store.go`：`cacheRecord`/`cacheLoadStatus`、`loadCacheRecord`（missing/ok/corrupt 三态，损坏不报错且删残骸）、`saveCacheRecord`（tmp+rename）、`removeCacheRecord`、`validateKeyHash`。`go test -count=1 -run '^TestCacheStore' ./internal/cli/` 实测 PASS=10；五条变异验证能变红（dev-log §84）。**证据边界**：崩溃原子性无法进程内测，只覆盖其后果链 |
-| B3 | 命中判定 + reason 枚举 + 跳过接线（含 T1 排除集） | `go test -count=1 -run '^TestCacheHit' ./internal/cli/` 与 `-run '^TestCacheMultiInput'`（**分开跑**，见 §11.1） |
+| B3 | 命中判定 + reason 枚举 + 跳过接线（含 T1 排除集） | ✅ **完成（2026-10-21）** `internal/cli/cache_wire.go`（`resolvedInput`/`decideCacheHit`/`explainMiss`/`packageSourcesFingerprint`/`loadSourceIndex`）+ `pipeline.go` 三阶段改造（判定→只生成 miss→产物/Manifest/缓存顺序落盘）；`pipelineHooks` 注入点用于统计 Codegen 调用。11 个用例：`go test -count=1 -run '^TestCacheHit' ./internal/cli/` 与 `-run '^TestCacheMultiInput'`（**分开跑**，见 §11.1）；8 条变异全部能红（dev-log §85） |
 | B4 | 可观测性输出与汇总 | `go test -count=1 -run '^TestCacheOutput' ./internal/cli/` |
 | B5 | §7 全矩阵 + §8 性能数据 + 契约/运维手册同步 | `go test -count=1 ./internal/cli/` + 基准记录 |
 

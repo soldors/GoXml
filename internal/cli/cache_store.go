@@ -78,8 +78,12 @@ func (s cacheLoadStatus) String() string {
 }
 
 // cacheDir 返回缓存目录的绝对路径。
+//
+// 取「Manifest 所在目录下的 cache」而不是直接拼 moduleRoot：测试把 Manifest
+// 重定向到隔离目录时，缓存会自动跟着隔离，不会污染仓库根的 .goxml/cache
+// （多个用例共享一个缓存目录会互相命中，测出假结果）。
 func cacheDir(moduleRoot string) string {
-	return filepath.Join(moduleRoot, manifestDir, cacheDirName)
+	return filepath.Join(filepath.Dir(manifestPath(moduleRoot)), cacheDirName)
 }
 
 // cacheRecordPath 返回某个键对应的缓存文件路径。
