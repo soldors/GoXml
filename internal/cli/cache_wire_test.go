@@ -345,22 +345,21 @@ func TestCacheHitNoCacheBypassesRead(t *testing.T) {
 	}
 }
 
-// TestCacheMultiInputSamePackageHitsTwice 是陷阱 T1 的端到端验证。
+// TestCacheMultiInputHitsTwice：同一批次多个输入，第二次必须全部命中。
 //
-// 同一包内两个 .gxml：第一次生成两个产物；第二次必须**两个都命中**。
-// 若 K3 排除集漏掉「本批计划 target」，第二次会因包内多出产物而永不命中。
-func TestCacheMultiInputSamePackageHitsTwice(t *testing.T) {
-	root := b3Project(t)
+// 布局刻意用**两个不同包**的子目录：把两个产物放进同一个包会因包级符号
+// 重名（renderKey / textCache）而无法编译——那是独立缺陷（见 dev-log §86），
+// 不属于缓存范围，这里避免混淆。
+func TestCacheMultiInputHitsTwice(t *testing.T) {
+	root := tempProjectInRepo(t)
+	for _, sub := range []string{"pkg1", "pkg2"} {
+		dir := filepath.Join(root, sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		copyFixture(t, dir)
+	}
 	calls := b3CountCodegen(t)
-
-	home, err := os.ReadFile(filepath.Join(root, "home.gxml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	second := filepath.Join(root, "second.gxml")
-	if err := os.WriteFile(second, home, 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	code, out1, e := b3Run(t, root)
 	if code != ExitOK {
@@ -375,9 +374,9 @@ func TestCacheMultiInputSamePackageHitsTwice(t *testing.T) {
 		t.Fatalf("第二次生成失败: %s", e)
 	}
 	if *calls != 2 {
-		t.Fatalf("第二次仍有 Codegen 调用（次数=%d）：同包多文件未命中，T1 排除集有问题", *calls)
+		t.Fatalf("第二次仍有 Codegen 调用（次数=%d）：多输入未命中", *calls)
 	}
-	if strings.Count(out2, "跳过") != 2 {
+	if strings.Count(out2, "跳过 ") != 2 {
 		t.Fatalf("两个产物都应命中:\n%s", out2)
 	}
 	if !strings.Contains(out2, "命中 2，生成 0") {
@@ -481,5 +480,48 @@ func TestCacheHitManifestLossKeepsKeyStable(t *testing.T) {
 	}
 	if !strings.Contains(out, "cache-missing") {
 		t.Fatalf("应报 cache-missing:\n%s", out)
+	}
+}
+
+// TestCacheManifestCorruptStillFails：Manifest 损坏时**仍然硬失败**（契约 §10）。
+//
+// 这条防的是「缓存把安全锁弱化」：缓存允许安全回退，Manifest 不允许。
+// 若哪天有人把两者统一成「有缓存就继续」，本用例会红。
+func TestCacheManifestCorruptStillFails(t *testing.T) {
+	root := b3Project(t)
+	src := filepath.Join(root, "home.gxml")
+	gen := filepath.Join(root, "home_gen.go")
+
+	if code, _, e := b3Run(t, src); code != ExitOK {
+		t.Fatalf("首次生成失败: %s", e)
+	}
+	before, err := os.ReadFile(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(manifestPathOverride, []byte("{ broken json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errs := b3Run(t, src)
+	if code == ExitOK {
+		t.Fatal("Manifest 损坏时必须失败（损坏即自锁）")
+	}
+	// 必须**在任何写入之前**失败：连「已生成」都不该出现。
+	// 否则说明是「先写产物、再存 Manifest 时才炸」——那时产物已经被覆盖过一轮。
+	if strings.Contains(out, "已生成") {
+		t.Fatalf("Manifest 损坏应在写盘前终止，却已经生成了产物:\n%s", out)
+	}
+	if !strings.Contains(errs, "Manifest") {
+		t.Fatalf("stderr 应指出 Manifest 问题:\n%s", errs)
+	}
+
+	after, err := os.ReadFile(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("Manifest 损坏时不得改动产物")
 	}
 }

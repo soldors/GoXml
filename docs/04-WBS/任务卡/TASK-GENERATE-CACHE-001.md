@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**边界已冻结，待实施（2026-10-20）**
+- 状态：**B1–B5 全部完成（2026-10-21）**；证据：`internal/cli/cache_{key,store,wire,output,b5}*.go` 与其测试（42 个缓存用例）。发现一处**不在本卡范围**的独立缺陷（同包多 `.gxml` 符号冲突，见 §13）
 - 前置：`TASK-GENERATE-CLI-001` ✅（Manifest、`--clean`、`--no-cache` 解析均已就位）；
   其 1-7 的注记写明「增量缓存本体未实现，等价性由确定性测试保证」——本卡补这个缺口
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md) **§11（缓存键/命中条件）**、
@@ -159,9 +159,9 @@
 | C11 | 生成器版本变化 | 手写 Manifest 的 `compilerVersion` 为 `0` | 未命中 reason=`compiler-version-changed` | `TestCacheCompilerVersionChange` |
 | C12 | `--no-cache` 等价性 | 两个隔离目录分别跑 | 产物**逐字节相同**；`--no-cache` 也更新了缓存 | `TestCacheNoCacheEquivalence` |
 | C13 | 失败不留缓存 | 构造 Parser 错误 | 退出非 0；**无新缓存、无新产物**；Manifest 不变 | `TestCacheNoWriteOnFailure` |
-| C14 | 同包多文件批次 | 同目录两个 `.gxml` | 连跑两次**都命中**（多文件批次的基本命中） | `TestCacheMultiInputSamePackageHitsTwice` |
+| C14 | 多输入批次 | 两个子包各一个 `.gxml`（**不能同包**，见 §13） | 连跑两次**都命中**（多文件批次的基本命中） | `TestCacheMultiInputSamePackageHitsTwice` |
 | C14b | Manifest 丢失但产物残留 | 清空 entries | 原因必须是 `cache-missing`，**不得**误报 `package-sources-changed`（这才是 T1 排除集的实证） | `TestCacheHitManifestLossKeepsKeyStable` |
-| C15 | 混合批次 | 两个 `.gxml`，只改一个 | 一个命中一个生成；批次仍原子 | `TestCacheMixedBatchAtomic` |
+| C15 | 混合批次 | 两个子包各一个 `.gxml`，只改其中一个 | 一个命中一个生成，Codegen 只多跑 1 次 | `TestCacheMixedBatch` |
 | C16 | 跳过是真的跳过 | 注入 `pipeline.Hooks.Generate` 计数器 | 命中时**计数为 0**；未命中时为 1（不靠时间推断） | `TestCacheHitSkipsCodegen` |
 | C17 | 删整个缓存目录 | `rm -rf .goxml/cache` | 全未命中、生成结果与之前一致（契约 §11） | `TestCacheDirRemovalIsHarmless` |
 
@@ -182,6 +182,23 @@
    接近甚至超过生成耗时。若实测收益不显著，结论就写「收益有限，理由是 X」，
    **不得**用「缓存命中」四个字宣称优化有效。
 4. 缓存维护成本单列：每次 miss 多写一个 JSON（大小量级）、Manifest 不变。
+
+### 8.1 实测数据（2026-10-21，本机 Windows，`TestCachePerfReport`）
+
+| 场景 | 首次生成（全未命中） | 命中 | 改动全部源后重生成 |
+|---|---|---|---|
+| 1 个输入 | 133 ms | **1 ms** | 292 ms |
+| 10 个输入（10 个包） | 1.454 s | **4 ms** | 3.981 s |
+
+读数口径与限制（必须一起引用）：
+
+- 这些是**进程内** `Run()` 的耗时，不含 Go 进程启动（真实 CLI 每次再加约 10 ms 量级）；
+- 命中轮 `--- Codegen 调用次数不增` 由同一测试断言，因此 1–4 ms 是**真的跳过了生成**；
+- **重生成比首次生成慢 2–3 倍**：首次生成时包内还没有 `_gen.go`，重生成时类型环境要把
+  上一版产物一起加载。这是一个独立现象，不在本卡优化范围，已记入 dev-log §86.5；
+- 命中路径仍要做：读 `.gxml`、读产物算哈希、读包内 `*.go`（K3）、读 Manifest、读缓存记录；
+- 命中收益随输入数增长（10 个输入从 1.45 s 降到 4 ms），但**小工程单文件**时收益绝对值很小
+  （约 0.13 s），不要据此宣称「显著提速」。
 
 ## 9. 与 D5-F 的边界（不可合并关闭）
 
@@ -212,7 +229,7 @@ Input 阶段的关闭条件仍以 D5-F 的独立记录为准。
 | B1 | 键计算与规范化（纯函数，无 I/O） | ✅ **完成（2026-10-21）** `internal/cli/cache_key.go`：`cacheKey`（K1–K7 + 长度自定界）、`validateKeyInput`、`fingerprintExclusion`（T1 排除集）。`go test -count=1 -run '^TestCacheKey' ./internal/cli/` 实测 PASS=10 / RUN=28；四条变异验证能变红（dev-log §83） |
 | B2 | 缓存读写 + 损坏回退 + 原子写 | ✅ **完成（2026-10-21）** `internal/cli/cache_store.go`：`cacheRecord`/`cacheLoadStatus`、`loadCacheRecord`（missing/ok/corrupt 三态，损坏不报错且删残骸）、`saveCacheRecord`（tmp+rename）、`removeCacheRecord`、`validateKeyHash`。`go test -count=1 -run '^TestCacheStore' ./internal/cli/` 实测 PASS=10；五条变异验证能变红（dev-log §84）。**证据边界**：崩溃原子性无法进程内测，只覆盖其后果链 |
 | B3 | 命中判定 + reason 枚举 + 跳过接线（含 T1 排除集） | ✅ **完成（2026-10-21）** `internal/cli/cache_wire.go`（`resolvedInput`/`decideCacheHit`/`explainMiss`/`packageSourcesFingerprint`/`loadSourceIndex`）+ `pipeline.go` 三阶段改造（判定→只生成 miss→产物/Manifest/缓存顺序落盘）；`pipelineHooks` 注入点用于统计 Codegen 调用。11 个用例：`go test -count=1 -run '^TestCacheHit' ./internal/cli/` 与 `-run '^TestCacheMultiInput'`（**分开跑**，见 §11.1）；8 条变异全部能红（dev-log §85） |
-| B4 | 可观测性输出与汇总 | `go test -count=1 -run '^TestCacheOutput' ./internal/cli/` |
+| B4 | 可观测性输出与汇总 | ✅ **完成（2026-10-21）** 4 个用例：`TestCacheOutput{HitAndSummary,NoSummaryOnAllMiss,MissReasonBeforeGenerated,CacheWriteFailureOnlyWarns}`；`go test -count=1 -run '^TestCacheOutput' ./internal/cli/` 实测 PASS=4。变异（汇总行无条件输出）能红 |
 | B5 | §7 全矩阵 + §8 性能数据 + 契约/运维手册同步 | `go test -count=1 ./internal/cli/` + 基准记录 |
 
 ### 11.1 验收命令本身不得空转（本轮新增约束）
@@ -234,6 +251,31 @@ PowerShell 单引号把 `\|` 原样传给 Go 正则，而 RE2 的 `\|` 是**字�
 2. 每次验收带 `-v`，核对 `--- PASS` 行数 ≥ 预期用例数，把计数写进 dev-log；
    只看 `ok` 不足以证明测试真的执行了。
 
+
+## 13. 范围内发现、但**不在本卡**的独立缺陷
+
+### 13.1 同包多个 `.gxml` 生成的包级符号重名
+
+**现象**：把两个 `.gxml` 生成到**同一个 Go 包**后，包无法编译：
+
+```text
+second_gen.go:68:6: renderKey redeclared in this block
+second_gen.go:97:6: textCache redeclared in this block
+```
+
+**发现方式**：本卡 B5 的「混合批次」用例原本用同目录两个 `.gxml` 构造，直接撞上该缺陷
+（2026-10-21）。改用「两个子包各一个 `.gxml`」后与缓存无关地通过。
+
+**为什么不在本卡修**：
+
+- 它与缓存命中无关——不用缓存也会复现（先 `--no-cache` 生成两个，再改一个重生成即可）；
+- 修复涉及生成器的符号命名策略，属于 Codegen 的契约面（`代码生成输出契约.md` 的命名规则），
+  必须先改契约再改代码；
+- 本卡纪律禁止「顺手扩大范围」。
+
+**待办**：需要单独立卡（建议 `TASK-CODEGEN-NAMING-001`），至少回答：
+符号是否按 `SourcePath` 加后缀、还是放进每文件独立命名空间、
+冲突时是否按契约「生成失败并报告冲突来源」。
 
 ## 12. 纪律
 
