@@ -273,7 +273,9 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 		// （没有静态缓存，也不得把动态结果固化）。
 		ops = "gtx"
 	}
-	expr, err := g.containerExpr(n.Children, "layout.Vertical", ops)
+	// <Page> 不消费 Gap：契约 §3.1/§4.7.2 定义它等价于「没有 Gap/Padding 的 <Column>」，
+	// 且 Gap 的适用标签只有 Column/Row/Grid（expander 的布局属性表）。
+	expr, err := g.containerExpr(n.Children, "layout.Vertical", ops, "")
 	if err != nil {
 		return "", err
 	}
@@ -290,15 +292,17 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 //
 // 含 <For> 时子项数编译期不可知，必须先运行时组装 `[]layout.FlexChild`
 // （<For> 列表契约 §2：内联展开，不引入嵌套 Flex）。
-func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
+// gap 是已拼好的 `, Gap: gtx.Dp(N)` 片段（无 Gap 时为空串），由 layout.go 的
+// gapFieldExpr 生成；主生成器不参与布局属性的语义决策。
+func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops, gap string) (string, error) {
 	g.imports.add("gioui.org/layout", "layout")
 
 	if hasForChild(children) || hasIfChild(children) {
-		return g.dynamicContainerExpr(children, axis, ops)
+		return g.dynamicContainerExpr(children, axis, ops, gap)
 	}
 
 	var b strings.Builder
-	b.WriteString("layout.Flex{Axis: " + axis + "}.Layout(" + ops)
+	b.WriteString("layout.Flex{Axis: " + axis + gap + "}.Layout(" + ops)
 	for _, c := range children {
 		inner, err := g.nodeExpr(c)
 		if err != nil {
@@ -322,7 +326,7 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, axis, ops string
 //		{ items := ...; for _, item := range items { ... } }  // <For> 内联展开
 //		return layout.Flex{Axis: ...}.Layout(gtx, children...)
 //	}()
-func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops string) (string, error) {
+func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops, gap string) (string, error) {
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
@@ -357,7 +361,7 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, axis, ops
 		b.WriteString("\t\t\t}))\n")
 	}
 
-	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + "}.Layout(" + ops + ", children...)\n")
+	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axis + gap + "}.Layout(" + ops + ", children...)\n")
 	b.WriteString("\t\t}()")
 	return b.String(), nil
 }
@@ -551,10 +555,10 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
-		return g.containerExpr(n.Children, "layout.Vertical", "gtx")
+		return g.containerExpr(n.Children, "layout.Vertical", "gtx", gapFieldExpr(n))
 
 	case "Row":
-		return g.containerExpr(n.Children, "layout.Horizontal", "gtx")
+		return g.containerExpr(n.Children, "layout.Horizontal", "gtx", gapFieldExpr(n))
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)

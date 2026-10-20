@@ -97,15 +97,16 @@ func TestGenerateMissingInput(t *testing.T) {
 	}
 }
 
-// TestGenerateDirectoryRejected 目录输入：明确拒绝（目录发现归 1-3）。
-func TestGenerateDirectoryRejected(t *testing.T) {
+// TestGenerateEmptyDir 目录无 .gxml：明确结果，不静默成功。
+func TestGenerateEmptyDir(t *testing.T) {
+	empty := t.TempDir()
 	var out, errb bytes.Buffer
-	code := Run([]string{"generate", "testdata"}, &out, &errb)
+	code := Run([]string{"generate", empty}, &out, &errb)
 	if code != ExitFailure {
 		t.Fatalf("退出码 = %d, 期望 %d", code, ExitFailure)
 	}
-	if !strings.Contains(errb.String(), "只支持单文件") {
-		t.Errorf("stderr 应说明目录不支持:\n%s", errb.String())
+	if !strings.Contains(errb.String(), "没有 .gxml") {
+		t.Errorf("stderr 应说明目录为空:\n%s", errb.String())
 	}
 }
 
@@ -169,22 +170,27 @@ func TestGenerateMultiPathRejected(t *testing.T) {
 	if code != ExitFailure {
 		t.Fatalf("退出码 = %d, 期望 %d", code, ExitFailure)
 	}
-	if !strings.Contains(errb.String(), "只支持单个输入") {
+	if !strings.Contains(errb.String(), "多个独立输入参数未支持") {
 		t.Errorf("stderr 应说明多路径未支持:\n%s", errb.String())
 	}
 }
 
-// TestGenerateOutDirDeferred --out-dir 明确告知随 1-3 实现，不静默忽略。
-func TestGenerateOutDirDeferred(t *testing.T) {
+// TestGenerateOutDirMapping --out-dir 映射：输出进 out 根，保护头 Source 不变。
+func TestGenerateOutDirMapping(t *testing.T) {
 	tmp := tempProjectInRepo(t)
 	copyFixture(t, tmp)
+	outRoot := filepath.Join(tmp, "out")
 
 	var out, errb bytes.Buffer
-	code := Run([]string{"generate", filepath.Join(tmp, "home.gxml"), "--out-dir", filepath.Join(tmp, "out")}, &out, &errb)
-	if code != ExitFailure {
-		t.Fatalf("退出码 = %d, 期望 %d", code, ExitFailure)
+	code := Run([]string{"generate", filepath.Join(tmp, "home.gxml"), "--out-dir", outRoot}, &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("退出码 = %d:\n%s", code, errb.String())
 	}
-	if !strings.Contains(errb.String(), "--out-dir") {
-		t.Errorf("stderr 应点名 --out-dir:\n%s", errb.String())
+	got, err := os.ReadFile(filepath.Join(outRoot, "home_gen.go"))
+	if err != nil {
+		t.Fatalf("输出应落在 out 根: %v", err)
+	}
+	if !codegen.HasProtectedHeader(got) {
+		t.Errorf("保护头不符合契约:\n%.120s", got)
 	}
 }

@@ -35,7 +35,7 @@
 |---|---|---|
 | TASK-GENERATE-CLI-001-1 | 建立 `cmd/goxml` 与 `generate` 参数解析、退出码和诊断输出 | ✅ 完成（2026-10-20）：`internal/cli` 20 项测试 + 真实二进制退出码实测；`go test ./internal/cli/` |
 | TASK-GENERATE-CLI-001-2 | 接通 Parser → Expander → Analyzer → Codegen → Commit | ✅ 完成（2026-10-20）：`internal/cli` 单文件真实路径，8 场景验收（含确定性、失败不提交、范围拒绝）；`go test ./internal/cli/` |
-| TASK-GENERATE-CLI-001-3 | 实现输出目录、包名、文件名和保护头校验 | `go test -v -run 'TestGenerateOutputBoundary\|TestGeneratePackageContext' ./cmd/goxml/...` |
+| TASK-GENERATE-CLI-001-3 | 实现输出目录、包名、文件名和保护头校验 | ✅ 完成（2026-10-20）：目录递归发现 + rel 排序 + 每文件 SourceDir（G2）+ --out-dir 映射与冲突检测；7 项新测试；明确「无批次回滚」（G4 留 1-5）；`go test ./internal/cli/` |
 | TASK-GENERATE-CLI-001-4 | 实现生成确定性和重复生成 | `go test -v -run TestGenerationDeterminism ./cmd/goxml/...` |
 | TASK-GENERATE-CLI-001-5 | 实现失败回滚，旧文件内容、权限和修改时间保持不变 | `go test -v -run TestGenerationRollback ./cmd/goxml/...` |
 | TASK-GENERATE-CLI-001-6 | 实现 Manifest 原子更新、损坏保护和 `--clean` 边界 | `go test -v -run 'TestManifest\|TestGenerateClean' ./cmd/goxml/...` |

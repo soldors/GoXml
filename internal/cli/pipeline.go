@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goxml/goxml/internal/compiler/pipeline"
 )
@@ -18,80 +19,101 @@ import (
 // pipelineFunc 是 generate 执行阶段的函数形态，包级变量便于测试注入。
 var pipelineFunc = runPipeline
 
-// runPipeline 执行单文件生成：读源 → 管线 → Commit。
+// runPipeline 执行生成（1-3）：发现输入 → 逐文件 管线 → Commit。
 //
-// 决策落实（见 GENERATE-CLI-001-短检查记录 §6）：
-//   - G2：SourceDir = 该 .gxml 实际所在目录（单文件解析上下文）；
-//   - G6：--check 暂与默认行为相同（L1+L2 已是默认路径）；
-//   - G7：最小夹具在 internal/cli/testdata/miniproj。
+// 决策落实（见 GENERATE-CLI-001-短检查记录 §6 与 1-3 边界冻结）：
+//   - G2：SourceDir = 每个 .gxml 实际所在目录（单文件解析上下文）；
+//   - 输入路径与输出路径**分开计算**：SourceDir 服务解析，--out-dir 服务布局；
+//   - 多文件**逐文件提交、无批次事务**——部分失败的回滚归 1-5（G4 未冻结，
+//     本切片明确不宣称原子性），失败前已成功的文件保持原样；
+//   - G6：--check 暂与默认行为相同（L1+L2 已是默认路径）。
 func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
-	if len(opts.paths) != 1 {
-		// 多文件的事务粒度在 1-5 前冻结（G4），此处明确不做。
-		return fmt.Errorf("当前切片只支持单个输入路径（多文件归任务卡 1-3/1-5）")
+	if len(opts.paths) > 1 {
+		// 多个独立输入参数仍不支持：批量形态是「一个目录」，
+		// 多根发现的归并留待需要时再议（避免与相对路径映射规则纠缠）。
+		return fmt.Errorf("当前支持一个输入（文件或目录）；多个独立输入参数未支持")
 	}
-	srcPath := opts.paths[0]
-
-	// 输入必须存在且是文件。
-	fi, err := os.Stat(srcPath)
-	if err != nil {
-		return fmt.Errorf("输入路径不可用: %w", err)
-	}
-	if fi.IsDir() {
-		return fmt.Errorf("%q 是目录；当前切片只支持单文件（目录发现归 1-3）", srcPath)
-	}
-
-	// ModuleRoot 向上找 go.mod（与 examples/demo 的 moduleRoot 同规则）。
-	moduleRoot, err := findModuleRoot(srcPath)
+	// 发现：单文件或目录递归，结果已按 rel 排序（确定性，G5）。
+	inputs, err := discoverInputs(opts.paths[0])
 	if err != nil {
 		return err
 	}
 
-	// G2：SourceDir 是该文件所在目录（绝对路径）。
-	absSrc, err := filepath.Abs(srcPath)
-	if err != nil {
-		return fmt.Errorf("解析输入绝对路径: %w", err)
-	}
-	sourceDir := filepath.Dir(absSrc)
-
-	src, err := os.ReadFile(srcPath)
-	if err != nil {
-		return fmt.Errorf("读取源文件: %w", err)
-	}
-
-	// PackageName 取所在目录的 Go 包名：与生成文件同包（契约 §4）。
-	pkgName, err := packageDirName(sourceDir)
-	if err != nil {
-		return err
-	}
-
-	// SourcePath 相对目标包目录（= 源目录，契约 §3.1 默认输出形态）。
-	sourcePath := filepath.Base(srcPath)
-
-	res := pipeline.Run(sourcePath, src, pipeline.Config{
-		ModuleRoot:  moduleRoot,
-		SourceDir:   sourceDir,
-		PackageName: pkgName,
-		SourcePath:  sourcePath,
-	}, pipeline.Hooks{})
-
-	// 诊断输出：无论成败都如实呈现（失败归 ExitFailure，由调用方映射）。
-	for _, d := range res.Diags {
-		fmt.Fprintf(stderr, "%s: %s: %s\n", d.File, d.Code, d.Message)
-	}
-	if !res.OK() {
-		return fmt.Errorf("生成失败（状态 %v，%d 条诊断）", res.Status, len(res.Diags))
-	}
-
-	// Commit：同目录落盘（契约 §3.1 默认形态）。
-	// --out-dir 在 1-3 与目录发现一起实现（需要相对结构映射）。
+	// 输出根：默认与各文件同目录（契约 §3.2）；
+	// --out-dir 时映射为 outRoot/rel（去掉 .gxml 换 _gen.go）。
+	var outRoot string
 	if opts.outDir != "" {
-		return fmt.Errorf("--out-dir 将随目录发现（任务卡 1-3）一起实现")
+		outRoot, err = filepath.Abs(opts.outDir)
+		if err != nil {
+			return fmt.Errorf("解析输出根目录: %w", err)
+		}
+		if fi, err := os.Stat(outRoot); err == nil && !fi.IsDir() {
+			return fmt.Errorf("输出根 %q 不是目录", outRoot)
+		}
 	}
-	target, err := pipeline.Commit(res.Artifact, sourceDir)
-	if err != nil {
-		return fmt.Errorf("提交生成文件: %w", err)
+
+	// 输出冲突检测：不同输入不得映射到同一目标文件。
+	seen := make(map[string]string, len(inputs))
+
+	okCount := 0
+	for _, in := range inputs {
+		// 输入侧：SourceDir 是该文件所在目录（G2）。
+		moduleRoot, err := findModuleRoot(in.abs)
+		if err != nil {
+			return err
+		}
+		pkgName, err := packageDirName(in.sourceDir)
+		if err != nil {
+			return err
+		}
+		src, err := os.ReadFile(in.abs)
+		if err != nil {
+			return fmt.Errorf("读取源文件: %w", err)
+		}
+
+		// 输出侧：与输入分开计算。
+		// SourcePath 必须相对**目标包目录**（生成头与符号推导的基准）：
+		// 默认输出 = 源目录 → SourcePath = 文件名；
+		// --out-dir → 目标包目录 = outRoot/<rel 目录> → SourcePath = 文件名。
+		targetDir := in.sourceDir
+		if outRoot != "" {
+			targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
+			if err := os.MkdirAll(targetDir, 0o755); err != nil {
+				return fmt.Errorf("创建输出目录 %s: %w", targetDir, err)
+			}
+		}
+		sourcePath := filepath.Base(in.abs)
+		outputName := strings.TrimSuffix(sourcePath, ".gxml") + "_gen.go"
+		target := filepath.Join(targetDir, outputName)
+		if prev, dup := seen[target]; dup {
+			return fmt.Errorf("输出冲突：%q 与 %q 都映射到 %s", prev, in.rel, target)
+		}
+		seen[target] = in.rel
+
+		res := pipeline.Run(sourcePath, src, pipeline.Config{
+			ModuleRoot:  moduleRoot,
+			SourceDir:   in.sourceDir,
+			PackageName: pkgName,
+			SourcePath:  sourcePath,
+		}, pipeline.Hooks{})
+
+		for _, d := range res.Diags {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", d.File, d.Code, d.Message)
+		}
+		if !res.OK() {
+			return fmt.Errorf("生成失败（%s，状态 %v，%d 条诊断）——已成功的文件保持原样，无批次回滚", in.rel, res.Status, len(res.Diags))
+		}
+
+		if _, err := pipeline.Commit(res.Artifact, targetDir); err != nil {
+			return fmt.Errorf("提交生成文件: %w", err)
+		}
+		fmt.Fprintf(stdout, "已生成 %s\n", target)
+		okCount++
 	}
-	fmt.Fprintf(stdout, "已生成 %s\n", target)
+
+	if okCount > 1 {
+		fmt.Fprintf(stdout, "共 %d 个文件生成成功（按 %s 顺序处理）\n", okCount, "路径排序")
+	}
 	return nil
 }
 
