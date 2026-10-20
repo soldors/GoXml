@@ -77,6 +77,7 @@ func rtErr(err error) string {
 const rtProbeHeader = `package demo
 
 import (
+	"fmt"
 	"image"
 	"strings"
 	"testing"
@@ -101,6 +102,7 @@ var (
 	_ = input.Router{}
 	_ = pointer.Press
 	_ = key.NameReturn
+	_ = fmt.Sprint
 	_ = app.RunWindow
 	_ = time.Second
 	_ = strings.Contains
@@ -347,7 +349,7 @@ func TestProbeValueChange(t *testing.T) {
 func rtFilter(out string) string {
 	keep := ""
 	for _, line := range splitLines(out) {
-		if hasAny(line, "像素", "渲染", "err=nil", "FAIL", "ok ") {
+		if hasAny(line, "像素", "渲染", "err=nil", "FAIL", "ok ", "观测") {
 			keep += trimSpace(line) + "\n"
 		}
 	}
