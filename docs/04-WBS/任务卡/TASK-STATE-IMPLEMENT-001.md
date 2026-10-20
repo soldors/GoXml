@@ -2,7 +2,8 @@
 
 ## 元信息
 
-- 状态：**实现已交付；生成构造函数 nil 回归测试已补，待提交证据归档与报告更新** | 优先级：P0
+- 状态：**已完成（2026-10-20 证据归档）**——实现已交付；生成构造函数 nil 回归测试已在
+  `f5c45bd` 提交并实测通过，验收报告已补齐该证据 | 优先级：P0
 - 依赖：S0 核查（`6af05d9`）、S1 契约（`335ad89`）、ADR-0010
 - 范围：**只做本轮四项**，不实现 AOT Diff、事件总线、多窗口订阅
 
@@ -101,9 +102,11 @@ AOT Diff、Deps、细粒度失效、多窗口订阅。
 [`S2状态通知验收报告.md`](../../06-测试/S2状态通知验收报告.md)。
 
 `TestRealWindowNilVMRejected` 测试的是手写同构 View 的构造器，不能替代生成代码测试。
-当前已新增 `TestGeneratedConstructorRejectsNilVM`：通过 `rtProbe` 编译并运行实际生成代码，
-断言 `NewGoxmlDashboardView(nil)` 直接返回 error 且 View 为 nil。测试结果仍属于当前工作区，
-提交后需更新验收报告中的 SHA、命令和退出码，再评估是否关闭本任务。
+`TestGeneratedConstructorRejectsNilVM`（`internal/compiler/codegen/constructor_nil_test.go`）已补齐，
+通过 `rtProbe` 编译并运行实际生成代码，断言 `NewGoxmlDashboardView(nil)` 直接返回 error 且 View 为 nil。
+
+**该测试已随 `f5c45bd` 提交**，2026-10-20 复跑实测通过（`[err=nil]`，包耗时 4.80s），
+AC-002-08 已由「部分通过」更新为「通过」，报告 §1 已补第二个 SHA、§4 已更新状态与证据。
 
 ## 5. 文档变更清单
 
