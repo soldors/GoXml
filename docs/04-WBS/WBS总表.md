@@ -30,7 +30,8 @@
 | TASK-STATE-IMPLEMENT-001 | codegen/runtime | S2 最小状态通知机制与统一绑定 View 接口 | TASK-STATE-001、ADR-0010 | `f5c45bd` 已归档生成构造函数 nil 回归；定向和 Codegen 全包测试通过 |
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` 已实现于 `expander`；剩余：Theme + Codegen 主题色渲染） | TASK-CODEGEN-001 | go test ./internal/compiler/expander/ ./internal/compiler/codegen/ |
 | TASK-THEME-SEAM-001 | theme/contract | 冻结主题/字体接缝（路线 B）：`FontProvider` 契约、`pkg/runtime/theme` 包边界、主题构建入口、文档一致性门禁（**已完成 6/6**） | TASK-CODEGEN-001、ADR-0012 | go test ./contracts/... ./pkg/runtime/... ./internal/docgate/ |
-| TASK-FONT-001-A | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断（**边界与验收矩阵已冻结**；macOS/Linux 仅逻辑单测，标记待验证） | TASK-THEME-SEAM-001 | go test -run TestFontProbe ./pkg/runtime/theme/... |
+| TASK-FONT-001-B | theme/font | 嵌入字体兜底：OFL 字体选型 + 构建期子集化 + `//go:embed` 解析 + 兜底选择 + 体积预算 + 关闭 A 的失败语义缺口（**边界已冻结**；两个开工阻塞项见卡 §7） | TASK-FONT-001-A | go test -run TestEmbeddedFallback ./pkg/runtime/theme/... |
+| TASK-FONT-001-A | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断（**已实现**，Windows 实测；macOS/Linux 待验证） | TASK-THEME-SEAM-001 | go test -run TestFontProbe ./pkg/runtime/theme/... |
 | TASK-FONT-001 | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/ 懒加载（D）；IME 已移出，归 WIDGET-001 | TASK-THEME-SEAM-001 | go test ./pkg/runtime/theme/... （包已创建；A..D 四项为显式 skip 占位用例，**未实现**） |
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |

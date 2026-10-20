@@ -60,7 +60,7 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 | 子任务ID | 内容 | 验收命令 | 前置 |
 |---|---|---|---|
 | TASK-FONT-001-A | 各平台 CJK 系统字体探测（目录、超时、诊断、解析失败继续下一候选）+ `FontProvider` 单元测试 | `go test -run TestFontProbe ./pkg/runtime/theme/...` | `TASK-THEME-SEAM-001-5`（✅ 包已存在）；**边界与验收矩阵已冻结**：[TASK-FONT-001-A.md](TASK-FONT-001-A.md) |
-| TASK-FONT-001-B | 嵌入兜底：`//go:embed` + **构建期**子集化（GB2312 约 6,763 字）+ 增量 ≤3MB 断言 | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | A |
+| TASK-FONT-001-B | 嵌入兜底：`//go:embed` + **构建期**子集化（GB2312 约 6,763 字）+ 增量 ≤3MB 断言 | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | A（✅）；**边界与验收矩阵已冻结**：[TASK-FONT-001-B.md](TASK-FONT-001-B.md)。⚠️ 有两个**开工阻塞项**（卡 §7）：字体产物与上游哈希核对、`fonttools` 可用 |
 | TASK-FONT-001-C | 按字形覆盖的 fallback 链（中英混排、emoji） | `go test -run TestFontFallbackChain ./pkg/runtime/theme/...` | A（+ 可选 B） |
 | TASK-FONT-001-D | 懒加载与加载失败诊断（不阻塞首帧、不静默空白） | `go test -run TestFontLazyLoad ./pkg/runtime/theme/...` | A / B |
 
@@ -162,8 +162,8 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 | 项目 | 内容 |
 |---|---|
 | 当前提交 SHA | 见 dev-log 2026-10-20 §20 / §21（审计 `b05bb12`、接缝冻结提交） |
-| 已完成子任务 | 无（字体实现未开始）；已完成的是**前置**：ADR-0012 决策、`FontProvider` 契约冻结、拆卡，以及 `pkg/runtime/theme` 主题构建入口（THEME-SEAM-001-5）与验收方案清点（-6） |
-| 未完成子任务 | A 探测 / B 嵌入子集 / C fallback 链 / D 懒加载（四项均有显式 skip 占位用例） |
+| 已完成子任务 | A 探测（**已实现**，`c4ec28b`）；B 的**边界与验收矩阵已冻结**（B1–B6，卡 §1–§6） |
+| 未完成子任务 | B 嵌入子集（实现未开始，两个开工阻塞项见 B 卡 §7）/ C fallback 链 / D 懒加载（C、D 仍为显式 skip 占位） |
 | 已运行命令及结果 | 依赖审计：`grep`/`ls`/`Read` 核对调用关系，见 `docs/05-开发/STYLE-FONT依赖审计.md`；四条命令按 §3 表**分别**执行（`go test -run TestFontProbe ./pkg/runtime/theme/...` 等）→ A 为真实断言（已实现），B/C/D 为 `SKIP`（未执行，非通过）；非空转门禁见 `internal/docgate`。⚠️ 曾把四条写成一条 `-run 'A\\|B\\|C\\|D'`——Markdown 转义竖线交给 go test 后是**字面量**，实测 `no tests to run` 且退出码 0（空转报绿），已改回分条写法 |
 | 已知失败或风险 | ① `FontProvider.Resolve` 返回 `string` 标识是否够用，要等 A 的实测；**够不够用都必须书面结论**，不够则走 ADR，不许在实现里暗改（见 A 卡 §4.3）。② 占位用例改名必须与本卡验收命令同步，否则 docgate 报红。③ 背景里的中文渲染实测为本机 Windows 观测，未在 CI 或其它平台复现；A 卡 §5 强制区分「实测 / 待验证」 |
 | 下一位接手人 | `TASK-FONT-001-A`（前置与边界均已就绪）；**不得**并行开 B/C/D |
