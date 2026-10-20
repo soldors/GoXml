@@ -262,3 +262,269 @@ For 内 Input 报错实现 → 未决门槛另立裁决。
 2. 通用能力子任务先行（FromPayload 独立测试）；
 3. Input 接入任务随后；
 4. For 内 Input 报错实现 + 未决门槛另立。
+
+---
+
+# INPUT-001-B v2：四个阻断项修订（2026-10-20）
+
+审查报告（[INPUT-001-B-审查报告.md](INPUT-001-B-审查报告.md)）的四个阻断项
+逐项修订如下。**未修订的裁决维持 v1 原结论**（I-01/I-02/I-06/I-10/I-12/I-13
+语义不变）。
+
+---
+
+## R1-1 修订：FromPayload 最小接口形状
+
+### 1. 载荷来源（不依赖事件名或控件类型）
+
+载荷由 **Schema 声明**决定：`EventSchema.Params` 每一项声明
+`{Name, Type}`。Analyzer 已把它解析为 `ResolvedEvent.Payload []ResolvedParam`
+（含 Name/Type）与 `Mapping []ParamOrigin`（标注每个方法形参来自载荷还是实参）。
+
+因此**载荷来源是 Schema 声明 + Mapping**，不是"事件名是 ValueChanged 所以取
+Editor.Text()"——后者是控件特例，不构成通用能力。
+
+### 2. 事件分派（两个不同 EditorEvent → 两个不同方法）
+
+分派规则的**权威来源是事件声明**，不是运行时类型：
+
+| GXML 声明 | 运行时事件源 | 生成的分派 |
+|---|---|---|
+| `ValueChanged="M"` | `widget.ChangeEvent` | `M(<载荷表达式>)` |
+| `Submit="S"` | `widget.SubmitEvent` | `S(<载荷表达式>)` |
+
+两者**互不回退**：未声明 `Submit` 时不生成 SubmitEvent 处理；声明了两者时
+各自独立轮询。
+
+### 3. 参数映射（v1 只支持单个载荷参数）
+
+**v1 冻结**：一个事件最多 **1 个载荷参数**（Schema 已如此，`EventParam` 仅 1 项）。
+多载荷参数**不在 v1 范围**——Schema 若声明 2 个以上，Analyzer 报 EVENT-004
+（数量不匹配路径已存在）。
+
+载荷与实参的对应顺序：**载荷在前、实参在后**（既有契约 §8.4 R1，Analyzer 已实现）。
+
+### 4. 失败边界（三层各司其职）
+
+| 情形 | 归属 | 码 |
+|---|---|---|
+| 载荷不存在但方法需要参数 | Analyzer | EVENT-004（数量不匹配） |
+| 载荷类别与形参不兼容 | Analyzer | EVENT-006（`payloadCompatible` 按类别比较） |
+| 方法有返回值 | Analyzer | EVENT-007 |
+| 声明了 Schema 未定义的事件名 | Expander | EVENT-002 |
+
+**Codegen 不为载荷报错**：能走到生成的载荷必然已通过上述校验。
+
+### 5. 通用能力的接口形状（可实现、可独立测试）
+
+```text
+输入：ResolvedEvent{Payload, Mapping, Method}
+输出：方法调用的实参列表，其中 FromPayload 项渲染为「控件当前值表达式」
+
+控件侧的契约义务（Input 的接入点）：
+  为每个已声明事件提供一个 Go 表达式，表示该事件的载荷值：
+    ChangeEvent  → <Editor 当前文本>   （如 v.input0.Text()）
+    SubmitEvent  → <SubmitEvent.Text>  （轮询返回值）
+```
+
+**独立测试不依赖 Input**：用 Analyzer 层构造一个带单个 string 载荷的
+`ResolvedEvent`，断言 Codegen 生成 `v.vm.M(<expr>)` 且 `expr` 来自注入的
+载荷表达式。这样通用能力可先于 Input 交付并验收。
+
+---
+
+## R2-1 修订：lastApplied 同步算法（定稿）
+
+### 1. 三个值必须区分
+
+| 值 | 归属 | 含义 |
+|---|---|---|
+| `E` = `Editor.Text()` | Editor | 编辑器**当前**文本（含用户未提交的编辑） |
+| `V` = 绑定表达式取值 | ViewModel 侧 | 外部值（`Value="{x}"` 求值结果） |
+| `A` = `lastApplied` | View（每 Input 一个） | **最近一次经由 SetText 成功应用到 Editor 的外部文本** |
+
+**`A` 的定义**：`A` 只由「SetText 成功」这一个事件更新，
+**不由用户回写更新**。（v1 原记录说"回写后 lastApplied=新值"——**修正**：
+那会让 `A` 与 `E` 混淆。见 §2 的推导。）
+
+### 2. 为什么 A 不能由用户回写更新
+
+反例（MaxLen 截断）：
+- `MaxLen=5`，`E="abcde"`，vm 值为 `"abcde"`，`A="abcde"`；
+- 用户输入第 6 个字符 → Editor 因 MaxLen 截断，`E` 仍是 `"abcde"`、
+  **不产生 ChangeEvent**（Gio 内 `replace` 先截断再改）；
+- 若此帧 vm 侧因别的原因把值改成 `"abcde"`（相同）→ `V == A` → 不 SetText ✓。
+- 但如果 `A` 曾被错误地设为「回写实参」`"abcdeX"`（假设有这么个分支），
+  则 `V("abcde") != A("abcdeX")` → 触发 SetText → **打断光标**。
+
+结论：`A` 必须只反映「真正写进 Editor 的文本」，即 SetText 的实参。
+
+### 3. 同步算法（逐帧执行，顺序固定）
+
+```text
+每帧渲染到该 Input 时：
+  1. 求值 V（绑定表达式）
+  2. if V != A {
+         Editor.SetText(V)     // 应用外部值
+         A = V                 // 仅在 SetText 之后更新——失败则 A 不变
+     }
+  3. 布局 material.Editor(...).Layout(gtx)   // 内部 Update 消费事件
+  4. 消费 EditorEvent（见 R3-1 的位置规则）：
+       ChangeEvent  → 若有 ValueChanged 声明：调用 v.vm.M(Editor.Text())
+       SubmitEvent  → 若有 Submit 声明：调用 v.vm.S(ev.Text)
+```
+
+### 4. 同帧优先级（显式规则）
+
+- **步骤 2 在步骤 4 之前**：外部值先应用，编辑事件后消费。
+- 若同一帧内「外部改了 V」且「用户刚输入」：以**外部值覆盖**为准
+  （步骤 2 先执行）；用户的输入已在 `E` 中，但会被 SetText 覆盖——
+  **这是已知且接受的行为**（v1 不做冲突合并）。
+- 契约正文必须写明这条「外部覆盖本地编辑」的后果与回归测试。
+
+### 5. 文本相同但光标/选区不同
+
+**显式规则**：`V == A` 时不调用 SetText ⇒ **光标、选区、IME 组合状态全部保留**。
+这不是副作用，是契约保证的**唯一手段**——因为 Gio 没有"只更新文本不动光标"的 API。
+
+### 6. `E` 从不被写回 `A`
+
+用户输入只影响 `E` 与（经回写方法）vm 值；`A` 只由步骤 2 更新。
+下一帧若 vm 值已被回写更新为 `E`，则 `V == E`；但 `V != A`（A 还是旧外部值）
+→ 会 SetText！**这会打断光标**。
+
+**因此必须补一条**（v1 遗漏的关键）：
+
+```text
+5. 用户回写后，必须同步 A：
+   ChangeEvent 触发 v.vm.M(text) 之后，若 vm 写入是同步的（v1 全部同步），
+   则立即 A = <该帧回写后的绑定值>。
+   实现形式：回写后重新求值 V 并令 A = V（仅当回写成功）。
+```
+
+这条是 v1 的**真实漏洞**：不补的话，"用户输入 → 回写 → 下一帧 SetText 打断
+光标"会稳定复现。R2-1 的核心价值就在这里。
+
+### 7. 验收矩阵（R2-1）
+
+| 场景 | A 初始 | E 初始 | 动作 | 期望 |
+|---|---|---|---|---|
+| 初始外部值 | "" | "" | V="x" | SetText("x"), A="x" |
+| 用户输入回写 | "x" | "x" | 用户输入 "xy" | M("xy") 调用；A 更新为回写后 V |
+| 回写后下一帧 | "xy" | "xy" | V="xy" | **不 SetText**（光标保留） |
+| 外部改值 | "xy" | "xy" | V="z" | SetText("z"), A="z" |
+| 外部改回 | "z" | "z" | V="xy" | SetText("xy"), A="xy" |
+| MaxLen 截断 | "abcde" | "abcde" | 用户输入第 6 字符 | 无 ChangeEvent、A 不变 |
+| Filter 过滤 | "abc" | "abc" | 用户输入被过滤字符 | 无 ChangeEvent、A 不变 |
+
+---
+
+## R3-1 修订：控件自持事件类别（事件契约补充）
+
+### 1. 两类事件的区分
+
+| 类别 | 消费位置 | 适用 | 理由 |
+|---|---|---|---|
+| **顶部轮询事件** | `Layout` 顶部，所有绘制之前 | Button 的 `Click` | Clickable 只依赖输入区域命中，无布局上下文依赖；顶部消费保证同帧一致 |
+| **控件自持事件** | 控件自身 `Layout` 调用内 | Input 的 `ChangeEvent`/`SubmitEvent` | Editor 的事件消费与**焦点、光标、选区、IME 组合状态**耦合——必须在它自己的布局上下文中执行 |
+
+### 2. Editor 为什么必须自持消费
+
+【外部事实】Gio `widget.Editor.Update(gtx)` 必须在 `Editor.Layout` 之前、
+且使用**该控件的 gtx**（`editor.go` 内部 `processEvents/processKey/processPointer`
+依赖 `gtx.Source` 与 `gtx.Ops` 中的焦点 tag）。把它提到 Layout 顶部会让：
+- 焦点 tag 尚未由本帧 Layout 注册 → 事件无法路由到该 Editor；
+- IME 组合状态与布局上下文错位。
+
+### 3. 状态归属
+
+Editor 状态（文本缓冲/光标/选区/IME）由 `widget.Editor` 实例持有，
+实例由 **View 结构体字段**持有（静态 Input 一个字段）。框架不接管、
+不复制、不在每帧重建。
+
+### 4. 覆盖方式
+
+| 层 | 测试 |
+|---|---|
+| 结构 | 生成代码断言：Editor 的 `Update/Layout` 在控件位置，不在 Layout 顶部（即顶部无 Editor 轮询） |
+| 真实交互 | `input.Router` 合成按键 → ChangeEvent 触发；真实窗口手动验收焦点/IME |
+
+### 5. 事件契约的补充条款（C 阶段写入《事件处理输出契约》）
+
+> **§2 的顶部轮询规则不适用于「控件自持事件」类别。**
+> 判断标准：事件消费是否需要控件自身的布局上下文（焦点 tag、
+> 输入区域、IME 状态）。需要的一律在控件位置消费。
+> 当前该类别成员：`<Input>`。
+
+---
+
+## R4-3 修订：For 内 Input 的正式诊断
+
+### 1. 阶段与归属
+
+**Parser**（与 SCOPE-003 同域）。理由：`containsStatefulNode` 已在 Parser
+遍历 For 子树；Analyzer 虽也有作用域栈，但 Parser 更早、且规则本身是
+**结构限制**而非类型/语义问题。
+
+### 2. 诊断码：`GXML-SCOPE-005`（新增，需先登记）
+
+【项目证据】诊断码目录 §4：`GXML-SCOPE` 已用 002/003/004，空置 001、**005–010**；
+§5 取号规则「取最小的空置号」。→ **SCOPE-005** 是合法的下一个号。
+
+> 002 曾被 SYNTAX-002 借用后归还，但 SCOPE-001 是"已删除不复用"，
+> 005 从未使用——可用。
+
+### 3. 触发条件（精确）
+
+```text
+Parser 遍历到 <For> 节点时：
+  若 containsInputNode(n.For.Children) 为真
+    → 报 GXML-SCOPE-005
+```
+
+- **不论是否有 Key**：有 Key 当前会放行（实测：零诊断），v1 必须拒绝；
+- 检测范围：`<For>` 的直接与间接子树（复用 `containsStatefulNode` 的遍历形态，
+  但单独实现 `containsInputNode`——语义不同：SCOPE-003 管"缺 Key"，
+  SCOPE-005 管"v1 不支持"）；
+- 嵌套 `<For>` 内的 Input 同样命中。
+
+### 4. 诊断消息
+
+```text
+<For> contains <Input>, which is not supported in v1; input controls must be static (outside <For>) until per-row editor lifecycle is specified
+```
+
+中文附注（文档层）：v1 的 Input 只支持静态布局；行内 Input 需要 Editor
+生命周期设计（键语义/光标归属/删除清理），属独立门槛。
+
+### 5. 测试位置与正负例
+
+| 位置 | 用例 |
+|---|---|
+| `internal/compiler/parser/control_flow_test.go` | 正例：For+Key+Input → SCOPE-005；For 无 Key+Input → SCOPE-003（既有规则优先，不叠加两条） |
+| 同上 | 负例：静态 Input（不在 For 内）→ 零诊断；For 内只有 Text/Button → 零 SCOPE-005 |
+| `internal/compiler/diagdoc/` | 新码登记一致性 |
+| `internal/cli/` | 端到端：含 For+Input 的 .gxml 经 CLI 生成 → 退出码 2 + 该码 |
+
+### 6. 与 Codegen 的关系
+
+Codegen 的 default 分支（"`<Input>` is not supported"）**保留为防御层**，
+但正常管线不可达——Parser 已拦。这与 `<For>` 缺 Key 的
+"Parser 拦 + Codegen 兜底"形态一致（B 阶段既有实践）。
+
+---
+
+## v2 修订汇总
+
+| 阻断项 | 状态 |
+|---|---|
+| R1-1 | ✅ 已补：载荷来源=Schema+Mapping、分派=声明驱动、v1 单载荷参数、四类失败边界、可独立测试的能力形状 |
+| R2-1 | ✅ 已补：三值定义、A 只由 SetText 更新、**回写后必须同步 A（v1 真实漏洞）**、同帧优先级、光标显式规则、7 场景验收矩阵 |
+| R3-1 | ✅ 已补：两类事件区分、Editor 自持理由（焦点 tag/IME）、状态归属、覆盖方式、事件契约补充条款 |
+| R4-3 | ✅ 已补：Parser 归属、SCOPE-005（经 §4/§5 核对为空置可取）、精确触发条件、消息、正负例位置 |
+
+**冻结建议**：四项阻断已关闭，可进入冻结流程（《Input 输出契约》+ ADR），
+随后 C 阶段接口同步。
+
+**仍然未决**（不因本轮修订而消解）：`<For>` 内 Editor 生命周期
+（本轮只冻结"v1 编译期拒绝"，生命周期设计仍为独立门槛）。
