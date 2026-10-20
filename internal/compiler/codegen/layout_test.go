@@ -125,9 +125,10 @@ func TestGapUsesNative(t *testing.T) {
 				t.Errorf("不应生成 layout.Inset 模拟间距，实际出现 %d 处\n%s", n, out)
 			}
 
-			// 4. 子项仍是两个 Rigid（`Gap` 不改变子项结构）。
-			if got := strings.Count(string(out), "layout.Rigid("); got != 2 {
-				t.Errorf("Rigid 子项数应为 2，实际 %d\n%s", got, out)
+			// 4. Gap 不得引入额外的布局层（契约 §3「不产生新轴」）。
+			//    Flex 数应恒为 2：外层 <Page> + 本容器。
+			if got := len(flexLits(t, out)); got != 2 {
+				t.Errorf("Flex 层数应为 2（<Page> + <%s>），实际 %d\n%s", tc.tag, got, out)
 			}
 		})
 	}
