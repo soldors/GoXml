@@ -19,6 +19,7 @@
 | TASK-GENERATE-CLI-001 | cli/generate | 实现 Generate CLI、Manifest 与输出清理边界 | TASK-CODEGEN-001、TASK-ORCH-001、TASK-SEC-001 | go test -v ./cmd/goxml/... |
 | TASK-INPUT-001 | compiler/input | Input 控件契约阶段：现状审计、语义裁决、输出契约冻结（先契约后实现） | TASK-STATE-001、TASK-BINDING-IMPLEMENT-001、TASK-GENERATE-CLI-001 | go test ./internal/cli/ ./internal/compiler/codegen/ |
 | TASK-EVENT-PAYLOAD-001 | compiler/codegen | 事件载荷的通用生成能力（FromPayload 渲染 + 独立测试），先于 Input 事件实现 | TASK-BINDING-IMPLEMENT-001、TASK-CODEGEN-001 | go test -run TestEventPayload ./internal/compiler/codegen/ |
+| TASK-INPUT-001-D4-A | compiler/codegen | Input 控件结构与事件接线（Editor 字段、属性透传、控件自持消费、载荷接线） | TASK-EVENT-PAYLOAD-001、TASK-INPUT-001 | go test -run TestInputCodegen ./internal/compiler/codegen/ |
 | TASK-DEMO-001 | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | go test -v ./pkg/runtime/app/ |
 | TASK-SEC-001 | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | 见任务卡 |
 | TASK-STATE-001 | codegen/runtime | 状态更新与 UI 自动刷新（AOT Diff 降为 S5 评估项） | TASK-CODEGEN-001 | 见 `TASK-STATE-001` 分阶段验收 |

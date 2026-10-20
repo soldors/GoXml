@@ -193,6 +193,10 @@ type generator struct {
 	currentFor *contracts.NodeIR
 	// guards 是当前所处的 <If> 分支条件（由外到内）。
 	guards []guardCond
+	// inputSlots 是页面中 <Input> 的数量（生成 input<n> 字段）。
+	inputSlots int
+	// inputs 记录每个 <Input> 的生成信息（D4-A）。
+	inputs []inputSlot
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -570,6 +574,9 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 	case "Button":
 		return g.buttonExpr(n)
 
+	case "Input":
+		return g.inputExpr(n)
+
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
 		fields, err := flexFieldsExpr(n.Tag, n)
@@ -789,6 +796,12 @@ func (g *generator) assemble(body string) (string, error) {
 		// 交互控件状态：每个 <Button> 一个，跨帧地址不变（契约 §1.3）。
 		for i := 0; i < g.clickSlots; i++ {
 			b.WriteString(fmt.Sprintf("\tclick%d widget.Clickable\n", i))
+		}
+		// Input 的编辑器实例：每个 <Input> 一个，跨帧稳定（契约 §6.3）。
+		// applied<n> 是 lastApplied 占位——D4-B 实现同步算法时使用。
+		for i := 0; i < g.inputSlots; i++ {
+			b.WriteString(fmt.Sprintf("\tinput%d widget.Editor\n", i))
+			b.WriteString(fmt.Sprintf("\tapplied%d string\n", i))
 		}
 		// 行状态池：每个含交互控件的 <For> 一个（<For> 列表契约 §3.2）。
 		// map 元素不可寻址，必须存指针。
