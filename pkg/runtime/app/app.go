@@ -1,7 +1,11 @@
 // Package app 提供把生成视图接入 Gio 主循环的最小运行入口。
 //
 // 职责（运行时入口契约 §1）：创建窗口、驱动事件循环、处理退出。
-// 不做路由、生命周期、主题构建、热重载——那些属于 pkg/runtime/ 的其它包。
+// 不做路由、生命周期、热重载——那些属于 pkg/runtime/ 的其它包。
+//
+// 主题：本包**不构建**主题。默认主题取自 pkg/runtime/theme.NewTheme()；
+// 调用方也可通过 RunWith / NewApp / RunWindow* 显式注入自己的主题
+// （两条路径并存是有意的，见 Run 与 RunWith 的文档）。
 package app
 
 import (
@@ -13,6 +17,8 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
+
+	"github.com/goxml/goxml/pkg/runtime/theme"
 )
 
 // View 是可被渲染的页面。
@@ -46,6 +52,16 @@ const (
 // 生产代码从不修改它。
 var mainFunc = app.Main
 
+// newTheme 是默认主题构建入口的注入点（与 mainFunc 同构）。
+//
+// 存在的唯一理由：默认主题来自 pkg/runtime/theme，而测试需要在**不启动
+// 主循环**的前提下证明 Run 确实走了这个入口，而不是绕回
+// material.NewTheme()。生产代码从不修改它。
+//
+// 它只影响 Run（便捷入口）。RunWith / NewApp / RunWindow* 走显式注入，
+// 与本变量无关——这是两条路径的行为差异，不可合并。
+var newTheme = theme.NewTheme
+
 // Invalidator 是状态变化后请求重新布局的入口（状态更新契约 §2）。
 //
 // 职责**只有**一个：请求窗口产生下一帧。它不修改任何状态、不感知
@@ -76,10 +92,14 @@ func (c Config) withDefaults() Config {
 
 // Run 启动主循环，直到窗口关闭。
 //
-// 内部创建主题并传给 View.Layout。本函数阻塞，且必须调用 Gio 的
-// app.Main()——该函数要求运行在主系统线程（契约 §4）。
+// 默认主题由 pkg/runtime/theme.NewTheme() 构建（路线 B：字体决策在运行时
+// 一侧），传给 View.Layout。需要复用主题、注入受控主题或注入字体策略时，
+// 改用 RunWith / NewApp——本函数**不会**把默认主题暴露给调用方。
+//
+// 本函数阻塞，且必须调用 Gio 的 app.Main()——该函数要求运行在主系统线程
+// （契约 §4）。
 func Run(view View, cfg Config) error {
-	return RunWith(view, material.NewTheme(), cfg)
+	return RunWith(view, newTheme(), cfg)
 }
 
 // App 是生产形态的运行入口：先持有句柄，后阻塞驱动（ADR-0010 实现项）。
@@ -154,6 +174,10 @@ func (a *App) Run() error {
 //
 // 注入主题的意义：主题可能带有字体集合等初始化成本，调用方可能希望
 // 在多个窗口间复用，或在测试中传入受控主题。
+//
+// 与 Run 的边界：**本函数不调用默认主题构建入口**（pkg/runtime/theme.NewTheme
+// 只由 Run 使用）。注入的 `*material.Theme` 按原样传给 View.Layout，
+// 不复制、不二次构建。
 //
 // 一行式形态：内部 NewApp + Run。需要在后台 goroutine 触发重绘时，
 // 请改用 NewApp 拿句柄——RunWith 返回时阻塞已结束，句柄无处可取。

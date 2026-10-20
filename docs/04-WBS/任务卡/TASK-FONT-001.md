@@ -1,7 +1,7 @@
 # TASK-FONT-001：实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收
 
 ## 元信息
-- 状态：Todo（**已拆卡**，见 §3；实现等待 `TASK-THEME-SEAM-001` 的 -5）| 优先级：P0 | 预计：8h
+- 状态：Todo（**已拆卡**，见 §3；前置 `TASK-THEME-SEAM-001` **已完成**，可开工）| 优先级：P0 | 预计：8h
 - 分支：feature/TASK-FONT-001
 - 依赖：`TASK-THEME-SEAM-001`（接口与包边界）｜**不再是 `TASK-STYLE-001`**
   - 审计结论（`docs/05-开发/STYLE-FONT依赖审计.md`）：`<Def>/<Slot>` 宏展开与字体无代码耦合，
@@ -59,13 +59,22 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 
 | 子任务ID | 内容 | 验收命令 | 前置 |
 |---|---|---|---|
-| TASK-FONT-001-A | 各平台 CJK 系统字体探测（目录、超时、诊断、解析失败继续下一候选）+ `FontProvider` 单元测试 | `go test -run TestFontProbe ./pkg/runtime/theme/...` | `TASK-THEME-SEAM-001-5`（包存在） |
+| TASK-FONT-001-A | 各平台 CJK 系统字体探测（目录、超时、诊断、解析失败继续下一候选）+ `FontProvider` 单元测试 | `go test -run TestFontProbe ./pkg/runtime/theme/...` | `TASK-THEME-SEAM-001-5`（✅ 包已存在） |
 | TASK-FONT-001-B | 嵌入兜底：`//go:embed` + **构建期**子集化（GB2312 约 6,763 字）+ 增量 ≤3MB 断言 | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | A |
 | TASK-FONT-001-C | 按字形覆盖的 fallback 链（中英混排、emoji） | `go test -run TestFontFallbackChain ./pkg/runtime/theme/...` | A（+ 可选 B） |
 | TASK-FONT-001-D | 懒加载与加载失败诊断（不阻塞首帧、不静默空白） | `go test -run TestFontLazyLoad ./pkg/runtime/theme/...` | A / B |
 
-> ⚠️ 上述四条命令在 `pkg/runtime/theme` 创建前**全部空转**（目录不存在）。
-> 按现行纪律，不能把"命令返回 ok"当成通过。
+> ⚠️ 曾经的空转状态（2026-10-20 前）：`pkg/runtime/theme` 不存在时，四条命令都匹配
+> 0 个包却返回 ok。按纪律不能把「命令返回 ok」当成通过。
+>
+> ✅ 2026-10-20 `TASK-THEME-SEAM-001-5/-6` 之后：包已建立，且 A..D 各有一个**同名
+> 显式 `t.Skip` 占位用例**（`pkg/runtime/theme/font_pending_test.go`）。因此四条命令
+> 会真实命中测试、输出 `--- SKIP: ...`，「未执行」在日志里一眼可见，**不会**被误读为通过。
+> `internal/docgate` 的 `TestFont001AcceptanceCommandsAreNotVacuous` 负责阻止它们重新退化为
+> 空转（包路径不存在、或 `-run` 匹配不到任何测试，都会变红）。
+>
+> 接线纪律：实现某一项时把对应 `t.Skip` 换成真实断言，**函数名保持不变**；
+> 若必须改名，同步改本表，否则门禁会红。
 
 ### 3.1 IME 已移出本卡
 
@@ -113,6 +122,8 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 
 | 文件/模块 | 责任 |
 |---|---|
+| `pkg/runtime/theme/theme.go` | 主题构建入口 `NewTheme()`（**已创建**，当前只包装 Gio 默认主题；`pkg/runtime/app` 的默认来源） |
+| `pkg/runtime/theme/font_pending_test.go` | FONT-001-A..D 的显式 skip 占位用例（**已创建**） |
 | `pkg/runtime/theme/font.go` | 字体探测、fallback 链、懒加载（**待创建**） |
 | `pkg/runtime/theme/font_embed.go` | 嵌入子集与 `//go:embed`（**待创建**） |
 | `pkg/runtime/theme` 的主题构建入口 | 把解析结果装进 `text.Shaper`，产出 `*material.Theme`（路线 B，ADR-0012 决策 1） |
@@ -146,8 +157,8 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 | 项目 | 内容 |
 |---|---|
 | 当前提交 SHA | 见 dev-log 2026-10-20 §20 / §21（审计 `b05bb12`、接缝冻结提交） |
-| 已完成子任务 | 无（实现未开始）；已完成的是**前置**：ADR-0012 决策、`FontProvider` 契约冻结、拆卡 |
-| 未完成子任务 | A 探测 / B 嵌入子集 / C fallback 链 / D 懒加载 |
-| 已运行命令及结果 | 依赖审计：`grep`/`ls`/`Read` 核对调用关系，见 `docs/05-开发/STYLE-FONT依赖审计.md`；本轮未跑字体测试（包不存在） |
-| 已知失败或风险 | ① `FontProvider.Resolve` 返回 `string` 标识是否够用，要等 A 的实测；改签名须走 ADR。② `pkg/runtime/theme` 未创建前四条验收命令全部空转。③ 背景里的中文渲染实测为本机 Windows 观测，未在 CI 或其它平台复现 |
-| 下一位接手人 | `TASK-THEME-SEAM-001-5` → `TASK-FONT-001-A` |
+| 已完成子任务 | 无（字体实现未开始）；已完成的是**前置**：ADR-0012 决策、`FontProvider` 契约冻结、拆卡，以及 `pkg/runtime/theme` 主题构建入口（THEME-SEAM-001-5）与验收方案清点（-6） |
+| 未完成子任务 | A 探测 / B 嵌入子集 / C fallback 链 / D 懒加载（四项均有显式 skip 占位用例） |
+| 已运行命令及结果 | 依赖审计：`grep`/`ls`/`Read` 核对调用关系，见 `docs/05-开发/STYLE-FONT依赖审计.md`；`go test -run 'TestFontProbe\|TestEmbeddedFallback\|TestFontFallbackChain\|TestFontLazyLoad' ./pkg/runtime/theme/` → 4 项 `SKIP`（未执行，非通过）；四条命令的非空转门禁见 `internal/docgate` |
+| 已知失败或风险 | ① `FontProvider.Resolve` 返回 `string` 标识是否够用，要等 A 的实测；改签名须走 ADR。② 占位用例改名必须与本卡验收命令同步，否则 docgate 报红。③ 背景里的中文渲染实测为本机 Windows 观测，未在 CI 或其它平台复现 |
+| 下一位接手人 | `TASK-FONT-001-A`（前置已就绪） |
