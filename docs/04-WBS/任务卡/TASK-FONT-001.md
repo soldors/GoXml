@@ -242,4 +242,4 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 
 | 提交 | 内容 |
 |---|---|
-| 待填 | TASK-FONT-001-C 实现（见 dev-log 2026-10-21 §29） |
+| `5aea209` | `feat(font)`：TASK-FONT-001-C 实现（GlyphID 反解与 notdef 可观测、覆盖判定准入、按需补充链、emoji 降级），10 个验收用例全 PASS，5 次变异全部如期变红。记录见 dev-log 10-21 §29 |
