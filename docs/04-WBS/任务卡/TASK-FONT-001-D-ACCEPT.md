@@ -46,7 +46,7 @@
 | # | 验收点（D 卡 §7） | 由谁覆盖 | 用例名 | 实测值 |
 |---|---|---|---|---|
 | 1 | 冷启动首帧不等待加载 | **本卡**（端到端实测，IMPL-2 只提供切换点） | `TestFontLazyLoadFirstFrameNotBlocked`（本卡创建） | 待实测 |
-| 2 | 后台完成时间可观测 | IMPL-1 | `TestFontLazyLoadDiagnosticsFields`（成功：`CompletedAt >= LoadedAt`、`LoadElapsed>0` 且 `>=ProbeElapsed`）+ `TestFontLazyLoadFailureCompletedAt`（失败：`LoadedAt` 零值但 `CompletedAt`/`LoadElapsed` 非零） | 待实测 |
+| 2 | 后台完成时间可观测 | IMPL-1 | `TestFontLazyLoadDiagnosticsFields`（成功：`CompletedAt >= LoadedAt`、`LoadElapsed>0` 且 `>=ProbeElapsed`）+ `TestFontLazyLoadFailureCompletedAt`（失败：`LoadedAt` 零值但 `CompletedAt`/`LoadElapsed` 非零） | 待实测（IMPL-1 部分已 PASS，`DiagnosticsFields` 属 IMPL-3） |
 | 3 | 后续帧稳定（无重复解析/无重复 shaping） | IMPL-2 | `TestFontLazyLoadNoRepeatShaping` | 待实测 |
 | 4 | **系统命中时不解析嵌入**（既有 B4 约束） | 本卡（回归） | `TestEmbeddedFallbackSelectionOrder`（既有） | 待复核 |
 | 5 | 并发首次请求合并 | IMPL-1 | `TestFontLazyLoadCoalesce` | 待实测 |
@@ -96,7 +96,7 @@
 | B4 约束未失效 | `TestEmbeddedFallbackSelectionOrder` + `TestFontLazyLoadTempDoesNotPolluteProbe` | 系统命中 ⇒ `Embedded.Attempted==false`（临时主题的嵌入解析不得写进该字段） |
 | 同步严格语义未退化 | `TestFontProbeErrFontNotFound` + `app.Run` 严格失败用例 | 仍返回 `ErrFontNotFound` |
 | 路由 B 边界 | `TestThemePackageBoundary`、`TestGeneratedLayoutSignatureMatchesRouteB` | 全绿（生成代码仍只认 `*material.Theme`） |
-| `th.Shaper` 赋值点 | `grep -rn "\.Shaper *=" --include=*.go pkg/ \| grep -v _test.go` | **恰好 2 处**：`theme.go` 既有同步构建（不计入）+ `app` 帧内切换（唯一 1 处）。出现第 3 处即失败 |
+| `th.Shaper` 赋值点 | `grep -rn "\.Shaper *=" --include=*.go pkg/ \| grep -v _test.go \| grep -v /testdata/` | **恰好 3 处**（IMPL-1 阶段）：`theme.go` 既有同步构建 1 处 + `theme_build.go` 的两处构造（临时主题 / 真主题）。`pkg/runtime/app` 的**生产代码 0 处**（帧内切换归 IMPL-2，接入后应为 1，总数变 4）。`testdata/` 下的探针程序不计入（它们是实验代码，不是产品路径）。出现额外处即失败 |
 | `NotifyLateBound` 写入点 | `grep -rn "NotifyLateBound" --include=*.go pkg/` | 写入点**恰好 1 处**（`lazy.go` 的 `SetNotify` 内）；`pkg/runtime/app/` **零命中**（第 3 版问题 C：责任归 IMPL-1） |
 | 临时主题并发只构造一次 | `TestFontLazyLoadTempBuiltOnceConcurrent` | 32 goroutine 并发首次 `Request()` → 嵌入解析计数器 `== 1`（第 3 版问题 A） |
 | 占位不再空转 | `go test -v -run TestFontLazyLoad ./pkg/runtime/theme/` | 有 `--- PASS`/`--- FAIL` 行，**不是** `no tests to run` |

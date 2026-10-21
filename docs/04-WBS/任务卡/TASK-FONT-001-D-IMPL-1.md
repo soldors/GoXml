@@ -1,8 +1,9 @@
-# TASK-FONT-001-D-IMPL-1：异步加载器与状态机（第 3 版接口已冻结，实现未开始）
+# TASK-FONT-001-D-IMPL-1：异步加载器与状态机（已实现）
 
 ## 元信息
 
-- 状态：**接口与并发语义已冻结（第 3 版，按评审意见修正 3 处接口矛盾），实现未开始**
+- 状态：**已实现**（按第 3 版接口，17 个用例全 PASS，结构门禁反向验证通过）
+- 实现提交：见 §11（提交后补记 SHA）
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
 - 前置：`TASK-FONT-001-D` §10 第 2 步（2a `d7268e5` + 2b `2fc61a7`）**均已完成**
 - 交付物：`pkg/runtime/theme/lazy.go` + 同包测试 + `internal/docgate` 一条结构门禁
@@ -401,6 +402,7 @@ type LoadReport struct {
 | `TestFontLazyLoadTempBuiltOnceConcurrent` | **32 goroutine 同时首次 `Request()`**：嵌入解析计数器 `== 1`，`TempElapsed` 只写一次且重试后不变（第 3 版问题 A） | §1.1 / §4.1 |
 | `TestFontLazyLoadSetNotifyNil` | `SetNotify(nil)` → false、不 panic、永不触发；`NotifyLateBound==true`；随后正常 `SetNotify(fn)` 仍返回 false（一旦失败不再给第二次机会） | §2.1（第 3 版问题 C） |
 | `TestFontLazyLoadFailureCompletedAt` | 失败路径：`LoadedAt` 零值、`CompletedAt` 非零、`LoadElapsed > 0` 且 ≈ `CompletedAt-RequestedAt`（第 3 版问题 B） | §5.0 |
+| `TestFontLazyLoadReportIsCopy` | 改 `Report()` 返回的 `Candidates` 元素/切片长度、`State`，内部状态纹丝不动（深拷贝三处：`Candidates` / `Embedded` / `Coverage.Missing`） | §5 |
 
 **关于 `TestFontLazyLoadNonBlockingOnLoading` 的边界（第 3 版补）**：它只证明
 `Request()` 不等后台加载器，**不能**推断首帧预算达标——首帧预算要含窗口创建与
@@ -425,7 +427,7 @@ go vet ./pkg/runtime/theme/ ./internal/docgate/
 
 ## 9. 完成判据
 
-1. §7 **十六个**用例全部 PASS（贴 `--- PASS:` 输出，不贴退出码）；
+1. §7 **十七个**用例全部 PASS（贴 `--- PASS:` 输出，不贴退出码）；
 2. `TestAsyncPathNoRenderShaper` 生效，且**做过一次反向验证**（故意在 `lazy.go`
    里加一行 `_ = th.Shaper`，门禁必须变红，然后撤回）；
 3. **失败路径的后台耗时真实可读**：`LoadedAt` 零值 而 `CompletedAt` 非零、
@@ -445,3 +447,56 @@ go vet ./pkg/runtime/theme/ ./internal/docgate/
 - 不实现 `MarkFrameSubmitted` / `MarkFirstLayout` 的调用点（只提供幂等方法）；
 - 不给 `CandidateResult` 加分段计时（A 卡范围）；
 - 不碰 Linux（独立待办，见 D 卡 §12.5）。
+
+## 11. 实施记录（2026-10-21）
+
+### 11.1 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `pkg/runtime/theme/lazy.go` | `LoadState` / `LazyOptions` / `LoadReport` / `Lazy` 全部实现；**零 `.Shaper` 选择子** |
+| `pkg/runtime/theme/theme_build.go` | 两个构造入口：`newTempTheme`（方案 c）与 `newThemeWithFaces`（真主题）。**两处 `.Shaper =` 集中在此** |
+| `pkg/runtime/theme/lazy_test.go` | 17 个用例（§7 十六条 + `ReportIsCopy`） |
+| `internal/docgate/font_lazy_test.go` | `TestAsyncPathNoRenderShaper` + 两条自检子用例 |
+| `pkg/runtime/theme/font_pending_test.go` | 删除 `TestFontLazyLoad` 的 `t.Skip` 占位（D 已实现），保留前缀约定说明 |
+
+### 11.2 实测结果
+
+- `go test -run TestFontLazyLoad ./pkg/runtime/theme/`：**17/17 PASS**（顶层用例，含子测试共 21 个断言组）。
+- `go test ./pkg/runtime/theme/ ./pkg/runtime/app/ ./internal/docgate/`：全 ok
+  （theme 14.8s / app 1.4s / docgate 0.6s），既有 A/B/C 用例未被打破。
+- `TestAsyncPathNoRenderShaper` **反向验证**：在 `lazy.go` 的 `load()` 里插入
+  `_ = next.Shaper` → 门禁退出码 **1**，报错精确指向该文件与原因；撤回后复跑退出码 **0**。
+- `grep -rn "NotifyLateBound = " pkg/ | grep -v _test.go` → **恰好 1 处**（`SetNotify` 内）；
+  `pkg/runtime/app` 零命中。
+- `theme.NewTheme()` / `NewThemeWithReport()` / `pkg/runtime/app` **一行未改**。
+
+### 11.3 实现期发现的三件事（写进卡，避免后来人重踩）
+
+1. **`Provider` 在整段探测期间持有 `Provider.mu`**（`ResolveWithReport` 里
+   `defer Unlock`，`probe` 在锁内跑）。所以**探测进行中不得查询 `Scans()` /
+   `Faces()` / `LastReport()`**——会一直阻塞到探测结束。
+   并发合并用例的第一版就因此把测试自己测成了死锁（主 goroutine 卡在
+   `p.Scans()`，后台卡在注入的 `Read`）。改为：探测中只读 `Lazy.Report().Attempts`
+   （只受 `Lazy.mu` 保护），等状态终结后再查 `Scans()`。
+2. **本机时钟粒度会让"快速失败"的耗时读成 0**。一次「文件不存在」的失败
+   可以整个落在同一个时钟刻度内，`LoadElapsed` 与 `ProbeElapsed` 都**真的**是 0。
+   这不是公式错，但让"失败也记耗时"的断言变得依赖"它恰好慢"。
+   测试改为注入 2ms 读取延迟，给公式一个可测下限。
+   **边界**：0 值在真实世界里仍会出现，只能说明"它快"，不能说明"没记录"。
+3. **`NotifyLateBound` 的写入点要刻意收敛成一处**。初版按语义分了三段
+   `return false`，自然就写了三次；验收判据是 `grep` 命中 **1 处**，
+   于是合并成单点判定。判据这样定的好处是**人手可核对**：
+
+   ```bash
+   grep -rn "NotifyLateBound = " --include=*.go pkg/ | grep -v _test.go | wc -l   # 期望 1
+   ```
+
+### 11.4 未做（严格按 §10）
+
+不改 `pkg/runtime/app`；不改同步 `NewTheme` 路径；`MarkFrameSubmitted` /
+`MarkFirstLayout` 只提供幂等入口、不接线；不给 `CandidateResult` 加分段计时；
+不碰 Linux。
+
+**验收边界**：本卡全绿只代表**状态机满足契约**，不代表字体已在真实窗口中正确
+切换（IMPL-2），也不代表首帧预算达标（ACCEPT）。

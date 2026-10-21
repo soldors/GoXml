@@ -1,7 +1,5 @@
 package theme
 
-import "testing"
-
 // ============================================================================
 // TASK-FONT-001-A..D 的**占位用例**（THEME-SEAM-001-6）
 //
@@ -32,9 +30,10 @@ import "testing"
 // SupplementOnDemand / CoverageInsufficient / ProbeCost）。
 // 前缀 TestFontFallbackChain 保持不变，任务卡的验收命令才不会退化为空转。
 
-// TestFontLazyLoad 占位：TASK-FONT-001-D 懒加载与加载失败诊断。
-func TestFontLazyLoad(t *testing.T) {
-	t.Skip("未执行：TASK-FONT-001-D 未实现。需要覆盖：不在 init/main 同步加载、" +
-		"首次 shaping 时加载或异步加载后 Invalidate、加载不阻塞首帧、" +
-		"失败时给出诊断而非静默空白")
-}
+// TestFontLazyLoad 已由 TASK-FONT-001-D-IMPL-1 实现：占位用例删除，真实断言见
+// lazy_test.go（TestFontLazyLoadStateMachine / NoIOOnConstruct / Coalesce /
+// NonBlockingOnLoading / NoAutoRetry / ExplicitRetry / ThemeHasNoSideEffects /
+// TakeOnce / FailureKeepsTemp / NotifyBeforeRequest / NotifyAfterRequest /
+// TempOnlyBuiltOnce / TempBuiltOnceConcurrent / TempDoesNotPolluteProbe /
+// SetNotifyNil / FailureCompletedAt / ReportIsCopy）。
+// 前缀 TestFontLazyLoad 保持不变，任务卡的验收命令才不会退化为空转。

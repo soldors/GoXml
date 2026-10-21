@@ -271,14 +271,18 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   ⑥ 系统探测 ~110 ms 超 20 ms 预算，归 D。
   ⑦ `examples/demo` 注入 `material.NewTheme()`，不链接 theme 包——旗舰样例
   看不到嵌入兜底与字体诊断，属 DEMO 线边界，本卡只记录不改 |
-| 下一位接手人 | `TASK-FONT-001-D-IMPL-1`：异步加载器与状态机（**第 3 版接口已冻结**，
-  见 `TASK-FONT-001-D-IMPL-1.md`）。**可以开工编码**。
+| 下一位接手人 | `TASK-FONT-001-D-IMPL-2`：帧内切换与布局一致性（**接口第 3 版已冻结，实现未开始**）。
+  `TASK-FONT-001-D-IMPL-1` **已实现**（2026-10-21）：`pkg/runtime/theme/lazy.go`
+  （状态机/报告/通知）+ `theme_build.go`（两个构造入口）+ `lazy_test.go`（17 用例）
+  + `internal/docgate/font_lazy_test.go`（`TestAsyncPathNoRenderShaper`，
+  **反向验证已做**：插入 `_ = next.Shaper` → 门禁退出码 1，撤回后 0）。
+  `pkg/runtime/app` 与 `theme.NewTheme()` 同步路径**一行未改**。
   D 的 2a/2b 前置门禁已全部通过（D 卡 §4.3 / §4.3.5），第 4 步已拆为
   IMPL-1 → IMPL-2 → IMPL-3 → ACCEPT 四张卡，**按序推进，不得跳卡**。
   三条验收规则在每张卡都要逐条核对，不要留到 ACCEPT：
   R1 加载完成 ≠ 已提交（`LoadedAt` 与 `FrameSubmittedAt` 两个字段两个写入点；
   后者只是"帧提交返回"的代理指标，**不得**表述为屏幕呈现）；
-  R2 异步路径不得查询渲染 shaper（`th.Shaper` 只在帧内换）；
+  R2 异步路径不得查询渲染 shaper（`lazy.go` 零 `.Shaper`，已由 docgate 静态锁住）；
   R3 四个性能指标独立验收（M2 探测段不设通过阈值、M3 为
   `CompletedAt - RequestedAt` 且**失败路径也要记**），不得互相替代、不得报"总耗时"。
   四张卡已于 2026-10-21 出**第 2 版**（评审 6 条全采纳：`SetNotify` 后绑定、
@@ -288,9 +292,12 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   ① `Request()` **不承诺零阻塞**——首次会同步构造一次临时主题（~1.4–1.7 ms，
   记 `TempElapsed`），只承诺"不等待后台加载完成"；
   ② 新增 `CompletedAt`，`LoadElapsed = CompletedAt - RequestedAt`，
-  失败路径同样记录真实耗时（原来的 `LoadedAt-RequestedAt` 在失败时直接失效）；
+  失败路径同样记录真实耗时；
   ③ `NotifyLateBound` 由 `SetNotify` 内部写（`pkg/runtime/app` 零命中），
   且 `SetNotify(nil)` 冻结为返回 false、不绑定、不 panic。
+  **实现期新增两条约束（IMPL-1 §11.3）**：`Provider` 在整段探测期间持锁，
+  探测中查 `Scans()`/`Faces()`/`LastReport()` 会阻塞；本机时钟粒度会让
+  极快的失败读出 0 耗时，断言"失败也记耗时"必须给失败路径一个可测下限。
   另有一处语义冲突已裁决（D 卡 §12.4）：异步化不得让 `app.Run` 的同步严格语义
   静默消失，两者并存，异步侧用 `StrictFontFailure` 开关。
   **跨平台验证应并行推进**：Linux 无 CJK 字体环境下的嵌入增量验证是 C 的

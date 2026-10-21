@@ -1,0 +1,277 @@
+package codegen
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// ============================================================================
+// TASK-CODEGEN-NAMING-001 切片 C1：包级符号预检
+//
+// 红灯证据（本轮已实测）：改实现之前，两个源文件的生成片段都声明
+// renderKey / textCache —— 同包多 .gxml 必然无法编译。该证据被保留在
+// TestNamingDetectsSameBatchConflict 的断言里（先证明缺陷存在，再证明预检能报出它）。
+//
+// 变红方式（已实测）：
+//   - detectNamingConflicts 直接返回 nil（不检测）→ 本文件全部冲突用例红；
+//   - 去掉 isOwnArtifact 的排除逻辑 → TestNamingIgnoresOwnArtifact 红；
+//   - 把 existingPackageSymbols 的 `_test.go` 过滤去掉 → TestNamingIgnoresTestFiles 红。
+// ============================================================================
+
+// declaredPackageNames 解析一段生成片段，返回其中的**包级**标识符。
+//
+// 方法（FuncDecl 带接收者）不算包级符号——它们挂在类型上，只有类型参与包级冲突。
+func declaredPackageNames(t *testing.T, snippet string) map[string]bool {
+	t.Helper()
+	src := "package p\n\n" + snippet
+	f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", src, 0)
+	if err != nil {
+		t.Fatalf("生成片段不是合法 Go：%v\n片段:\n%s", err, snippet)
+	}
+	return declNamesOf(f)
+}
+
+func declNamesOf(f *ast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, d := range f.Decls {
+		switch dd := d.(type) {
+		case *ast.FuncDecl:
+			if dd.Recv == nil {
+				names[dd.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range dd.Specs {
+				switch sp := spec.(type) {
+				case *ast.TypeSpec:
+					names[sp.Name.Name] = true
+				case *ast.ValueSpec:
+					for _, n := range sp.Names {
+						names[n.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// namingTargets 为一批源文件构造 targets（源文件不必真实存在，C1 不读 .gxml）。
+func namingTargets(dir string, sources ...string) []namingTarget {
+	out := make([]namingTarget, 0, len(sources))
+	for _, s := range sources {
+		base := strings.TrimSuffix(filepath.Base(s), ".gxml")
+		out = append(out, namingTarget{
+			SourceAbs:  filepath.Join(dir, s),
+			SourcePath: s,
+			TargetDir:  dir,
+			OutputPath: filepath.Join(dir, base+"_gen.go"),
+		})
+	}
+	return out
+}
+
+// symbolsOf 抽出冲突结果里的符号名（便于断言）。
+func symbolsOf(cs []namingConflict) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.Symbol)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func hasConflict(cs []namingConflict, symbol string, kind namingConflictKind) bool {
+	for _, c := range cs {
+		if c.Symbol == symbol && c.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// TestNamingDetectsSameBatchConflict：同包两个源 → 预检必须报出 renderKey / textCache 冲突。
+//
+// 前半段先证明「缺陷确实存在」（两个片段确实声明了同名符号），
+// 后半段证明预检把这件事报了出来——只报错误码不算，必须报对符号。
+func TestNamingDetectsSameBatchConflict(t *testing.T) {
+	dir := t.TempDir()
+	targets := namingTargets(dir, "home.gxml", "second.gxml")
+
+	// ---- 缺陷证据：两个片段声明了同名包级符号 ----
+	viewA, err := viewSymbol("home.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(home.gxml): %v", err)
+	}
+	viewB, err := viewSymbol("second.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(second.gxml): %v", err)
+	}
+	if viewA == viewB {
+		t.Fatalf("测试构造错误：两个不同源派生出了相同 view %q", viewA)
+	}
+	namesA := declaredPackageNames(t, renderKeyDecl(viewA)+bindCacheDecl(viewA, 2))
+	namesB := declaredPackageNames(t, renderKeyDecl(viewB)+bindCacheDecl(viewB, 2))
+	var overlap []string
+	for n := range namesA {
+		if namesB[n] {
+			overlap = append(overlap, n)
+		}
+	}
+	sort.Strings(overlap)
+	if len(overlap) == 0 {
+		t.Fatal("测试构造错误：两个源的符号集合没有交集，缺陷已不存在？")
+	}
+
+	// ---- 预检必须报出这些符号 ----
+	conflicts, err := detectNamingConflicts(targets)
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) == 0 {
+		t.Fatalf("预检未报冲突；期望报出 %v", overlap)
+	}
+	for _, sym := range overlap {
+		if !hasConflict(conflicts, sym, namingConflictBatch) {
+			t.Errorf("预检漏报符号 %q（期望 kind=%s）；实际=%v",
+				sym, namingConflictBatch, symbolsOf(conflicts))
+		}
+	}
+}
+
+// TestNamingDetectsExistingUserSymbol：包里已有同名用户符号 → 报 existing。
+func TestNamingDetectsExistingUserSymbol(t *testing.T) {
+	dir := t.TempDir()
+	userFile := filepath.Join(dir, "user.go")
+	if err := os.WriteFile(userFile, []byte("package demo\n\ntype renderKey struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if !hasConflict(conflicts, "renderKey", namingConflictExisting) {
+		t.Fatalf("应报 renderKey 与用户符号冲突；实际=%v", symbolsOf(conflicts))
+	}
+	for _, c := range conflicts {
+		if c.Symbol == "renderKey" && c.Kind == namingConflictExisting && c.Owner != userFile {
+			t.Errorf("冲突来源应为 %s，实际 %s", userFile, c.Owner)
+		}
+	}
+}
+
+// TestNamingIgnoresOwnArtifact：自己的上一版产物（保护头 + Source 匹配）不算冲突。
+func TestNamingIgnoresOwnArtifact(t *testing.T) {
+	dir := t.TempDir()
+	prev := filepath.Join(dir, "home_gen.go")
+	content := "// Code generated by goxml. DO NOT EDIT.\n// Source: home.gxml\n// Goxml-Version: 1\n\npackage demo\n\ntype renderKey struct{}\n"
+	if err := os.WriteFile(prev, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("自己的旧产物不应算冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
+// TestNamingIgnoresOwnRenamedArtifact：产物改过名，但保护头 Source 指向本输入，也不算冲突。
+func TestNamingIgnoresOwnRenamedArtifact(t *testing.T) {
+	dir := t.TempDir()
+	prev := filepath.Join(dir, "old_name_gen.go")
+	content := "// Code generated by goxml. DO NOT EDIT.\n// Source: home.gxml\n// Goxml-Version: 1\n\npackage demo\n\ntype renderKey struct{}\n"
+	if err := os.WriteFile(prev, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("改名后的自家产物不应算冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
+// TestNamingDetectsPascalCollapse：a-b.gxml 与 a_b.gxml 的 view 名塌缩相同 → 必须报冲突。
+func TestNamingDetectsPascalCollapse(t *testing.T) {
+	va, err := viewSymbol("a-b.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(a-b.gxml): %v", err)
+	}
+	vb, err := viewSymbol("a_b.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(a_b.gxml): %v", err)
+	}
+	if va != vb {
+		t.Skipf("当前实现未塌缩（%q vs %q）；本条留待实现变更后复核", va, vb)
+	}
+
+	dir := t.TempDir()
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "a-b.gxml", "a_b.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if !hasConflict(conflicts, va, namingConflictBatch) {
+		t.Fatalf("pascal 塌缩应报 %q 冲突；实际=%v", va, symbolsOf(conflicts))
+	}
+}
+
+// TestNamingNoConflictSingleFile：单文件空包 → 无冲突。
+func TestNamingNoConflictSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("不应有冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
+// TestNamingIgnoresTestFiles：`_test.go` 里的同名声明不算冲突（不参与构建）。
+func TestNamingIgnoresTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	tf := filepath.Join(dir, "user_test.go")
+	if err := os.WriteFile(tf, []byte("package demo\n\ntype renderKey struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("_test.go 不应触发冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
+// TestNamingMissingTargetDirIsNotError：--out-dir 指向的新目录尚不存在，不算错误。
+func TestNamingMissingTargetDirIsNotError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "not-created-yet")
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml"))
+	if err != nil {
+		t.Fatalf("目标目录不存在不应报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("不应有冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
