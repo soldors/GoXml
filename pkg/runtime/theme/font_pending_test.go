@@ -26,11 +26,11 @@ import "testing"
 // 前缀 TestEmbeddedFallback 保持不变，任务卡的验收命令才不会退化为空转。
 // 另外两项（C/D）仍是显式 skip 占位，未实现。
 
-// TestFontFallbackChain 占位：TASK-FONT-001-C 按字形覆盖的 fallback 链。
-func TestFontFallbackChain(t *testing.T) {
-	t.Skip("未执行：TASK-FONT-001-C 未实现。需要覆盖：中英混排、emoji、" +
-		"按**字形是否存在**（而非字体族是否存在）选择 fallback，以及缺字形时的行为")
-}
+// TestFontFallbackChain 已由 TASK-FONT-001-C 实现：占位用例删除，真实断言见
+// fallback_test.go（TestFontFallbackChainGlyphIDDecode / Notdef / MixedScript /
+// OrderSemantics / SupplementsMissingGlyph / Coverage / Emoji /
+// SupplementOnDemand / CoverageInsufficient / ProbeCost）。
+// 前缀 TestFontFallbackChain 保持不变，任务卡的验收命令才不会退化为空转。
 
 // TestFontLazyLoad 占位：TASK-FONT-001-D 懒加载与加载失败诊断。
 func TestFontLazyLoad(t *testing.T) {

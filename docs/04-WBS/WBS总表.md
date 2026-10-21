@@ -32,8 +32,9 @@
 | TASK-STYLE-001 | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` 已实现于 `expander`；剩余：Theme + Codegen 主题色渲染） | TASK-CODEGEN-001 | go test ./internal/compiler/expander/ ./internal/compiler/codegen/ |
 | TASK-THEME-SEAM-001 | theme/contract | 冻结主题/字体接缝（路线 B）：`FontProvider` 契约、`pkg/runtime/theme` 包边界、主题构建入口、文档一致性门禁（**已完成 6/6**） | TASK-CODEGEN-001、ADR-0012 | go test ./contracts/... ./pkg/runtime/... ./internal/docgate/ |
 | TASK-FONT-001-B | theme/font | 嵌入字体兜底：OFL 字体选型 + 构建期子集化 + `//go:embed` 解析 + 兜底选择 + 体积预算 + 关闭 A 的失败语义缺口（**已实现**，6 个验收用例全 PASS；二进制增量 2,182,144 B ≤ 3 MiB） | TASK-FONT-001-A | go test -run TestEmbeddedFallback ./pkg/runtime/theme/... |
+| TASK-FONT-001-C | theme/font | 按字形覆盖的 fallback 链：GlyphID 反解与 notdef 可观测、覆盖判定作为候选准入（挡住"能解析但没汉字"）、按需字形级补充链、emoji 实测降级（**已实现**，10 个验收用例全 PASS；覆盖判定单次 11.86µs） | TASK-FONT-001-A、TASK-FONT-001-B | go test -run TestFontFallbackChain ./pkg/runtime/theme/... |
 | TASK-FONT-001-A | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断（**已实现**，Windows 实测；macOS/Linux 待验证） | TASK-THEME-SEAM-001 | go test -run TestFontProbe ./pkg/runtime/theme/... |
-| TASK-FONT-001 | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/ 懒加载（D）；IME 已移出，归 WIDGET-001 | TASK-THEME-SEAM-001 | go test ./pkg/runtime/theme/... （A、B 已实现；C、D 仍为显式 skip 占位用例） |
+| TASK-FONT-001 | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/ 懒加载（D）；IME 已移出，归 WIDGET-001（**A、B、C 已实现；D 仍为显式 skip 占位用例**） | TASK-THEME-SEAM-001 | go test ./pkg/runtime/theme/... |
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |
 | TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v -race ./cmd/goxml/watch/... ./pkg/runtime/hydration/... |

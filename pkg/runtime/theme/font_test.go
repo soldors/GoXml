@@ -11,7 +11,6 @@ import (
 
 	"gioui.org/text"
 	"gioui.org/widget/material"
-	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/goxml/goxml/contracts"
@@ -35,6 +34,16 @@ func writeFont(t *testing.T, dir, name string, data []byte) string {
 		t.Fatalf("写入 %s 失败: %v", p, err)
 	}
 	return p
+}
+
+// hanziFontBytes 返回一个**含汉字**的字体字节，供"系统命中"类用例当候选。
+//
+// 为什么不能用 goregular：它是纯拉丁字体，一个汉字都没有。C 卡 §3 引入按字形
+// 覆盖判定后，它不再算"可用的 CJK 系统字体"，用它当"good 候选"会让
+// "系统命中"的前提悄悄失效。需要纯拉丁字体做反面样本时，见 fallback_test.go。
+func hanziFontBytes(t *testing.T) []byte {
+	t.Helper()
+	return loadEmbedded(t).Font
 }
 
 // TestFontProbeCandidatePaths 三平台候选表（A 卡 §5 第 1 项）。
@@ -83,7 +92,8 @@ func TestFontProbeCandidatePaths(t *testing.T) {
 func TestFontProbeContinuesOnParseFailure(t *testing.T) {
 	dir := t.TempDir()
 	bad := writeFont(t, dir, "bad.ttf", []byte("this is definitely not a font"))
-	good := writeFont(t, dir, "good.ttf", goregular.TTF)
+	// 必须含汉字：C 卡 §3 之后，"能解析"不再是命中标准，还要有 CJK 覆盖。
+	good := writeFont(t, dir, "good.otf", hanziFontBytes(t))
 
 	reads := 0
 	p := NewProvider(ProviderOptions{
@@ -208,7 +218,8 @@ func TestFontProbeErrFontNotFound(t *testing.T) {
 // TestFontProbeResolveCaching 同一 family 二次 Resolve 不重新扫描磁盘，
 // 且返回的是同一份已解析集合（契约 + 评审要点 1）。
 func TestFontProbeResolveCaching(t *testing.T) {
-	good := writeFont(t, t.TempDir(), "good.ttf", goregular.TTF)
+	// 必须含汉字：C 卡 §3 之后，"能解析"不再是命中标准，还要有 CJK 覆盖。
+	good := writeFont(t, t.TempDir(), "good.otf", hanziFontBytes(t))
 
 	reads := 0
 	p := NewProvider(ProviderOptions{

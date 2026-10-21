@@ -1,8 +1,8 @@
 # TASK-FONT-001：实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收
 
 ## 元信息
-- 状态：**进行中（A、B 已完成；C 待开工；D 未开始）** | 优先级：P0 | 预计：8h
-- 子卡进度（2026-10-21 实测，见 §3）：A ✅ / B ✅ / C ⬜ / D ⬜ —— 本卡**尚未完成**
+- 状态：**进行中（A、B、C 已完成；D 未开始）** | 优先级：P0 | 预计：8h
+- 子卡进度（2026-10-21 实测，见 §3）：A ✅ / B ✅ / C ✅ / D ⬜ —— 本卡**尚未完成**（D 与跨平台验证仍缺）
 - 分支：feature/TASK-FONT-001
 - 依赖：`TASK-THEME-SEAM-001`（接口与包边界）✅ **已完成**｜**不再是 `TASK-STYLE-001`**
   - 审计结论（`docs/05-开发/STYLE-FONT依赖审计.md`）：`<Def>/<Slot>` 宏展开与字体无代码耦合，
@@ -62,7 +62,7 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 |---|---|---|---|
 | TASK-FONT-001-A | 各平台 CJK 系统字体探测（目录、超时、诊断、解析失败继续下一候选）+ `FontProvider` 单元测试 | `go test -run TestFontProbe ./pkg/runtime/theme/...` | `TASK-THEME-SEAM-001-5`（✅ 包已存在）；边界与验收矩阵见 [TASK-FONT-001-A.md](TASK-FONT-001-A.md) **→ ✅ 已实现**（`c4ec28b`，8 个用例） |
 | TASK-FONT-001-B | 嵌入兜底：`//go:embed` + **构建期**子集化（GB2312 6,763 字，实测 1.55 MB）+ 增量 ≤3MB 断言 | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | A（✅）；边界与验收矩阵见 [TASK-FONT-001-B.md](TASK-FONT-001-B.md) **→ ✅ 已实现**（`9b81748`，6 个用例；两个开工阻塞项均已解除，见卡 §7） |
-| TASK-FONT-001-C | 按字形覆盖的 fallback 链（中英混排、emoji、系统与嵌入的实际选择） | `go test -run TestFontFallbackChain ./pkg/runtime/theme/...` | A + B（**均已满足**）；**⬜ 未开始**，占位用例仍是 `t.Skip`。开工前先冻结 C 卡（见 §3.2） |
+| TASK-FONT-001-C | 按字形覆盖的 fallback 链（中英混排、emoji、系统与嵌入的实际选择） | `go test -run TestFontFallbackChain ./pkg/runtime/theme/...` | A + B（**均已满足**）；边界与验收矩阵见 [TASK-FONT-001-C.md](TASK-FONT-001-C.md) **→ ✅ 已实现**（10 个用例全 PASS；覆盖判定单次 11.86 µs；5 次变异全部如期变红） |
 | TASK-FONT-001-D | 懒加载与加载失败诊断（不阻塞首帧、不静默空白） | `go test -run TestFontLazyLoad ./pkg/runtime/theme/...` | A / B（均满足）；**⬜ 未开始**。动因：系统探测 ~110 ms 超 20 ms 预算，**D 解决延迟，B 不解决** |
 
 > 顺序裁决（2026-10-20）：**先做 A，不并行开 B/C/D**。理由见
@@ -88,10 +88,20 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
 |---|---|---|---|---|
 | A | `go test -run TestFontProbe ./pkg/runtime/theme/...` | 0 | **8 个 PASS** | 占位用例已替换为真实断言（`font_test.go`） |
 | B | `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` | 0 | **6 个 PASS** | 占位用例已替换为真实断言（`embedded_fallback_test.go`） |
-| C | `go test -run TestFontFallbackChain ./pkg/runtime/theme/` | 0 | **1 个 SKIP** | 仍是占位，**未实现、未执行** |
+| C | `go test -run TestFontFallbackChain ./pkg/runtime/theme/` | 0 | **10 个 PASS** | 2026-10-21 实现完成，占位用例已删除（`fallback_test.go`） |
 | D | `go test -run TestFontLazyLoad ./pkg/runtime/theme/` | 0 | **1 个 SKIP** | 仍是占位，**未实现、未执行** |
 
-⚠️ 两个 SKIP 的退出码同样是 0——**不能**据此认为 C/D 已通过。SKIP 计为未执行。
+⚠️ SKIP 的退出码同样是 0——**不能**据此认为 D 已通过。SKIP 计为未执行。
+
+**C 完成后新增的实测事实**（详见 [TASK-FONT-001-C.md](TASK-FONT-001-C.md) §1）：
+
+1. Gio v0.10.3 **已内建** 5 级逐字形 fallback，最后一级会静默返回「任意 face」
+   → 缺字形变成 notdef 且不报错。C **不重建**它，只做观测与准入。
+2. `Glyph.ID` 可反解出 faceIdx 与 gid；`gid == 0 ⟺` 无字形，
+   受控场景下与 `NominalGlyph` **146/146 一致**。
+3. collection 顺序 = 字形级优先级；前一个缺字形才跨到下一个（指纹实测坐实）。
+4. **本机嵌入相对系统零增量**：charset.txt 7,540 个码位全部被 msyh 覆盖。
+   → 补充链因此设为**按需**触发，覆盖完整时不加载嵌入（B4 约束保持有效）。
 
 **已完成 / 未完成（边界写清楚，避免"字体工作已完成"的误读）**：
 
@@ -101,8 +111,10 @@ Docker 基础镜像、精简 Linux、未安装中文字体的目标机，以及�
   系统优先的选择顺序、二进制增量实测、失败语义收紧。完成于 `9b81748`。
   子集是 **GB2312 6,763 汉字 + ASCII**，**不是完整 CJK**：清单外码位无字形，
   属已知边界而非缺陷。
-- ⬜ C：按字形覆盖的 fallback 链（中英混排、emoji、系统与嵌入之间的实际选择）。
-  **B 完成后仍有两个未解决点**，见 §3.2。
+- ✅ C：按字形覆盖的 fallback 链（2026-10-21 完成）：GlyphID 反解与 notdef
+  可观测、覆盖判定作为候选准入（挡住「能解析但没汉字」）、按需字形级补充链、
+  emoji 实测降级。**未解决**：emoji 仍无来源（只报告不补）；
+  补充链的真实收益无法在本机证明（本机零增量），待跨平台验证。
 - ⬜ D：懒加载与不阻塞首帧；A 的 Windows 实测首次系统探测约 **110 ms**，
   已超规范 §3.2 的 20 ms 预算，这是 D 的核心动因。
 
@@ -185,7 +197,9 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 | 2 | 系统无 CJK 字体时嵌入兜底生效并有诊断 | ✅ B（`9b81748`）：系统全失败→嵌入，诊断含两条链路 |
 | 3 | 字体损坏/缺失产生明确错误，不静默渲染空白 | ✅ B：两条链路都失败 → `ErrFontNotFound` + `app.Run` 返回错误 |
 | 4 | 中文 IME 可用，候选框跟随光标，组合文本正确 | ⬜ **已移出本卡**，归 `TASK-WIDGET-001` / `INPUT-001` |
-| 5 | 中英混排与 emoji fallback 正确 | ⬜ **归 C**，未开始 |
+| 5 | 中英混排与 emoji fallback 正确 | ⚠️ **部分**：C 已实测中英混排无缺字形（✅）；
+  **emoji 仍无来源**——嵌入子集永不含 emoji，系统场景有字形但不保证，
+  C 只能报告缺失不能补（待新任务） |
 | 6 | 稳定帧文本节点 `allocs/op == 0` | ⬜ 未验收 |
 | 7 | 字体加载不阻塞首帧 | ⬜ **归 D**，未开始（系统探测 ~110 ms 是已实测的阻碍） |
 | 8 | 嵌入增量 ≤ 3MB | ✅ B：实测 2,182,144 B ≤ 3,145,728 B |
@@ -200,11 +214,12 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 
 | 项目 | 内容 |
 |---|---|
-| 当前提交 SHA | `9b81748`（A `c4ec28b`、B `9b81748`；B 的取证与实现记录见 dev-log 10-20 §26 / 10-21 §27） |
+| 当前提交 SHA | 见 §8.1；A `c4ec28b`、B `9b81748`、C 见 §8.1 |
 | 已完成子任务 | **A 系统探测**（`c4ec28b`，8 个用例，Windows 实测命中 `msyh.ttc`）；
   **B 嵌入兜底**（`9b81748`，6 个用例，二进制增量 2,182,144 B ≤ 3 MiB） |
-| 未完成子任务 | **C fallback 链 / D 懒加载**（仍为显式 `t.Skip` 占位，实测 1 个 SKIP 各）。
-  另有 **macOS / Linux 真机探测待验证**（A 只在本机 Windows 实测） |
+| 未完成子任务 | **D 懒加载**（仍为显式 `t.Skip` 占位，实测 1 个 SKIP）。
+  另有 **macOS / Linux 真机探测待验证**（A 只在本机 Windows 实测）、
+  **补充链的跨平台收益待验证**（本机零增量，见 §3.0 第 4 条）、**emoji 无来源** |
 | 已运行命令及结果 | 2026-10-21 在 `9b81748` 上重跑四条验收命令，见 §3.0：
   A=8 PASS、B=6 PASS、C=1 SKIP、D=1 SKIP（**SKIP 计未执行**）；
   `go build ./...` 0、`go vet ./...` 0、`gofmt -l` 空、
@@ -218,5 +233,13 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   ⑥ 系统探测 ~110 ms 超 20 ms 预算，归 D。
   ⑦ `examples/demo` 注入 `material.NewTheme()`，不链接 theme 包——旗舰样例
   看不到嵌入兜底与字体诊断，属 DEMO 线边界，本卡只记录不改 |
-| 下一位接手人 | `TASK-FONT-001-C`：先冻结 C 卡（边界 + 验收矩阵），再实现。
-  **不得**并行开 D；C 取得真实证据后再评估 D 的懒加载设计 |
+| 下一位接手人 | `TASK-FONT-001-D`：懒加载与不阻塞首帧。
+  动手前先复核 C 落地后的真实探测耗时（C 已把覆盖判定压到 11.86 µs，
+  剩余大头仍在系统字体探测本身）。
+  **跨平台验证应并行推进**——补充链的真实收益只有在本机之外才能证明 |
+
+### 8.1 C 的提交登记
+
+| 提交 | 内容 |
+|---|---|
+| 待填 | TASK-FONT-001-C 实现（见 dev-log 2026-10-21 §29） |

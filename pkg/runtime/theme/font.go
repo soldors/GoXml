@@ -63,6 +63,12 @@ const (
 	StatusParseFailed CandidateStatus = "parse_failed"
 	// StatusSkippedTimeout 因 deadline 已过而**未被尝试**。
 	StatusSkippedTimeout CandidateStatus = "skipped_timeout"
+	// StatusCoverageInsufficient 解析成功，但按字形判定的 CJK 覆盖不足（C 卡 §3）。
+	//
+	// 与 StatusParseFailed 的区别很重要：文件是**好的**，只是它不是可用的 CJK
+	// 字体（例如纯拉丁字体）。没有这个状态时，这类字体会被当成命中成功，
+	// 于是汉字全部渲染成 notdef 且不报错——正是规范 §1.2 禁止的静默降级。
+	StatusCoverageInsufficient CandidateStatus = "coverage_insufficient"
 )
 
 // CandidateResult 是单个候选的探测结果（诊断的最小单元）。
@@ -99,6 +105,10 @@ type ProbeReport struct {
 	// 系统命中时**必须**为 nil 或 Attempted=false：那证明嵌入字体没有被解析，
 	// 而不是"解析了但没用上"。这是 B4 的可观测断言点。
 	Embedded *EmbeddedResult
+	// Coverage 是命中字体的按字形覆盖判定结果（C 卡 §3）。
+	//
+	// 系统全失败（走嵌入兜底）时为 nil——那时没有"系统字体覆盖如何"这回事。
+	Coverage *CoverageResult
 }
 
 // EmbeddedResult 是嵌入兜底链路的诊断。
@@ -160,6 +170,9 @@ func (r *ProbeReport) String() string {
 	}
 	if r.Embedded != nil {
 		fmt.Fprintf(&b, "\n  * %s", r.Embedded)
+	}
+	if r.Coverage != nil {
+		fmt.Fprintf(&b, "\n  * %s", r.Coverage)
 	}
 	return b.String()
 }
@@ -293,6 +306,8 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 	id, faces, rep := probe(p.opts)
 	p.last = rep
 	if rep.Err == nil {
+		// C 卡 §4：系统命中但有字形缺口 → 把嵌入子集追加到集合**末尾**补链。
+		faces = p.supplement(faces, rep)
 		p.sets[id] = &fontSet{ID: id, Path: rep.Resolved, Faces: faces}
 		p.resolved[family] = id
 		rep.ID = id
@@ -357,6 +372,46 @@ func (p *Provider) loadEmbedded() (string, []font.FontFace, *EmbeddedResult) {
 	res.ID = id
 	res.Faces = len(faces)
 	return id, faces, res
+}
+
+// supplement 在系统集合存在字形缺口时追加嵌入子集（C 卡 §4）。
+//
+// # 触发条件刻意收窄
+//
+// **只有**覆盖判定确实发现缺口时才加载嵌入。C 卡 §1.3 实测：本机嵌入子集
+// 相对系统字体**零增量**（charset.txt 的 7,540 个码位全部被 msyh 覆盖），
+// 因此无条件追加只会付出解析与内存代价、换不到任何一个字形。
+// 覆盖完整时不加载嵌入——B4「系统命中则不解析嵌入字体」的约束**保持不变**。
+//
+// # 追加在末尾，不是开头
+//
+// Gio 按 collection 顺序做逐字形选择（C 卡 §1.2 实测：顺序即优先级），
+// 因此「系统在前、嵌入在后」= 系统有字形就用系统，缺了才补嵌入。
+// 反过来会让嵌入抢先，等于把系统字体降级为备选。
+//
+// # 补充失败不影响整体成功
+//
+// 系统已经可用，嵌入只是增益。加载失败时记录诊断并原样返回，
+// **不**把整体解析打成失败——那会把"系统好好的"误报成 ErrFontNotFound。
+func (p *Provider) supplement(faces []font.FontFace, rep *ProbeReport) []font.FontFace {
+	cov := rep.Coverage
+	if cov == nil || len(cov.Missing) == 0 {
+		return faces
+	}
+	_, embFaces, embRes := p.loadEmbedded()
+	rep.Embedded = embRes
+	if embRes.Err != nil {
+		return faces
+	}
+	cov.Supplemented = true
+	return append(faces, embFaces...)
+}
+
+// checkCoverage 对命中集合做准入判定（C 卡 §3）。
+func checkCoverage(faces []font.FontFace) *CoverageResult {
+	req := RequiredRunes()
+	hit, missing := Coverage(faces, req)
+	return &CoverageResult{Required: len(req), Hit: hit, Missing: missing}
 }
 
 // embeddedID 生成嵌入集合的稳定标识。
@@ -461,9 +516,23 @@ func probe(opts ProviderOptions) (string, []font.FontFace, *ProbeReport) {
 			})
 			continue
 		}
+		// C 卡 §3：命中不等于可用。解析成功之后还要问一句"它真的有汉字吗"。
+		//
+		// B 的标准到此为止（能解析 + 非空），于是只有拉丁字体的机器会
+		// "系统命中成功、诊断无错、汉字全部 notdef"。覆盖判定把这个洞堵上。
+		cov := checkCoverage(faces)
+		if !CoverageSufficient(cov.Hit, cov.Required) {
+			rep.Candidates = append(rep.Candidates, CandidateResult{
+				Path: path, Status: StatusCoverageInsufficient, Faces: len(faces),
+				Err: fmt.Errorf("CJK 覆盖不足: %d/%d（缺 %q）",
+					cov.Hit, cov.Required, string(cov.Missing)),
+			})
+			continue
+		}
 		rep.Candidates = append(rep.Candidates, CandidateResult{
 			Path: path, Status: StatusOK, Faces: len(faces),
 		})
+		rep.Coverage = cov
 		rep.Resolved = path
 		id := setID(path)
 		rep.Elapsed = opts.Now().Sub(start)

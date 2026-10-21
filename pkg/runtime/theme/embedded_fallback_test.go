@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"gioui.org/font/opentype"
-	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/goxml/goxml/contracts"
 	embedasset "github.com/goxml/goxml/pkg/runtime/theme/embedded"
@@ -367,7 +366,18 @@ func TestEmbeddedFallbackSelectionOrder(t *testing.T) {
 	a := loadEmbedded(t)
 
 	t.Run("系统命中时不得解析嵌入字体", func(t *testing.T) {
-		good := writeFont(t, t.TempDir(), "good.ttf", goregular.TTF)
+		// ⚠️ 这里必须用**含汉字**的字体当"好的系统候选"。
+		//
+		// 本用例原先写的是 goregular（Go 内置纯拉丁字体）：它能解析、有 ASCII，
+		// 但一个汉字都没有。C 卡 §3 引入按字形覆盖判定后，这种字体会被判为
+		// `coverage_insufficient` 而**不再算命中**——于是这里会走到嵌入兜底，
+		// "系统命中"的前提就不成立了。
+		//
+		// 这不是放宽断言，是修正名实不符的前提：一个"好的 CJK 系统字体"
+		// 本就该含汉字。goregular 的场景改由 C 的
+		// TestFontFallbackChainCoverageInsufficient 承接，用来坐实
+		// 「能解析但没汉字 → 挡住并兜底」这个漏洞本身。
+		good := writeFont(t, t.TempDir(), "good.otf", a.Font)
 		cl := &countingLoader{data: a.Font}
 
 		p := NewProvider(ProviderOptions{
