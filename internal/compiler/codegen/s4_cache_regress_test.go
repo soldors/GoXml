@@ -160,12 +160,12 @@ func TestProbeS4Change(t *testing.T) {
 func TestS4_StaticPageCacheUnaffected(t *testing.T) {
 	out := mustGen(t, `<Text Value="Hello"/>`, defaultOpts())
 	s := string(out)
-	for _, want := range []string{"op.Record", "op.CallOp", "cacheKey", "renderKey"} {
+	for _, want := range []string{"op.Record", "op.CallOp", "cacheKey", "goxmlRenderKey"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("静态页面应保留 %q", want)
 		}
 	}
-	if strings.Contains(s, "bindText") || strings.Contains(s, "textCache") {
+	if strings.Contains(s, "bindText") || strings.Contains(s, "goxmlTextCache") {
 		t.Error("静态页面不应生成绑定缓存")
 	}
 	t.Log("静态页面缓存形态未受状态机制影响")

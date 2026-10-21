@@ -123,15 +123,23 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 包级生成类型必须**按源文件唯一**（契约 §5.1 的 D-2 裁决）：
+	// 同包多 .gxml 时固定名会重复声明（实测 renderKey/textCache redeclared）。
+	keyType, cacheType, err := generatedTypeNames(opts.SourcePath)
+	if err != nil {
+		return nil, err
+	}
 
 	vmRef, _ := v.ViewModel()
 
 	g := &generator{
-		opts:    opts,
-		view:    view,
-		imports: newImportSet(),
-		facts:   v.Facts(),
-		vmRef:   vmRef,
+		opts:      opts,
+		view:      view,
+		keyType:   keyType,
+		cacheType: cacheType,
+		imports:   newImportSet(),
+		facts:     v.Facts(),
+		vmRef:     vmRef,
 	}
 
 	// 页面是生成的主体。没有 Page 时不应走到这里——Parser 保证存在，
@@ -161,9 +169,13 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 
 // generator 是单次生成的状态。
 type generator struct {
-	opts    Options
-	view    string
-	imports *importSet
+	opts Options
+	view string
+	// keyType / cacheType 是**按源文件唯一**的包级生成类型名（契约 §5.1）。
+	// 固定名 renderKey/textCache 会在同包多文件时重复声明。
+	keyType   string
+	cacheType string
+	imports   *importSet
 	// facts 是 Analyzer 已验证的语义事实。绑定路径与目标类型都取自此处，
 	// Codegen **不得**自行解析绑定路径。
 	facts *analyzer.Facts
@@ -791,7 +803,7 @@ func (g *generator) assemble(body string) (string, error) {
 		// 仅在确有绑定槽位时生成：纯事件页没有 textCache 类型声明
 		// （bindCacheDecl 在 slots==0 时不输出），否则编译失败。
 		if g.bindSlots > 0 {
-			b.WriteString("\tslots []textCache\n")
+			b.WriteString("\tslots []" + g.cacheType + "\n")
 		}
 		// 交互控件状态：每个 <Button> 一个，跨帧地址不变（契约 §1.3）。
 		for i := 0; i < g.clickSlots; i++ {
@@ -813,7 +825,7 @@ func (g *generator) assemble(body string) (string, error) {
 			b.WriteString(fmt.Sprintf("\trowClicks%d map[%s]*widget.Clickable\n", pi, kt))
 		}
 	} else {
-		for _, line := range cacheFieldLines(g.view) {
+		for _, line := range cacheFieldLines(g.view, g.keyType) {
 			b.WriteString(line + "\n")
 		}
 	}
@@ -915,8 +927,8 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 `, pi, pi, kt, pi, pi, kt, pi, pi))
 		}
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
-		b.WriteString(renderKeyDecl(g.view))
-		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
+		b.WriteString(renderKeyDecl(g.view, g.keyType, g.cacheType))
+		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
 		return b.String(), nil
 	}
 	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
@@ -939,9 +951,9 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 	b.WriteString("\tv.cacheCall.Add(gtx.Ops)\n")
 	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
-	b.WriteString(renderKeyDecl(g.view))
+	b.WriteString(renderKeyDecl(g.view, g.keyType, g.cacheType))
 	if g.usesVM {
-		b.WriteString(bindCacheDecl(g.view, g.bindSlots))
+		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
 	}
 	return b.String(), nil
 }
@@ -970,13 +982,16 @@ func (g *generator) vmTypeExpr() (string, error) {
 // renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。
 //
 // 注意：这是**生成产物**，不要手改。字段变更必须先改契约 §16.5 再重新生成。
-func renderKeyDecl(view string) string {
+func renderKeyDecl(view, keyType, cacheType string) string {
 	return `
-// renderKey 复制自 代码生成输出契约 §16.5。
+// ` + keyType + ` 复制自 代码生成输出契约 §16.5。
+//
+// 类型名按源文件唯一（goxmlRenderKey<Source>）：同包多个生成文件各自声明，
+// 固定名会重复声明（契约 §5.1）。
 //
 // ⚠️ 本类型是生成产物，不要手改。
 // 字段变更必须先改契约 §16.5，再重新生成——已生成文件不会自动跟随。
-type renderKey struct {
+type ` + keyType + ` struct {
 	constraints layout.Constraints
 	metric      unit.Metric
 	theme       *material.Theme
@@ -984,7 +999,7 @@ type renderKey struct {
 }
 
 // equal 按位比较浮点字段，避免 float32 精度造成的误判（契约 §16.5）。
-func (k renderKey) equal(o renderKey) bool {
+func (k ` + keyType + `) equal(o ` + keyType + `) bool {
 	return k.constraints == o.constraints &&
 		math.Float32bits(k.metric.PxPerDp) == math.Float32bits(o.metric.PxPerDp) &&
 		math.Float32bits(k.metric.PxPerSp) == math.Float32bits(o.metric.PxPerSp) &&
@@ -993,8 +1008,8 @@ func (k renderKey) equal(o renderKey) bool {
 }
 
 // currentKey 采集当前帧的上下文指纹。
-func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) renderKey {
-	return renderKey{
+func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) ` + keyType + ` {
+	return ` + keyType + `{
 		constraints: gtx.Constraints,
 		metric:      gtx.Metric,
 		theme:       th,
@@ -1005,7 +1020,7 @@ func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) render
 }
 
 // cacheFieldLines 返回 View 结构体的缓存字段（契约 §16.2）。
-func cacheFieldLines(view string) []string {
+func cacheFieldLines(view, keyType string) []string {
 	return []string{
 		"\t// cacheOps 是持久操作列表，仅由本视图持有，永不 Reset 之外的复用。",
 		"\t// 必须与每帧的帧 Ops 分离：帧 Ops 每帧被 Reset，而 CallOp 引用 cacheOps 的数据。",
@@ -1018,7 +1033,7 @@ func cacheFieldLines(view string) []string {
 		"\tcacheDims layout.Dimensions",
 		"",
 		"\t// cacheKey 是录制时的上下文指纹，用于判断失效。",
-		"\tcacheKey renderKey",
+		"\tcacheKey " + keyType,
 		"",
 		"\t// cached 表示 cacheCall 是否已有效录制。",
 		"\tcached bool",
@@ -1119,25 +1134,58 @@ func (s *importSet) render() string {
 //
 // 规则：取相对包目录的路径、逐段 PascalCase、非标识符字符转 `_`、
 // 加 `Goxml` 前缀并以 `View` 结尾。
-func viewSymbol(sourcePath string) (string, error) {
+// sourceSymbolSuffix 把 SourcePath 转成稳定的标识符后缀。
+//
+// 规则（契约 §5.1 的 D-2 裁决）：去掉 .gxml、按 / \ . 切段、逐段 PascalCase。
+// 只依赖 SourcePath 本身——不含绝对路径、顺序或时间，因此重复生成稳定。
+func sourceSymbolSuffix(sourcePath string) (string, error) {
 	p := strings.TrimSuffix(sourcePath, ".gxml")
 	if p == "" {
 		return "", fmt.Errorf("codegen: SourcePath %q yields an empty symbol", sourcePath)
 	}
-	// 去掉扩展名后按 / 与 \ 与 . 切段。
 	segs := strings.FieldsFunc(p, func(r rune) bool {
 		return r == '/' || r == '\\' || r == '.'
 	})
 	var b strings.Builder
-	b.WriteString("Goxml")
 	for _, s := range segs {
 		b.WriteString(pascal(s))
 	}
-	b.WriteString("View")
-	if !isGoIdent(b.String()) {
-		return "", fmt.Errorf("codegen: SourcePath %q yields an invalid symbol %q", sourcePath, b.String())
+	if b.Len() == 0 {
+		return "", fmt.Errorf("codegen: SourcePath %q yields an empty symbol", sourcePath)
 	}
 	return b.String(), nil
+}
+
+// viewSymbol 派生视图类型名：Goxml<Source>View。
+func viewSymbol(sourcePath string) (string, error) {
+	suffix, err := sourceSymbolSuffix(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	view := "Goxml" + suffix + "View"
+	if !isGoIdent(view) {
+		return "", fmt.Errorf("codegen: SourcePath %q yields an invalid symbol %q", sourcePath, view)
+	}
+	return view, nil
+}
+
+// generatedTypeNames 返回**按源文件唯一**的包级生成类型名（契约 §5.1）。
+//
+// 固定名 renderKey/textCache 会让同包多个生成文件重复声明；
+// 这里统一加上 goxml 前缀与源派生后缀，例如 home.gxml → goxmlRenderKeyHome。
+func generatedTypeNames(sourcePath string) (keyType, cacheType string, err error) {
+	suffix, err := sourceSymbolSuffix(sourcePath)
+	if err != nil {
+		return "", "", err
+	}
+	keyType = "goxmlRenderKey" + suffix
+	cacheType = "goxmlTextCache" + suffix
+	for _, n := range []string{keyType, cacheType} {
+		if !isGoIdent(n) {
+			return "", "", fmt.Errorf("codegen: SourcePath %q yields an invalid symbol %q", sourcePath, n)
+		}
+	}
+	return keyType, cacheType, nil
 }
 
 // pascal 把一段转为 PascalCase；非字母数字字符替换为 `_`。

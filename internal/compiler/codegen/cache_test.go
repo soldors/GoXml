@@ -51,7 +51,6 @@ func TestCacheStructFields(t *testing.T) {
 		"cacheOps":  "op.Ops",
 		"cacheCall": "op.CallOp",
 		"cacheDims": "layout.Dimensions",
-		"cacheKey":  "renderKey",
 		"cached":    "bool",
 	}
 	got := map[string]string{}
@@ -65,6 +64,11 @@ func TestCacheStructFields(t *testing.T) {
 			t.Errorf("字段 %s 类型 = %q, 期望 %q", name, got[name], typ)
 		}
 	}
+	// cacheKey 的类型名按源文件唯一（goxmlRenderKey<Suffix>，契约 §5.1）：
+	// 只断言前缀，避免把某个具体源的派生名写死在这里。
+	if !strings.HasPrefix(got["cacheKey"], "goxmlRenderKey") {
+		t.Errorf("字段 cacheKey 类型 = %q, 期望以 goxmlRenderKey 开头", got["cacheKey"])
+	}
 }
 
 // TestRenderKeyFields 验证 renderKey 覆盖 §16.5 全部四个输入。
@@ -75,7 +79,7 @@ func TestRenderKeyFields(t *testing.T) {
 	var st *ast.StructType
 	ast.Inspect(f, func(n ast.Node) bool {
 		ts, ok := n.(*ast.TypeSpec)
-		if !ok || ts.Name.Name != "renderKey" {
+		if !ok || !strings.HasPrefix(ts.Name.Name, "goxmlRenderKey") {
 			return true
 		}
 		if s, ok := ts.Type.(*ast.StructType); ok {
@@ -84,7 +88,7 @@ func TestRenderKeyFields(t *testing.T) {
 		return false
 	})
 	if st == nil {
-		t.Fatal("未找到 renderKey 类型")
+		t.Fatal("未找到 goxmlRenderKey 类型")
 	}
 
 	want := map[string]string{

@@ -60,16 +60,22 @@ type namingConflict struct {
 
 // generatedPackageSymbols 返回一个 .gxml 生成文件将声明的**包级**标识符。
 //
-// 保守上界：`textCache` 实际只在页面存在绑定槽位时才发射（codegen.go:791），
-// 这里一律计入。这样做的代价仅仅是「两个纯静态页同包」也会被判冲突——
-// 而它们本来就因 `renderKey`（无条件发射，codegen.go:942）撞名，结论不变，
-// 不会产生新的误报。
+// C2 之后类型名按源文件唯一，因此「两个不同源同包」不再撞名；
+// 这里保留保守上界（缓存类型即使没有绑定槽位也计入），
+// 影响仅限于：若同包两个源派生出**同一后缀**（如 a-b.gxml 与 a_b.gxml 的 pascal 塌缩），
+// 会连同缓存类型一起被判冲突——这正是期望行为，不会误伤不同后缀的源。
 func generatedPackageSymbols(sourcePath string) ([]string, error) {
 	view, err := viewSymbol(sourcePath)
 	if err != nil {
 		return nil, err
 	}
-	return []string{view, "New" + view, "renderKey", "textCache"}, nil
+	// 类型名必须与生成器共用同一派生（generatedTypeNames），
+	// 否则预检报的符号与产物里的符号会对不上（C2 之后的专有风险）。
+	keyType, cacheType, err := generatedTypeNames(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	return []string{view, "New" + view, keyType, cacheType}, nil
 }
 
 // detectNamingConflicts 执行预检：只读磁盘，不写任何文件。

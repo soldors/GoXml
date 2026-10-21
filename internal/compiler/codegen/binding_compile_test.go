@@ -75,7 +75,7 @@ func TestBindingMustNotFreezeDynamic(t *testing.T) {
 			t.Errorf("含绑定页面不应生成整页缓存字段 %q:\n%s", bad, s)
 		}
 	}
-	for _, want := range []string{"textCache", "bindText", "renderKey", "op.Record"} {
+	for _, want := range []string{"goxmlTextCache", "bindText", "goxmlRenderKey", "op.Record"} {
 		if !contains(s, want) {
 			t.Errorf("含绑定页面应生成绑定槽位缓存所需的 %q:\n%s", want, s)
 		}
@@ -91,7 +91,7 @@ func TestStaticPageStillFreezes(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{"op.Record", "op.CallOp", "cacheKey", "renderKey"} {
+	for _, want := range []string{"op.Record", "op.CallOp", "cacheKey", "goxmlRenderKey"} {
 		if !contains(s, want) {
 			t.Errorf("静态页面应保留 %q:\n%s", want, s)
 		}

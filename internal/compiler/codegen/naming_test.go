@@ -104,60 +104,71 @@ func hasConflict(cs []namingConflict, symbol string, kind namingConflictKind) bo
 	return false
 }
 
-// TestNamingDetectsSameBatchConflict：同包两个源 → 预检必须报出 renderKey / textCache 冲突。
+// TestNamingDetectsSameBatchConflict：本批内部符号撞车必须被报出。
 //
-// 前半段先证明「缺陷确实存在」（两个片段确实声明了同名符号），
-// 后半段证明预检把这件事报了出来——只报错误码不算，必须报对符号。
+// C2 唯一化之后，两个**不同**的源已不再撞名；仍会撞名的是 pascal 塌缩
+// （a-b.gxml 与 a_b.gxml 派生同一后缀），这里用它验证同批检测仍然有效。
 func TestNamingDetectsSameBatchConflict(t *testing.T) {
+	va, err := viewSymbol("a-b.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(a-b.gxml): %v", err)
+	}
+	vb, err := viewSymbol("a_b.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol(a_b.gxml): %v", err)
+	}
+	if va != vb {
+		t.Skipf("当前实现未塌缩（%q vs %q）", va, vb)
+	}
+	ka, ca, err := generatedTypeNames("a-b.gxml")
+	if err != nil {
+		t.Fatalf("generatedTypeNames(a-b.gxml): %v", err)
+	}
+	kb, cb, err := generatedTypeNames("a_b.gxml")
+	if err != nil {
+		t.Fatalf("generatedTypeNames(a_b.gxml): %v", err)
+	}
+	if ka != kb || ca != cb {
+		t.Fatalf("测试构造错误：塌缩源未派生出相同类型名（%q/%q vs %q/%q）", ka, ca, kb, cb)
+	}
+
+	// 片段层面确实重复（缺陷证据）
+	namesA := declaredPackageNames(t, renderKeyDecl(va, ka, ca)+bindCacheDecl(va, 2, ka, ca))
+	namesB := declaredPackageNames(t, renderKeyDecl(vb, kb, cb)+bindCacheDecl(vb, 2, kb, cb))
+	if !namesA[ka] || !namesB[kb] {
+		t.Fatal("测试构造错误：片段里找不到派生类型名")
+	}
+
 	dir := t.TempDir()
-	targets := namingTargets(dir, "home.gxml", "second.gxml")
-
-	// ---- 缺陷证据：两个片段声明了同名包级符号 ----
-	viewA, err := viewSymbol("home.gxml")
-	if err != nil {
-		t.Fatalf("viewSymbol(home.gxml): %v", err)
-	}
-	viewB, err := viewSymbol("second.gxml")
-	if err != nil {
-		t.Fatalf("viewSymbol(second.gxml): %v", err)
-	}
-	if viewA == viewB {
-		t.Fatalf("测试构造错误：两个不同源派生出了相同 view %q", viewA)
-	}
-	namesA := declaredPackageNames(t, renderKeyDecl(viewA)+bindCacheDecl(viewA, 2))
-	namesB := declaredPackageNames(t, renderKeyDecl(viewB)+bindCacheDecl(viewB, 2))
-	var overlap []string
-	for n := range namesA {
-		if namesB[n] {
-			overlap = append(overlap, n)
-		}
-	}
-	sort.Strings(overlap)
-	if len(overlap) == 0 {
-		t.Fatal("测试构造错误：两个源的符号集合没有交集，缺陷已不存在？")
-	}
-
-	// ---- 预检必须报出这些符号 ----
-	conflicts, err := detectNamingConflicts(targets)
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "a-b.gxml", "a_b.gxml"))
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}
-	if len(conflicts) == 0 {
-		t.Fatalf("预检未报冲突；期望报出 %v", overlap)
+	if !hasConflict(conflicts, va, namingConflictBatch) {
+		t.Fatalf("应报 view 冲突 %q；实际=%v", va, symbolsOf(conflicts))
 	}
-	for _, sym := range overlap {
-		if !hasConflict(conflicts, sym, namingConflictBatch) {
-			t.Errorf("预检漏报符号 %q（期望 kind=%s）；实际=%v",
-				sym, namingConflictBatch, symbolsOf(conflicts))
-		}
+	if !hasConflict(conflicts, ka, namingConflictBatch) {
+		t.Fatalf("应报类型冲突 %q；实际=%v", ka, symbolsOf(conflicts))
 	}
 }
 
-// TestNamingDetectsExistingUserSymbol：包里已有同名用户符号 → 报 existing。
+// TestNamingNoConflictBetweenDistinctSources：C2 的直接产物——
+// 两个不同源（home / second）声明互不相交的包级符号，预检不得误报。
+func TestNamingNoConflictBetweenDistinctSources(t *testing.T) {
+	dir := t.TempDir()
+	conflicts, err := detectNamingConflicts(namingTargets(dir, "home.gxml", "second.gxml"))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("不同源不应冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
 func TestNamingDetectsExistingUserSymbol(t *testing.T) {
 	dir := t.TempDir()
 	userFile := filepath.Join(dir, "user.go")
-	if err := os.WriteFile(userFile, []byte("package demo\n\ntype renderKey struct{}\n"), 0o644); err != nil {
+	if err := os.WriteFile(userFile, []byte("package demo\n\ntype goxmlRenderKeyHome struct{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,11 +176,11 @@ func TestNamingDetectsExistingUserSymbol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}
-	if !hasConflict(conflicts, "renderKey", namingConflictExisting) {
-		t.Fatalf("应报 renderKey 与用户符号冲突；实际=%v", symbolsOf(conflicts))
+	if !hasConflict(conflicts, "goxmlRenderKeyHome", namingConflictExisting) {
+		t.Fatalf("应报 goxmlRenderKeyHome 与用户符号冲突；实际=%v", symbolsOf(conflicts))
 	}
 	for _, c := range conflicts {
-		if c.Symbol == "renderKey" && c.Kind == namingConflictExisting && c.Owner != userFile {
+		if c.Symbol == "goxmlRenderKeyHome" && c.Kind == namingConflictExisting && c.Owner != userFile {
 			t.Errorf("冲突来源应为 %s，实际 %s", userFile, c.Owner)
 		}
 	}
@@ -251,7 +262,7 @@ func TestNamingNoConflictSingleFile(t *testing.T) {
 func TestNamingIgnoresTestFiles(t *testing.T) {
 	dir := t.TempDir()
 	tf := filepath.Join(dir, "user_test.go")
-	if err := os.WriteFile(tf, []byte("package demo\n\ntype renderKey struct{}\n"), 0o644); err != nil {
+	if err := os.WriteFile(tf, []byte("package demo\n\ntype goxmlRenderKeyHome struct{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,5 +284,53 @@ func TestNamingMissingTargetDirIsNotError(t *testing.T) {
 	}
 	if len(conflicts) != 0 {
 		t.Fatalf("不应有冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
+// TestNamingUniqueSymbolsAcrossSources 是 C2 的契约断言：
+// 不同源文件的生成片段必须声明**互不相交**的包级符号，且形态符合裁决 D-3
+// （小写 goxml 前缀 + 源派生后缀，例如 goxmlRenderKeyHome）。
+func TestNamingUniqueSymbolsAcrossSources(t *testing.T) {
+	viewA, err := viewSymbol("home.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol: %v", err)
+	}
+	viewB, err := viewSymbol("second.gxml")
+	if err != nil {
+		t.Fatalf("viewSymbol: %v", err)
+	}
+
+	keyA, cacheA, err := generatedTypeNames("home.gxml")
+	if err != nil {
+		t.Fatalf("generatedTypeNames: %v", err)
+	}
+	keyB, cacheB, err := generatedTypeNames("second.gxml")
+	if err != nil {
+		t.Fatalf("generatedTypeNames: %v", err)
+	}
+
+	// 形态：goxml + 类型 + 源后缀
+	if want := "goxmlRenderKeyHome"; keyA != want {
+		t.Errorf("key 类型名 = %q, 期望 %q", keyA, want)
+	}
+	if want := "goxmlTextCacheHome"; cacheA != want {
+		t.Errorf("cache 类型名 = %q, 期望 %q", cacheA, want)
+	}
+	if keyA == keyB || cacheA == cacheB {
+		t.Fatalf("不同源派生出相同类型名：%q/%q vs %q/%q", keyA, cacheA, keyB, cacheB)
+	}
+
+	// 片段层面必须互不相交（C1 红灯证据的正面断言）
+	namesA := declaredPackageNames(t, renderKeyDecl(viewA, keyA, cacheA)+bindCacheDecl(viewA, 2, keyA, cacheA))
+	namesB := declaredPackageNames(t, renderKeyDecl(viewB, keyB, cacheB)+bindCacheDecl(viewB, 2, keyB, cacheB))
+	var dup []string
+	for n := range namesA {
+		if namesB[n] {
+			dup = append(dup, n)
+		}
+	}
+	sort.Strings(dup)
+	if len(dup) > 0 {
+		t.Fatalf("两个源的片段仍声明相同包级符号 %v", dup)
 	}
 }

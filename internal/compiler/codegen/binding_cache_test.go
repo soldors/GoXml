@@ -20,7 +20,7 @@ import (
 
 // b3Probe 是五场景共用的探测框架。
 const b3Probe = `
-func b3Layout(v *GoxmlDashboardView, th *material.Theme, w, h int) (int, *textCache) {
+func b3Layout(v *GoxmlDashboardView, th *material.Theme, w, h int) (int, *goxmlTextCacheDashboard) {
 	win, err := headless.NewWindow(w, h)
 	if err != nil {
 		return -1, nil
@@ -172,7 +172,7 @@ func TestProbeScene4(t *testing.T) {
 	}
 	_ = v
 
-	// 约束变化 → renderKey 变化 → 必须重录
+	// 约束变化 → 上下文指纹变化 → 必须重录
 	var o1 op.Ops
 	v.Layout(rtGtx(&o1, 240, 60), th)
 	k1 := v.slots[0].key
@@ -185,7 +185,7 @@ func TestProbeScene4(t *testing.T) {
 
 	t.Logf("key 变化=%v call 变化=%v", k1 != k2, call1 != call2)
 	if k1 == k2 {
-		t.Error("约束变化后 renderKey 未变化")
+		t.Error("约束变化后上下文指纹未变化")
 	}
 	// 回到原约束 → key 回到原值，但缓存已被覆盖（只保留最新一份）
 	var o3 op.Ops
@@ -267,7 +267,7 @@ func TestB3_MustNotFreezeWholePage(t *testing.T) {
 		t.Errorf("绑定页面不得重新引入整页静态缓存字段:\n%s", s)
 	}
 	// 但必须保留槽位缓存。
-	if !strings.Contains(s, "textCache") || !strings.Contains(s, "bindText") {
+	if !strings.Contains(s, "goxmlTextCacheDashboard") || !strings.Contains(s, "bindText") {
 		t.Error("绑定页面应生成槽位缓存")
 	}
 }

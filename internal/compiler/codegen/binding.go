@@ -210,22 +210,24 @@ func isInteractiveTag(tag string) bool {
 //
 // 三层中的前两层：
 //   - 值读取：每次都读（否则无法感知变化）；
-//   - 显示转换：值 → 字符串。键 = renderKey + 显示串；
+//   - 显示转换：值 → 字符串。键 = 上下文指纹（goxmlRenderKey<Source>）+ 显示串；
 //     显示串不变时**回放**已录制的绘制（不再调用文本布局入口）。
 //
 // shaping 层：由 Gio 内部缓存承担，项目层不维护第二份
 // （TASK-BINDING-IMPLEMENT-003 §3：先测量，Gio 内部已有 layoutCache）。
-func bindCacheDecl(view string, slots int) string {
+func bindCacheDecl(view string, slots int, keyType, cacheType string) string {
 	if slots == 0 {
 		return ""
 	}
 	return `
-// textCache 是单个绑定 <Text> 的显示缓存槽位（契约 §05.2/§05.3.1）。
+// ` + cacheType + ` 是单个绑定 <Text> 的显示缓存槽位（契约 §05.2/§05.3.1）。
+//
+// 类型名按源文件唯一（goxmlTextCache<Source>），理由同 goxmlRenderKey<Source>。
 //
 // ⚠️ 生成产物，不要手改。语义见 绑定系统契约 §05。
-type textCache struct {
+type ` + cacheType + ` struct {
 	// key 是录制时的上下文指纹（约束/DPI/主题/Locale）。
-	key renderKey
+	key ` + keyType + `
 	// text 是录制时的显示字符串。
 	text string
 	// ops 是**本槽位私有**的持久 Ops。
@@ -254,7 +256,7 @@ type textCache struct {
 func (v *` + view + `) bindText(gtx layout.Context, th *material.Theme, slot int, s string) layout.Dimensions {
 	// 惰性初始化槽位数组。
 	if len(v.slots) != ` + strconv.Itoa(slots) + ` {
-		v.slots = make([]textCache, ` + strconv.Itoa(slots) + `)
+		v.slots = make([]` + cacheType + `, ` + strconv.Itoa(slots) + `)
 	}
 	k := v.currentKey(gtx, th)
 	c := &v.slots[slot]
