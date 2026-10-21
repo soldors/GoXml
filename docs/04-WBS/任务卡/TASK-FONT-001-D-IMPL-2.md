@@ -2,12 +2,20 @@
 
 ## 元信息
 
-- 状态：**接口与切换时机已冻结，实现未开始**（2026-10-21 冻结）
+- 状态：**接口与切换时机已冻结（第 2 版，按评审意见修正 3 处），实现未开始**
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
-- 前置：`TASK-FONT-001-D-IMPL-1`（提供 `Lazy.Take()` / `Lazy.Theme()` / `Lazy.Report()`）
+- 前置：`TASK-FONT-001-D-IMPL-1`（提供 `Lazy.Take()` / `Theme()` / `Report()` / `SetNotify`）
 - 交付物：`pkg/runtime/app` 的懒加载接线 + 测量钩子 + 测试
 - 验收命令见 §6（工具限制：真实窗口在无图形会话时不出帧，故**布局/呈现类断言
   允许 Skip，但必须打印帧数**；纯逻辑断言不得 Skip）
+
+### 修订记录（第 2 版）
+
+| # | 评审问题 | 处理 |
+|---|---|---|
+| 2 | `DisplayedAt` 的定义超过了现有证据 | 改名为 **`FrameSubmittedAt`**，语义上界止于 `e.Frame` 返回；禁止表述为"屏幕呈现"，见 §1.4 |
+| 2b | 流程 ④ 没有调用 `lz.MarkFirstLayout` | 补入伪代码，并要求用例断言"值确实写回 `Report()`"，见 §1.2 / §4 |
+| 5 | "全仓库唯一 Shaper 赋值点"过严，与既有同步路径冲突 | 改为"懒加载切换路径唯一 + 既有 `theme.go:116` 不计入"，见 §7-2 |
 
 ## 0. 本卡只做一件事
 
@@ -30,8 +38,8 @@
 func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error)
 ```
 
-- `NewLazyApp` 内部调用 **一次** `lz.Request()`（首次加载的唯一触发点），
-  且**不等待**它完成。
+- `NewLazyApp` 内部**先 `lz.SetNotify(...)` 再 `lz.Request()`**（顺序与闭包捕获见
+  `TASK-FONT-001-D-IMPL-1` §2.3），且**不等待**加载完成。
 - `App.Run()` / `Run()` 的行为与语义**不变**；懒加载路径走同一 `loop`，
   只多一个"帧内取待应用主题"的步骤。
 
@@ -47,10 +55,12 @@ FrameEvent 到达
   │       layoutStart = now()
   │  }
   ├─ gtx := app.NewContext(&ops, e)
-  ├─ view.Layout(gtx, th)                        // ③ 首次排版计时在此区间
-  ├─ if swapped { firstLayoutAfterSwap = now()-layoutStart }  // ④ 只记第一次
-  ├─ e.Frame(gtx.Ops)                            // ⑤ 提交呈现
-  └─ if swapped { lz.MarkDisplayed(now()) }      // ⑥ 呈现之后才算"已显示"（R1）
+  ├─ view.Layout(gtx, th)                        // ③ 排版计时在此区间
+  ├─ if swapped && firstSwapFrame {              // ④ 只记第一次
+  │       lz.MarkFirstLayout(now()-layoutStart)  //    必须真的写回 Report（评审点名）
+  │  }
+  ├─ e.Frame(gtx.Ops)                            // ⑤ 提交
+  └─ if swapped { lz.MarkFrameSubmitted(now()) } // ⑥ 提交返回后（代理指标，见 §1.4）
 ```
 
 四条不许动的理由：
@@ -59,16 +69,36 @@ FrameEvent 到达
    跨 goroutine 共用 shaper 的后果是 fatal error（D 卡 §4.3.2）。
 2. **② 只换 `Shaper`**：同时改 `Palette`/字号等会让"布局差"混入无关变量，
    D6-6 的度量差就不可归因了。
-3. **⑤ 之后再记 `DisplayedAt`**：`e.Frame` 之前只是"生成了绘制指令"，
-   提交返回后才算呈现（R1：加载完成 ≠ 已显示）。
-4. **⑥ 的一次性**：`DisplayedAt` 只记**首次**，后续帧不得覆盖——
-   否则"显示时刻"会随每帧漂移，变成一个没有意义的字段。
+3. **⑤ 之后再记时间**：`e.Frame` 之前只是"生成了绘制指令"；提交返回后才算
+   这一帧已经交给 Gio 的呈现路径（R1：加载完成 ≠ 已提交）。
+4. **⑥ 的一次性**：该时间只记**首次**，后续帧不得覆盖——否则会随每帧漂移，
+   变成一个没有意义的字段。
 
-### 1.3 `Lazy` 需要补的两个方法（IMPL-1 的追加，向后兼容）
+### 1.4 字段语义更正：`DisplayedAt` → `FrameSubmittedAt`（评审阻塞点 2）
+
+第 1 版把 `e.Frame` 返回后的时间命名为 `DisplayedAt`（"实际显示时刻"），
+**这超出了现有证据**：
+
+- `e.Frame` 返回只能证明"绘制操作已提交给 Gio 的帧处理路径"；
+- 它**不能**证明像素已经出现在屏幕上；
+- 而 `TASK-FONT-001-D-PROBE` §8.4 已明确把"**present 耗时与调度延迟的分离**"
+  列为未覆盖项，本仓库没有任何手段测到真实呈现时刻。
+
+因此字段**改名为 `FrameSubmittedAt`**，并在类型注释里写死：
+
+> 这是"帧提交完成"的**代理时间**，不是屏幕呈现时间。
+> 语义上界止于「`app.FrameEvent.Frame` 已返回」。
+> 任何报告/文档**不得**把它表述为"用户已看到新字体"。
+
+理由不只是措辞：`FrameSubmittedAt` 会被 IMPL-3 用于 R1 的"加载完成 ≠ 已提交"
+断言。如果字段名声称的是呈现时刻而实际测的是提交时刻，那条断言就成了假证据。
+
+### 1.5 `Lazy` 需要补的两个方法（IMPL-1 的追加，向后兼容）
 
 ```go
-// MarkDisplayed 由渲染线程在真主题**首次提交呈现之后**调用；只记第一次。
-func (l *Lazy) MarkDisplayed(at time.Time)
+// MarkFrameSubmitted 由渲染线程在真主题**首次提交返回之后**调用；只记第一次。
+// 记录的是提交时刻的代理值，不是屏幕呈现时刻（见 §1.4）。
+func (l *Lazy) MarkFrameSubmitted(at time.Time)
 
 // MarkFirstLayout 记录切换后首次排版耗时；只记第一次。
 func (l *Lazy) MarkFirstLayout(d time.Duration)
@@ -79,26 +109,28 @@ func (l *Lazy) MarkFirstLayout(d time.Duration)
 
 ## 2. 三条规则在本卡的落地
 
-### R1：加载完成 ≠ 已显示
+### R1：加载完成 ≠ 已提交（不得说成"已显示"）
 
-- `Report().LoadedAt`（IMPL-1 产出）与 `DisplayedAt`（本卡产出）**两个字段分开**；
-- 断言 `DisplayedAt >= LoadedAt`，且**必须存在一个用例让二者明显不等**
-  （注入一个延迟完成或延迟取走的场景），证明字段不是抄同一个值；
-- 禁止把 `DisplayedAt - LoadedAt` 写进"字体解析耗时"。
+- `Report().LoadedAt`（IMPL-1 产出）与 `FrameSubmittedAt`（本卡产出）**两个字段**；
+- 断言 `FrameSubmittedAt >= LoadedAt`，且**必须存在一个用例让二者明显不等**
+  （注入延迟完成或延迟取走的场景），证明字段不是抄同一个值；
+- 禁止把 `FrameSubmittedAt - LoadedAt` 写进任何"耗时"指标——这段是
+  `Invalidate` 调度 + 排队，2b 实测在帧在途时可达 75.7–105.2 ms；
+- **措辞纪律**：本卡及后续文档一律写"提交"，不写"显示/呈现"。
 
 ### R2：后台不得查询渲染 shaper
 
 本卡的职责是**保证切换只发生在帧内**。可测锚点：
 
-- 在 `OnReady` 回调里**不换 shaper**（只 `Invalidate`）；
+- 通知回调（`SetNotify` 绑定的那个）里**不换 shaper**，只 `Invalidate`；
 - 用一个"帧内标记"（`atomic` 递增的 frame 序号 + 渲染 goroutine 标记）
   断言 `Take()` 只在该标记为真的区间被调用；
 - 若 `Take()` 在帧外被调用，测试直接失败（不是靠崩溃来发现）。
 
 ### R3：四个指标独立
 
-本卡负责其中两个：**切换后首次排版耗时**、**布局度量差**。
-另外两个（首帧预算、后台解析耗时）分别归 ACCEPT 与 IMPL-1。
+本卡负责其中两个：**切换后首次排版耗时**（`FirstLayoutAfterSwap`）、
+**布局度量差**。另外两个（M1 首帧预算、M2/M3 后台段）分别归 ACCEPT 与 IMPL-1。
 本卡**不得**输出"综合耗时"之类的合数。
 
 ## 3. 布局跳动的判据（D6-6，评审点名项）
@@ -122,8 +154,8 @@ delta = |size_real.Width - size_temp.Width| / max(size_temp.Width, 1)
 |---|---|---|
 | `TestFontLazyLoadSwapOnlyInFrame` | `Take()` 只在帧内被调用；帧外调用即失败 | 用帧标记，不靠崩溃 |
 | `TestFontLazyLoadSwapOncePerGeneration` | 同一次 Ready 只触发一次 `th.Shaper = ...`；后续帧不再换 | 用计数器 |
-| `TestFontLazyLoadDisplayedAtAfterLoaded` | `DisplayedAt >= LoadedAt`，且用例中二者明显不等 | R1 |
-| `TestFontLazyLoadFirstLayoutRecorded` | 切换后首帧记录了排版耗时且 > 0；后续帧不覆盖 | 一次性语义 |
+| `TestFontLazyLoadFrameSubmittedAfterLoaded` | `FrameSubmittedAt >= LoadedAt`，且用例中二者明显不等 | R1（**不写"显示"**） |
+| `TestFontLazyLoadFirstLayoutRecorded` | 切换后首帧记录了排版耗时且 > 0；后续帧不覆盖；**值确实写回 `Report()`** | 评审点名：必须调 `MarkFirstLayout` |
 | `TestFontLazyLoadLayoutDelta` | 打印 temp/real 宽度与 delta，断言 `delta <= 2%` 或给出说明 | D6-6 |
 | `TestFontLazyLoadNoRepeatShaping` | 切换后连续 N 帧不再产生新的 shaping 冷启动（耗时上界） | D6-3 |
 | `TestFontLazyLoadNoFrameCounting` | 唤醒类断言必须用序号/状态，不得数帧 | D 卡 §4.3.5 纪律 |
@@ -152,8 +184,18 @@ go vet ./pkg/runtime/app/
 ## 7. 完成判据
 
 1. §4 七个用例 PASS（真实窗口用例允许 Skip，但必须在报告中单列"未自动验证"）；
-2. `th.Shaper` 的替换点**全仓库只有一处**（`pkg/runtime/app` 的帧内分支），
-   用 `grep -rn "\.Shaper *=" --include=*.go` 自查并在报告里贴结果；
+2. **`th.Shaper` 的赋值点范围**（第 2 版更正，原来的"全仓库只有一处"是错的）：
+   既有同步路径 `pkg/runtime/theme/theme.go:116` 的 `th.Shaper = text.NewShaper(...)`
+   **本来就存在且必须保留**（路线 B 的同步构建），不计入本卡的切换点。
+   本卡只要求：**懒加载切换路径的赋值点唯一，且位于 `pkg/runtime/app` 的帧内分支**。
+   自查命令与期望：
+   ```text
+   grep -rn "\.Shaper *=" --include=*.go pkg/ | grep -v _test.go
+   # 期望恰好 2 处：
+   #   pkg/runtime/theme/theme.go   —— 既有同步路径（不计入）
+   #   pkg/runtime/app/*.go         —— 本卡的帧内切换点（唯一 1 处）
+   ```
+   出现第 3 处即判失败；把既有那处算成违规同样是判错。
 3. 既有 `pkg/runtime/app` 测试全绿，`Run` / `RunWith` / `RunWindow*` 行为不变
    （它们不经过 `Lazy`，不得被顺手改掉）；
 4. 布局 delta 的实际数值记录在案（换字体/换平台后可复核）。
