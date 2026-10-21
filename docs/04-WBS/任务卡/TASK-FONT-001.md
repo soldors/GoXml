@@ -249,7 +249,8 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   共用 shaper **必现崩溃**（6/6，fatal/panic，崩点分散于 `bidi` 与 `fontscan`）；
   **失效机制（`Window.Invalidate()`）❌ 未验证**——`headless.Window` 无此方法，
   只有源码依据。详见 D 卡 §4.3 / §4.3.4。
-  2) 真实窗口补验 `Invalidate` 与 `FrameEvent` 时序（D 卡 §10 第 2b 步）；
+  2) 真实窗口补验 `Invalidate` 与 `FrameEvent` 时序（D 卡 §10 第 2b 步，
+  已独立成卡 `TASK-FONT-001-D-PROBE`）；
   3) 实现懒加载，不同时改字体选择逻辑；4) Windows 完整回归；
   5) **Linux 无 CJK 环境验证嵌入增量**；6) 更新父卡与 WBS |
 | 已运行命令及结果 | 2026-10-21 在 `9b81748` 上重跑四条验收命令，见 §3.0：
