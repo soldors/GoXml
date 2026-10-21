@@ -158,9 +158,73 @@
 `WithCollection` 给定，没有公开的"换集合"API，且内部缓存与新集合不一致会
 产生难以诊断的结果。
 
-> 待验证（执行顺序第 2 步）：帧内替换 `th.Shaper` 是否被 Gio 完全接受
-> （没有隐藏的 per-shaper 状态绑定在窗口或 ops 上）。
-> 必须先用**独立小任务**实测，不得凭"Shaper 只是个指针"推断安全性。
+> ✅ **已验证（2026-10-21，执行顺序第 2 步完成）**。实测结论见 §4.3。
+
+### 4.3 生命周期独立验证结果（2026-10-21，Windows / headless D3D11）
+
+探针：`pkg/runtime/app/testdata/lifecycleprobe`（替换语义）与
+`pkg/runtime/app/testdata/concurrencyprobe`（并发破坏性，**预期崩溃**）。
+两者都用 `headless.NewWindow`（D3D11）+ `material.Label` 渲染，**不碰**
+`pkg/runtime/theme` 的任何选择逻辑。
+
+#### 4.3.1 帧内替换 `th.Shaper`：被接受，生效，可回退
+
+用 goregular（纯拉丁，无汉字）与嵌入子集（有汉字）渲染同一个汉字 `世`，
+统计非白像素：
+
+| 场景 | 结果 | 判定 |
+|---|---|---|
+| A. 同一 shaper 连续 3 帧 | `nonWhite=164` × 3 | ✅ 帧间稳定 |
+| B. 帧间替换（拉丁 → 嵌入） | 164 → **579** | ✅ 替换**真的生效**（字形从 notdef 变成真实汉字） |
+| C. 换回旧 shaper | 回到 **164**（与首次完全一致） | ✅ **无隐藏 per-shaper 状态/所有权** |
+| D. 每帧交替替换 10 帧 | 无 panic、无错误 | ✅ 连续帧绘制稳定 |
+
+→ **D4「帧内替换」模型成立**：Gio 没有把 shaper 绑在窗口或 ops 上，
+`th.Shaper` 可在两帧之间自由替换，且旧实例换回后行为不变。
+
+#### 4.3.2 跨 goroutine 共用 shaper：**必现崩溃**（比注释更严重）
+
+`concurrencyprobe` 让 4 个 goroutine 共用**同一个** shaper 各做 300 次
+`LayoutString`，连跑 6 次，**6/6 全部以退出码 2 终止**：
+
+| 次数 | 错误 | 崩溃位置 |
+|---|---|---|
+| 1、4 | `index out of range [16] with length 16` | `bidi.(*Runs).Run` |
+| 2、3 | `slice bounds out of range [:16] with capacity 0` | `bidi.(*Paragraph).prepareInput` |
+| 5 | `concurrent map writes` | `fontscan.familyList.compileTo` |
+| 6 | `concurrent map read and map write` | `fontscan.familyList.compileTo` |
+| 另测 | `concurrent map read and map write` | `fontscan.runeLRU.Get` |
+
+三条结论，比 Gio 注释的「会 panic」更具体：
+
+1. **不是概率性警告，是必现**（6/6）。
+2. **崩溃点不固定**：分布在 `bidi` 与 `fontscan` 的多个内部结构上
+   （双向文本段落、字体族列表、runes LRU）。
+   → 内部状态是**大面积被破坏**，不是"小心某个字段"就能绕开的单点问题。
+3. **`recover()` 抓不住其中一部分**：`concurrent map ...` 是 Go 运行时的
+   **fatal error**，进程直接终止，不是普通 panic。
+
+#### 4.3.3 由此产生的一条新约束（C 的代码也受影响）
+
+> **异步加载路径绝对不能用渲染线程的 shaper 做字形查询。**
+
+C 的 `theme.Resolver.ResolveRune` 内部调用 `shaper.LayoutString`，
+因此它和 `material.Label` 一样会触发上述崩溃。
+D 的实现在后台 goroutine 里若需要字形信息（例如做覆盖判定），
+**必须使用自己构造的独立 shaper**，不得借用 `th.Shaper`
+（即使只是"读一下"也不安全——`ResolveFace` 会写 LRU 缓存）。
+
+#### 4.3.4 仍未验证的部分（不得当成已验证）
+
+- **`Window.Invalidate()` 的并发行为**：`headless.Window` **没有**该方法
+  （它只有显式 `Frame`），本探针无法覆盖。现状只有源码依据
+  （`app/window.go:284` 注释 "safe for concurrent use"）。
+  → 需要在**真实窗口**下验证，属于 D 实现阶段的第一个动作。
+- **真实窗口的事件循环时序**：headless 的 `Frame` 是同步显式调用，
+  等价于"下一帧"，但**不等价于**真实 `FrameEvent` 的到达时机。
+  本验证证明的是"帧间替换安全"，**没有**证明"在 `FrameEvent` 内替换"的时序。
+- **`-race`**：本机 Windows 不可用（缺 C 工具链），因此并发结论只能靠
+  "必现崩溃"这一现象，不能靠检测器给出数据竞争报告。
 
 ## 6. D5：诊断保持完整
 
@@ -201,8 +265,8 @@
 
 1. **真实首帧未测**（D1 只到 shaping）。首帧预算的阈值必须在拿到实测后
    再定，**不得**先拍一个数字再去找数据。
-2. **帧内换 shaper 未被实测验证**。若 Gio 有隐藏的 per-shaper 状态绑定，
-   方案要重定——这正是执行顺序第 2 步要先用小任务验证的原因。
+2. ~~帧内换 shaper 未被实测验证~~ → **已验证**（§4.3.1）：替换生效、可回退、
+   连续帧稳定。剩余风险收敛为「真实窗口 `FrameEvent` 时序未验证」。
 3. **换 shaper 会重新付 41–53 ms 的 shaping 冷启动**（§2 读数 2）。
    若不处理，"首帧不阻塞"达标但"加载完成后那一帧"卡顿。
 4. **布局跳动**没有现成判据，需要 D 自己定义"可接受"的度量差阈值——
@@ -212,12 +276,20 @@
    （属于"首帧临时字体"，不是"补充链"），并在诊断里可区分。
 6. 跨平台：上述基线**仅 Windows 实测**；Linux 精简环境下探测可能更快
    （无字体可探）但嵌入解析占比更高。
+7. **异步路径不得借用渲染线程的 shaper**（§4.3.3，实测得出）。
+   C 的 `Resolver.ResolveRune` 会调用 `shaper.LayoutString`，
+   与 `material.Label` 同样会触发必现崩溃。后台若需字形信息，
+   **必须构造独立的 shaper**——"只是读一下"也不安全，
+   因为 `ResolveFace` 会写 `fontscan` 的 LRU 缓存。
 
 ## 10. 执行顺序（评审建议，照此推进）
 
 1. ~~在 D 卡中补齐基线测量与状态机设计，冻结接口与并发语义~~ ✅ 本卡完成
-2. **独立小任务验证** Gio 的异步完成后失效机制与 shaper 生命周期
-   （帧内换 `th.Shaper` 是否安全）——不改动字体选择逻辑
+2. ✅ **独立小任务验证** Gio 的异步完成后失效机制与 shaper 生命周期
+   （帧内换 `th.Shaper` 是否安全）——**已完成 2026-10-21，见 §4.3**。
+   结论：帧内替换安全且生效（§4.3.1）；跨 goroutine 共用 shaper **必现崩溃**
+   （§4.3.2，6/6，fatal）；由此新增约束"异步路径不得借用渲染 shaper"（§4.3.3）。
+   剩余未验证项：`Window.Invalidate()` 并发行为与真实 `FrameEvent` 时序（§4.3.4）。
 3. 实现懒加载；**不同时改字体选择逻辑**
 4. Windows 现有环境跑完整回归；**并在 Linux 无 CJK 字体环境验证嵌入补充链
    确实提供增量覆盖**（C 卡 §7-6 的未竟项一并在此闭环）
@@ -232,7 +304,8 @@
 | 当前基线提交 | `2dbe874`（含 `49d18c5` D 卡冻结、`0adcd97`、`5aea209` C 实现） |
 | 本卡状态 | **设计已冻结**；**实现未开始**；占位用例仍是 `t.Skip`。
   §3 的两处待选项已于 2026-10-21 冻结（重复请求立即返回临时字体 /
-  失败后不自动重试，只由显式请求触发） |
+  失败后不自动重试，只由显式请求触发）。
+  **§10 第 2 步（Gio 生命周期独立验证）已完成**，见 §4.3 |
 | 三条已确认结论（评审 2026-10-21） | ① C 已完成子任务验收，但跨平台待验证；
   **位布局依赖保留为 Gio 升级门禁**；**Windows 零增量不得外推**。
   ② D 的性能基线已建立，但**真实首帧未测量**——探测 97–109 ms、
@@ -240,10 +313,15 @@
   ③ 下一步**只做 Gio 生命周期独立验证**（帧内替换 `th.Shaper`、
   `Window.Invalidate()`、连续帧绘制），再决定是否进入 D 的实现 |
 | 本轮未做的事 | 未重复 D1 测量；未实现 D；未启动其他字体功能 |
-| 取证产物 | `pkg/runtime/theme/testdata/coldstartprobe`（冷启动分阶段计时 + 首帧 shaper 对照） |
-| 已完成 | D1 基线实测（§2）；状态机（§3，含两处待选项冻结）；三个设计问题的冻结答复（§8） |
-| 未完成 | §4–§7 全部实现；§10 第 2–5 步 |
-| 已知失败或风险 | 见 §9（6 条）。**真实首帧未测**、**帧内换 shaper 未验证**、**Linux 增量未闭环** |
-| 下一步 | 按 §10 第 2 步**只做 Gio 生命周期独立验证**：
-  帧内替换 `th.Shaper` + `Window.Invalidate()` + 连续帧绘制。
-  **不得**跳过验证直接实现懒加载 |
+| 取证产物 | `pkg/runtime/theme/testdata/coldstartprobe`（冷启动分阶段计时 + 首帧 shaper 对照）；
+  `pkg/runtime/app/testdata/lifecycleprobe`（帧间替换语义，A–D 四场景）；
+  `pkg/runtime/app/testdata/concurrencyprobe`（跨 goroutine 破坏性，**预期崩溃**） |
+| 已完成 | D1 基线实测（§2）；状态机（§3，含两处待选项冻结）；三个设计问题的冻结答复（§8）；
+  **§10 第 2 步：Gio 生命周期独立验证（§4.3）** |
+| 未完成 | §4–§7 全部实现；§10 第 3–5 步；`Window.Invalidate()` 真实窗口验证（§4.3.4） |
+| 已知失败或风险 | 见 §9（7 条）。**真实首帧未测**、**`Invalidate` 与真实 FrameEvent 时序未验证**、
+  **Linux 增量未闭环** |
+| 下一步 | 按 §10 第 3 步实现懒加载。**第一个动作**是在真实窗口下补验
+  `Window.Invalidate()` 的并发行为与 `FrameEvent` 时序（§4.3.4 的未验证项）。
+  **不得**跳过它直接进实现——headless 只能证明"帧间替换安全"，
+  不能证明"在 `FrameEvent` 内替换"的时序 |
