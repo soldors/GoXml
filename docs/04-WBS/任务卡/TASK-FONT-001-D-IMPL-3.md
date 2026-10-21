@@ -1,8 +1,8 @@
-# TASK-FONT-001-D-IMPL-3：诊断、失败终态与严格语义（接口已冻结，实现未开始）
+# TASK-FONT-001-D-IMPL-3：诊断、失败终态与严格语义（第 3 版接口已冻结，实现未开始）
 
 ## 元信息
 
-- 状态：**接口与失败语义已冻结（第 2 版，按评审意见修正 M2/M3 口径），实现未开始**
+- 状态：**接口与失败语义已冻结（第 3 版，按评审意见同步 `CompletedAt` 失败路径口径），实现未开始**
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
 - 前置：`TASK-FONT-001-D-IMPL-1`（状态机与 `Report`）、`TASK-FONT-001-D-IMPL-2`（帧内切换）
 - 交付物：`Report` 完整字段、`Config.StrictFontFailure`、指标分离报告、测试
@@ -14,6 +14,14 @@
 |---|---|---|
 | 3 | M2 的 20 ms 与既有实测 97–109 ms 矛盾，且 `ResolveWithReport` 区间不等于探测 | 重定口径：M2 只算 `probe()` 候选循环、**不设通过阈值**；M3 改为 `LoadElapsed` 后台总量；删除不可测的 `ParseElapsed`，见 §4.1 / §4.2 |
 | 2 | `DisplayedAt` 语义超出证据 | 全文改为 `FrameSubmittedAt`（提交返回，代理指标），见 §3 字段表 |
+
+### 修订记录（第 3 版）
+
+| # | 评审问题 | 处理 |
+|---|---|---|
+| B | 失败路径 `LoadElapsed` 无法成立（`LoadedAt` 为零），但 M3 又要求它表示后台总耗时 | 字段表补 `CompletedAt`；M3 计量边界改为 `RequestedAt→CompletedAt`（成功/失败都记）；`TestFontLazyLoadFailureVisible` 增加失败路径耗时断言，见 §3 / §4.1 |
+| C | `NotifyLateBound` 产出方写成本卡前置的 IMPL-2 | 改为**IMPL-1**（`SetNotify` 内部置位），见 §3 字段表 |
+| — | 97–109 ms 易被当成 M2 实测值 | §4.2 第 3 条补"它不是 M2 实测值、不得与 20 ms 直接比" |
 
 ## 0. 本卡要解决的是**语义冲突**，不是加日志
 
@@ -85,24 +93,25 @@ func (a *App) Lazy() *theme.Lazy
 |---|---|---|
 | `State` / `Family` / `Attempts` / `TempSource` | IMPL-1 | 状态机与临时字体来源 |
 | `Probe *ProbeReport` | IMPL-1 | 探测诊断（含 `Candidates`/`Embedded`/`Coverage`/`Err`） |
-| `RequestedAt` / `LoadedAt` | IMPL-1 | 请求开始 / 产出可用主题 |
+| `RequestedAt` / `LoadedAt` | IMPL-1 | 请求开始 / **产出可用主题**（失败时零值） |
+| `CompletedAt` | IMPL-1 | 后台进入终态（Ready 或 Failed）的时刻，**成功/失败都非零** |
 | `TempElapsed` | IMPL-1 | 临时主题构造（含一次嵌入解析），属首帧成本 |
-| `ProbeElapsed` | IMPL-1 | `probe()` 候选循环实耗时（**不含**补链/兜底，见 §4） |
-| `LoadElapsed` | IMPL-1 | 后台墙钟总量 `LoadedAt-RequestedAt`（不含等待帧） |
+| `ProbeElapsed` | IMPL-1 | `probe()` **候选循环**实耗时（**不含**补链/兜底，见 §4） |
+| `LoadElapsed` | IMPL-1 | 后台墙钟总量 `CompletedAt-RequestedAt`，**失败路径同样记录** |
 | `FrameSubmittedAt` | IMPL-2 | 真主题首次**提交返回后**的时刻（代理指标，非屏幕呈现） |
 | `FirstLayoutAfterSwap` | IMPL-2 | 切换后首次排版耗时 |
-| `NotifyLateBound` | IMPL-2 | `SetNotify` 晚于 `Request`，通知未绑上 |
+| `NotifyLateBound` | IMPL-1 | `SetNotify` 重复/晚绑定/nil 绑定未成功（第 3 版从 IMPL-2 收回） |
 | `Err error` | 本卡 | 终态错误；失败时 `errors.Is(err, contracts.ErrFontNotFound)` 为真 |
 
 ## 4. 规则 R3：四个指标独立验收（不得互相替代）
 
-### 4.1 四个指标的口径（第 2 版更正 M2/M3）
+### 4.1 四个指标的口径（第 3 版更正 M2/M3）
 
 | # | 指标 | 字段/来源 | 计量边界 | 判定 |
 |---|---|---|---|---|
-| M1 | 首帧预算 | `app` 侧记录（进程启动→首帧处理开始），内含 `TempElapsed` | 含窗口创建与临时主题构造；**不含等待字体** | 实测后定阈值（D 卡 §9-1 禁止先拍数字） |
+| M1 | 首帧预算 | `app` 侧记录（进程启动→首帧处理开始），内含 `TempElapsed` | 含窗口创建与临时主题构造（这段是**有界同步成本**，不是零）；**不含等待字体** | 实测后定阈值（D 卡 §9-1 禁止先拍数字） |
 | M2 | 探测段 | `Report.ProbeElapsed` = `Probe.Elapsed` | **仅 `probe()` 候选循环**（读文件 + 解析 + 覆盖判定）；不含补链与嵌入兜底 | **记录实际值，不设通过阈值**，见 §4.2 |
-| M3 | 后台总量 | `Report.LoadElapsed` | `RequestedAt → LoadedAt` 墙钟总量；不含等待帧 | 记录实际值；`LoadElapsed-ProbeElapsed` 即补链/兜底/主题构造余量 |
+| M3 | 后台总量 | `Report.LoadElapsed` | `RequestedAt → CompletedAt` 墙钟总量，**成功/失败都记**；不含等待帧 | 记录实际值；`LoadElapsed-ProbeElapsed` 即补链/兜底/主题构造余量 |
 | M4 | 切换后首次排版 | `Report.FirstLayoutAfterSwap` | 仅替换 `th.Shaper` 后第一次 `Layout` 区间 | 实测后定 |
 
 ### 4.2 为什么 M2 不是"≤20ms 通过"（评审阻塞点 3）
@@ -117,6 +126,9 @@ func (a *App) Lazy() *theme.Lazy
    第 1 版那个 `ParseElapsed` 字段因此已从 `LoadReport` 删除（IMPL-1 §6）；
 3. 实测 `ResolveWithReport` 冷启 **97–109 ms**，规范 §3.2 预算 **≤20 ms**。
    这是 **A/B/C 阶段就存在的既有缺口**，不是 D 引入的。
+   **但这个数字不是 M2 的实测值**——它测的是 `ResolveWithReport` 整个区间；
+   它可以证明"把整个调用叫探测"不严谨，**不可以**拿来当 `ProbeElapsed` 的基线
+   或与 20 ms 直接比较。M2 的真实数值只能由 IMPL-1 实现后实测，此前一律"待实测"。
 
 规范原文（`字体与文本渲染策略.md` §3.2）：「字体加载耗时（冷启动内）≤ 20 ms
 （**懒加载时应 ≤ 首帧 budget**）」。D 负责的是括号里那一句：**把它移出首帧**。
@@ -141,12 +153,12 @@ func (a *App) Lazy() *theme.Lazy
 
 | 用例 | 断言 |
 |---|---|
-| `TestFontLazyLoadDiagnosticsFields` | 成功路径：`Report()` 各字段就位，`Err==nil`，`State==LoadReady` |
-| `TestFontLazyLoadFailureVisible` | 系统 + 嵌入两条链路全失败：`State==LoadFailed`、`errors.Is(Err, contracts.ErrFontNotFound)`、`Probe.Candidates` 有失败原因 |
+| `TestFontLazyLoadDiagnosticsFields` | 成功路径：`Report()` 各字段就位（含 `CompletedAt` 非零且 `>= LoadedAt`），`Err==nil`，`State==LoadReady` |
+| `TestFontLazyLoadFailureVisible` | 系统 + 嵌入两条链路全失败：`State==LoadFailed`、`errors.Is(Err, contracts.ErrFontNotFound)`、`Probe.Candidates` 有失败原因、**`LoadedAt` 零值而 `CompletedAt`/`LoadElapsed` 非零** |
 | `TestFontLazyLoadFailureDistinguishable` | `Loading` 与 `Failed` 在读数值上可区分（`State`/`Err` 二元组不同），界面同为临时字体 |
 | `TestFontLazyLoadStrictFailure` | `StrictFontFailure=true`：窗口正常运行、无权 panic，`Run()` 正常返回后错误含 `ErrFontNotFound` |
 | `TestFontLazyLoadNonStrictKeepsRunning` | 默认 `false`：`Run()` 返回 nil，但 `Report().Err` 仍可读到失败原因 |
-| `TestFontLazyLoadMetricSeparation` | 四个指标字段**分别**可读、互不相同源；断言不存在"合数"字段；`ProbeElapsed` 只覆盖候选循环、`LoadElapsed >= ProbeElapsed` |
+| `TestFontLazyLoadMetricSeparation` | 四个指标字段**分别**可读、互不相同源；断言不存在"合数"字段；`ProbeElapsed` 只覆盖候选循环、`LoadElapsed >= ProbeElapsed`、`CompletedAt-RequestedAt ≈ LoadElapsed` |
 | `TestFontLazyLoadNoSilentFallback` | 失败后界面不得表现为"字体正常但内容错"——用 `MissingGlyphs` 或 `Coverage` 证明临时字体缺字形是可观测的 |
 
 ## 6. 验收命令

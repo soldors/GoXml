@@ -423,7 +423,7 @@ Windows / D3D11 / Gio v0.10.3 / `CGO_ENABLED=0`，**非 BLOCKED**）。
 | `TASK-FONT-001-D-IMPL-1` | 异步加载器与状态机（**不碰渲染**） | D（2a/2b 已完成） | `pkg/runtime/theme/lazy.go` + 9 用例 + 1 条结构门禁 |
 | `TASK-FONT-001-D-IMPL-2` | 帧内切换与布局一致性 | IMPL-1 | `pkg/runtime/app` 接线 + 7 用例 |
 | `TASK-FONT-001-D-IMPL-3` | 诊断、失败终态、四指标分离 | IMPL-1、IMPL-2 | `Report` 完整字段 + `StrictFontFailure` + 7 用例 |
-| `TASK-FONT-001-D-ACCEPT` | 整体验收与回归（不改产品代码） | IMPL-1/2/3 | D6 十行映射 + 九项回归 + 四指标实测 |
+| `TASK-FONT-001-D-ACCEPT` | 整体验收与回归（不改产品代码） | IMPL-1/2/3 | D6 十行映射 + 十一项回归 + 四指标实测 |
 
 依赖链（箭头表示"后者依赖前者"）：
 
@@ -467,17 +467,25 @@ IMPL-3 严格串在 IMPL-2 之后，不是保守，而是因为"严格失败语�
   靠运行时测试抓不稳。
 - 落点：IMPL-1 §3、IMPL-2 §2。
 
-**R3 每个性能指标独立验收（第 2 版更正 M2/M3 口径）**
+**R3 每个性能指标独立验收（第 3 版更正 M2/M3 口径）**
 
 - 四个指标：M1 首帧预算、**M2 探测段（`Probe.Elapsed`，仅候选循环）**、
-  **M3 后台总量（`LoadElapsed`，墙钟）**、M4 切换后首次排版。
+  **M3 后台总量（`LoadElapsed = CompletedAt - RequestedAt`，墙钟，成败都记）**、
+  M4 切换后首次排版。
 - **不得**用其中一个替代另一个；**不得**输出"总耗时"合数。
+- **M3 必须能在失败路径记录**：第 2 版把它定义成 `LoadedAt - RequestedAt`，
+  而 `LoadedAt` 在失败时为零，公式直接失效；第 3 版新增 `CompletedAt`
+  （后台进入 Ready/Failed 终态的时刻），把"有没有产出"与"跑完了没有"分成两个字段。
 - **M2 不设通过阈值**：规范 §3.2 的 20 ms 是"冷启动内加载耗时"预算，原文括号写明
   「懒加载时应 ≤ 首帧 budget」——D 的职责是**移出首帧**；实测 97–109 ms 是
-  A/B/C 阶段既有缺口，不是 D 引入的。真要做到 ≤20 ms 需候选优化，归独立待办。
+  A/B/C 阶段既有缺口，不是 D 引入的，且**它不是 M2 的实测值**
+  （测的是 `ResolveWithReport` 整段），不得填进 M2 格或与 20 ms 直接比。
 - **"解析耗时"当前不可测**：`probe()` 把读文件/解析/覆盖判定混在同一循环，
   `CandidateResult` 无分段字段。第 1 版的 `ParseElapsed` 已从 `LoadReport` 删除，
   不得用一个测不出来的字段充当验收证据。
+- **M1 要如实包含"有界同步成本"**：首次 `Request()` 会同步构造一次临时主题
+  （约 1.4–1.7 ms，记 `TempElapsed`）。"不阻塞"只能表述为
+  **"不等待后台加载完成"**，不得写成"零阻塞""不阻塞任何调用方"。
 - M1 的阈值必须**先测后定**（§9-1 已禁止先拍数字）。
 - 落点：IMPL-3 §4、ACCEPT §2。
 
@@ -533,3 +541,20 @@ IMPL-3 严格串在 IMPL-2 之后，不是保守，而是因为"严格失败语�
 已改由 ACCEPT 自己创建该端到端用例——首帧是否被阻塞本来就需要真实窗口才能测。
 
 **这轮的性质没变**：仍然只改文档，产品代码零改动，四张卡均未开工。
+
+### 12.8 第 3 版修正记录（评审 2026-10-21 第三轮，3 处接口矛盾）
+
+评审结论：M2 的裁决方向正确，不必推翻四卡拆分；但**状态机接口还有三处可避免的
+歧义**，修完才可开工。三条全部成立，已改写 IMPL-1（含新建 §1.1、§5.0）并同步
+IMPL-2 / IMPL-3 / ACCEPT。
+
+| # | 问题 | 根因 | 处理 |
+|---|---|---|---|
+| A | `Request()` 声称"不阻塞任何调用方"，但首次必须同步构造临时主题（含一次嵌入解析，约 1.4–1.7 ms） | 把"不等后台加载"与"零同步成本"混成一句话；而临时主题放后台又会让首帧没有中文 | 主张收窄为**"不等待后台加载完成"**；同步成本承认并单列 `TempElapsed`；新增 §1.1 三条实现约束 + `TestFontLazyLoadTempBuiltOnceConcurrent`（32 goroutine 并发首次请求，嵌入解析计数器必须 == 1）；并写死"不得据此推断首帧预算达标，那是 ACCEPT 的事" |
+| B | 失败路径 `LoadElapsed = LoadedAt - RequestedAt` 不成立：`LoadedAt` 失败时为零，公式给出负数或 0，而 IMPL-3 又要它表示"后台总耗时" | 用一个字段同时承担"有没有产出可用主题"和"后台跑完了没有"两种语义 | 新增 **`CompletedAt`**（后台进入 Ready/Failed 终态的时刻，成败都非零），`LoadElapsed = CompletedAt - RequestedAt`；失败路径照样记录真实耗时；**不采用**"把 `LoadedAt` 改定义为终结时刻"的方案（会让字段名与成功语义脱节）。IMPL-3/ACCEPT 同步改口径，并加 `TestFontLazyLoadFailureCompletedAt` |
+| C | `NotifyLateBound` 归属 IMPL-2，但只有 `SetNotify` 能发现晚绑定，IMPL-2 又没有写 `Lazy` 内部字段的入口 | 发现事实的一方与记录事实的一方不是同一个，谁都没法写 | 写入责任**收回 IMPL-1**（`SetNotify` 在锁内置位，覆盖重复绑定/晚绑定/nil 绑定三种失败）；IMPL-2 只按返回值补一次 `Invalidate()`；验收加一条硬门禁：`grep NotifyLateBound` 写入点恰好 1 处、`pkg/runtime/app` 零命中。同时冻结 `SetNotify(nil)` → 返回 false、不绑定、不 panic、永不触发 |
+
+**这轮的边界**：仍然只改文档，产品代码零改动。四卡状态改为
+"**第 3 版接口已冻结，实现未开始**"。下一棒是 IMPL-1 编码（`theme.Lazy` 状态机、
+并发合并、显式重试、报告深拷贝、`TestAsyncPathNoRenderShaper` 结构门禁 +
+反向验证），不改 `pkg/runtime/app`、不触碰既有同步字体路径。

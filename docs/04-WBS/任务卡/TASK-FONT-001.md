@@ -254,7 +254,8 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   **未覆盖**：窗口最小化状态、macOS/X11。详见 D 卡 §4.3.5。
   3) **实现懒加载已拆为四张卡**（D 卡 §12）：`D-IMPL-1` 状态机 →
   `D-IMPL-2` 帧内切换 → `D-IMPL-3` 诊断与失败语义 → `D-ACCEPT` 整体验收；
-  接口与验收矩阵已冻结，**四张卡均未开工**，不得跳卡并行；
+  接口与验收矩阵已冻结（**第 3 版**，见 D 卡 §12.8），**四张卡均未开工**，
+  不得跳卡并行；
   4) Windows 完整回归；5) **Linux 无 CJK 环境验证嵌入增量**（独立待办，
   不并入 D 的任何子卡）；6) 更新父卡与 WBS |
 | 已运行命令及结果 | 2026-10-21 在 `9b81748` 上重跑四条验收命令，见 §3.0：
@@ -270,19 +271,26 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
   ⑥ 系统探测 ~110 ms 超 20 ms 预算，归 D。
   ⑦ `examples/demo` 注入 `material.NewTheme()`，不链接 theme 包——旗舰样例
   看不到嵌入兜底与字体诊断，属 DEMO 线边界，本卡只记录不改 |
-| 下一位接手人 | `TASK-FONT-001-D-IMPL-1`：异步加载器与状态机（**接口与并发语义
-  已冻结**，见 `TASK-FONT-001-D-IMPL-1.md`）。
+| 下一位接手人 | `TASK-FONT-001-D-IMPL-1`：异步加载器与状态机（**第 3 版接口已冻结**，
+  见 `TASK-FONT-001-D-IMPL-1.md`）。**可以开工编码**。
   D 的 2a/2b 前置门禁已全部通过（D 卡 §4.3 / §4.3.5），第 4 步已拆为
   IMPL-1 → IMPL-2 → IMPL-3 → ACCEPT 四张卡，**按序推进，不得跳卡**。
   三条验收规则在每张卡都要逐条核对，不要留到 ACCEPT：
   R1 加载完成 ≠ 已提交（`LoadedAt` 与 `FrameSubmittedAt` 两个字段两个写入点；
   后者只是"帧提交返回"的代理指标，**不得**表述为屏幕呈现）；
   R2 异步路径不得查询渲染 shaper（`th.Shaper` 只在帧内换）；
-  R3 四个性能指标独立验收（M2 探测段不设通过阈值、M3 为后台总量），
-  不得互相替代、不得报"总耗时"。
+  R3 四个性能指标独立验收（M2 探测段不设通过阈值、M3 为
+  `CompletedAt - RequestedAt` 且**失败路径也要记**），不得互相替代、不得报"总耗时"。
   四张卡已于 2026-10-21 出**第 2 版**（评审 6 条全采纳：`SetNotify` 后绑定、
   `FrameSubmittedAt` 改名、删不可测的 `ParseElapsed`、补 `LoadReport` 完整类型、
-  收窄 Shaper 赋值点口径、冻结临时主题不污染 B4 诊断）。
+  收窄 Shaper 赋值点口径、冻结临时主题不污染 B4 诊断），随后出**第 3 版**
+  （动工前必须知道的三处接口修正，D 卡 §12.8）：
+  ① `Request()` **不承诺零阻塞**——首次会同步构造一次临时主题（~1.4–1.7 ms，
+  记 `TempElapsed`），只承诺"不等待后台加载完成"；
+  ② 新增 `CompletedAt`，`LoadElapsed = CompletedAt - RequestedAt`，
+  失败路径同样记录真实耗时（原来的 `LoadedAt-RequestedAt` 在失败时直接失效）；
+  ③ `NotifyLateBound` 由 `SetNotify` 内部写（`pkg/runtime/app` 零命中），
+  且 `SetNotify(nil)` 冻结为返回 false、不绑定、不 panic。
   另有一处语义冲突已裁决（D 卡 §12.4）：异步化不得让 `app.Run` 的同步严格语义
   静默消失，两者并存，异步侧用 `StrictFontFailure` 开关。
   **跨平台验证应并行推进**：Linux 无 CJK 字体环境下的嵌入增量验证是 C 的

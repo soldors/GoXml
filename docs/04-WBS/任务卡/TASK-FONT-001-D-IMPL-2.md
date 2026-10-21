@@ -1,8 +1,8 @@
-# TASK-FONT-001-D-IMPL-2：帧内切换与布局一致性（接口已冻结，实现未开始）
+# TASK-FONT-001-D-IMPL-2：帧内切换与布局一致性（第 3 版接口已冻结，实现未开始）
 
 ## 元信息
 
-- 状态：**接口与切换时机已冻结（第 2 版，按评审意见修正 3 处），实现未开始**
+- 状态：**接口与切换时机已冻结（第 3 版，按评审意见收回 `NotifyLateBound` 写入责任），实现未开始**
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
 - 前置：`TASK-FONT-001-D-IMPL-1`（提供 `Lazy.Take()` / `Theme()` / `Report()` / `SetNotify`）
 - 交付物：`pkg/runtime/app` 的懒加载接线 + 测量钩子 + 测试
@@ -16,6 +16,12 @@
 | 2 | `DisplayedAt` 的定义超过了现有证据 | 改名为 **`FrameSubmittedAt`**，语义上界止于 `e.Frame` 返回；禁止表述为"屏幕呈现"，见 §1.4 |
 | 2b | 流程 ④ 没有调用 `lz.MarkFirstLayout` | 补入伪代码，并要求用例断言"值确实写回 `Report()`"，见 §1.2 / §4 |
 | 5 | "全仓库唯一 Shaper 赋值点"过严，与既有同步路径冲突 | 改为"懒加载切换路径唯一 + 既有 `theme.go:116` 不计入"，见 §7-2 |
+
+### 修订记录（第 3 版）
+
+| # | 评审问题 | 处理 |
+|---|---|---|
+| C | `NotifyLateBound` 归属本卡，但本卡没有写 `Lazy` 内部字段的入口 | **写入责任收回 IMPL-1**（`SetNotify` 内部置位）；本卡只按返回值补一次 `Invalidate()`，`pkg/runtime/app` 对该字段零命中，见 §1.1 / §7-2 |
 
 ## 0. 本卡只做一件事
 
@@ -40,6 +46,10 @@ func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error)
 
 - `NewLazyApp` 内部**先 `lz.SetNotify(...)` 再 `lz.Request()`**（顺序与闭包捕获见
   `TASK-FONT-001-D-IMPL-1` §2.3），且**不等待**加载完成。
+- `SetNotify` 返回 false 时，本卡**只**补一次 `a.Invalidate()`；
+  `Report().NotifyLateBound` **由 `Lazy.SetNotify` 内部置位**（第 3 版从本卡收回
+  IMPL-1），`pkg/runtime/app` **一行都不许写这个字段**——`grep NotifyLateBound
+  pkg/runtime/app/` 必须零命中，这是 IMPL-1 §9-4 的验收项之一。
 - `App.Run()` / `Run()` 的行为与语义**不变**；懒加载路径走同一 `loop`，
   只多一个"帧内取待应用主题"的步骤。
 
