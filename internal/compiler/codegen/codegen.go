@@ -123,7 +123,7 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 包级生成类型必须**按源文件唯一**（契约 §5.1 的 D-2 裁决）：
+	// 包级生成类型必须**按源文件唯一**（TASK-CODEGEN-NAMING-001 卡 §5.1 的 D-2 裁决）：
 	// 同包多 .gxml 时固定名会重复声明（实测 renderKey/textCache redeclared）。
 	keyType, cacheType, err := generatedTypeNames(opts.SourcePath)
 	if err != nil {
@@ -171,7 +171,7 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 type generator struct {
 	opts Options
 	view string
-	// keyType / cacheType 是**按源文件唯一**的包级生成类型名（契约 §5.1）。
+	// keyType / cacheType 是**按源文件唯一**的包级生成类型名（TASK-CODEGEN-NAMING-001 卡 §5.1）。
 	// 固定名 renderKey/textCache 会在同包多文件时重复声明。
 	keyType   string
 	cacheType string
@@ -987,7 +987,7 @@ func renderKeyDecl(view, keyType, cacheType string) string {
 // ` + keyType + ` 复制自 代码生成输出契约 §16.5。
 //
 // 类型名按源文件唯一（goxmlRenderKey<Source>）：同包多个生成文件各自声明，
-// 固定名会重复声明（契约 §5.1）。
+// 固定名会重复声明（TASK-CODEGEN-NAMING-001 卡 §5.1）。
 //
 // ⚠️ 本类型是生成产物，不要手改。
 // 字段变更必须先改契约 §16.5，再重新生成——已生成文件不会自动跟随。
@@ -1136,7 +1136,7 @@ func (s *importSet) render() string {
 // 加 `Goxml` 前缀并以 `View` 结尾。
 // sourceSymbolSuffix 把 SourcePath 转成稳定的标识符后缀。
 //
-// 规则（契约 §5.1 的 D-2 裁决）：去掉 .gxml、按 / \ . 切段、逐段 PascalCase。
+// 规则（TASK-CODEGEN-NAMING-001 卡 §5.1 的 D-2 裁决）：去掉 .gxml、按 / \ . 切段、逐段 PascalCase。
 // 只依赖 SourcePath 本身——不含绝对路径、顺序或时间，因此重复生成稳定。
 func sourceSymbolSuffix(sourcePath string) (string, error) {
 	p := strings.TrimSuffix(sourcePath, ".gxml")
@@ -1169,7 +1169,7 @@ func viewSymbol(sourcePath string) (string, error) {
 	return view, nil
 }
 
-// generatedTypeNames 返回**按源文件唯一**的包级生成类型名（契约 §5.1）。
+// generatedTypeNames 返回**按源文件唯一**的包级生成类型名（TASK-CODEGEN-NAMING-001 卡 §5.1）。
 //
 // 固定名 renderKey/textCache 会让同包多个生成文件重复声明；
 // 这里统一加上 goxml 前缀与源派生后缀，例如 home.gxml → goxmlRenderKeyHome。

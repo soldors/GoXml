@@ -334,3 +334,88 @@ func TestNamingUniqueSymbolsAcrossSources(t *testing.T) {
 		t.Fatalf("两个源的片段仍声明相同包级符号 %v", dup)
 	}
 }
+
+// TestNamingSourceSymbolSuffixRules 直接断言 C2 的派生规则本身（验收第 1、5 项）：
+// 去扩展名 → 按 / \ . 切段 → 逐段 PascalCase。
+//
+// 只测「两个源派生出不同类型名」不足以约束规则：拼错分隔符或漏掉 PascalCase
+// 一样能让两个源互不相同。因此这里把规则逐条钉住。
+func TestNamingSourceSymbolSuffixRules(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"home.gxml", "Home"},
+		{"sub/home.gxml", "SubHome"},
+		{`sub\home.gxml`, "SubHome"},
+		{"sub.home.gxml", "SubHome"},
+		{"./home.gxml", "Home"},
+		{"dashboard_v2.gxml", "Dashboard_V2"},
+		// 两种写法都会塌缩成 A_B —— 这正是必须由 C1 预检拦下的碰撞（见下一条测试）
+		{"a-b.gxml", "A_B"},
+		{"a_b.gxml", "A_B"},
+	}
+	for _, c := range cases {
+		got, err := sourceSymbolSuffix(c.in)
+		if err != nil {
+			t.Fatalf("sourceSymbolSuffix(%q): %v", c.in, err)
+		}
+		if got != c.want {
+			t.Errorf("sourceSymbolSuffix(%q) = %q, 期望 %q", c.in, got, c.want)
+		}
+	}
+
+	// 空后缀必须报错，而不是静默生成一个无意义的类型名。
+	for _, bad := range []string{"", ".gxml", "/", "...", `\\`} {
+		if got, err := sourceSymbolSuffix(bad); err == nil {
+			t.Errorf("sourceSymbolSuffix(%q) = %q, 期望报错（空后缀不得静默生成符号）", bad, got)
+		}
+	}
+}
+
+// 注：pascal 塌缩（a-b.gxml 与 a_b.gxml 派生同一后缀 A_B）的冲突由
+// TestNamingDetectsPascalCollapse 与 TestNamingDetectsSameBatchConflict 覆盖，
+// 不在此重复。
+
+// TestNamingViewAndTypesShareSuffix 覆盖 View / render key / text cache 三种形态
+// （验收第 2 项），并确认同一 SourcePath 重复派生逐字符一致（验收第 3 项）。
+func TestNamingViewAndTypesShareSuffix(t *testing.T) {
+	const src = "dashboard.gxml"
+	view, err := viewSymbol(src)
+	if err != nil {
+		t.Fatalf("viewSymbol: %v", err)
+	}
+	if want := "GoxmlDashboardView"; view != want {
+		t.Errorf("View 名 = %q, 期望 %q", view, want)
+	}
+	key, cache, err := generatedTypeNames(src)
+	if err != nil {
+		t.Fatalf("generatedTypeNames: %v", err)
+	}
+	if want := "goxmlRenderKeyDashboard"; key != want {
+		t.Errorf("key 类型名 = %q, 期望 %q", key, want)
+	}
+	if want := "goxmlTextCacheDashboard"; cache != want {
+		t.Errorf("cache 类型名 = %q, 期望 %q", cache, want)
+	}
+	if !strings.HasSuffix(view, "DashboardView") ||
+		!strings.Contains(key, "Dashboard") || !strings.Contains(cache, "Dashboard") {
+		t.Fatalf("三种形态应共享同一后缀：view=%q key=%q cache=%q", view, key, cache)
+	}
+
+	// 稳定性：重复派生必须完全一致（禁止随机串/时间戳/递增编号）。
+	for i := 0; i < 3; i++ {
+		v2, err := viewSymbol(src)
+		if err != nil {
+			t.Fatalf("viewSymbol(第 %d 次): %v", i+1, err)
+		}
+		k2, c2, err := generatedTypeNames(src)
+		if err != nil {
+			t.Fatalf("generatedTypeNames(第 %d 次): %v", i+1, err)
+		}
+		if v2 != view || k2 != key || c2 != cache {
+			t.Fatalf("第 %d 次派生结果漂移：%q/%q/%q vs %q/%q/%q",
+				i+1, v2, k2, c2, view, key, cache)
+		}
+	}
+}

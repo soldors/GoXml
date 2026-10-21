@@ -64,7 +64,7 @@ func TestCacheStructFields(t *testing.T) {
 			t.Errorf("字段 %s 类型 = %q, 期望 %q", name, got[name], typ)
 		}
 	}
-	// cacheKey 的类型名按源文件唯一（goxmlRenderKey<Suffix>，契约 §5.1）：
+	// cacheKey 的类型名按源文件唯一（goxmlRenderKey<Suffix>，TASK-CODEGEN-NAMING-001 卡 §5.1）：
 	// 只断言前缀，避免把某个具体源的派生名写死在这里。
 	if !strings.HasPrefix(got["cacheKey"], "goxmlRenderKey") {
 		t.Errorf("字段 cacheKey 类型 = %q, 期望以 goxmlRenderKey 开头", got["cacheKey"])

@@ -204,10 +204,25 @@ P0 决定了方案走向，**必须由裁决给出**：
 | 切片 | 内容 | 验收 |
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
-| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **完成（2026-10-22）**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0 |
+| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **完成（2026-10-22）**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
 | C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | `go test ./internal/docgate/ ./internal/compiler/diagdoc/` |
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
+
+### 10.1 C2 复核轮补记（2026-10-22，dev-log §97.7/§97.8）
+
+复核不采信"文档已写完成"，逐项重跑后补了三处：
+
+| 项 | 复核发现 | 处理 |
+|---|---|---|
+| 测试覆盖 | `sourceSymbolSuffix`（派生规则本身）此前**无直接测试**；View/key/cache 三形态与"重复派生稳定"也未断言 | 新增 `TestNamingSourceSymbolSuffixRules`、`TestNamingViewAndTypesShareSuffix`，均做变异取证 |
+| 契约一致性 | §16.5.1 只补了规则与示例，**标题与首段仍是旧固定名规则**；§16.2 结构体示例仍写 `cacheKey renderKey`；示例注释与生成器实际输出不一致 | 逐处改为 `goxmlRenderKey<Source>` 口径，示例对齐生成器输出，并补 text cache 同源说明 |
+| 章节引用 | 生成器注释写「契约 §5.1」，但契约没有 §5.1（那是**本卡** §5.1） | 改为「TASK-CODEGEN-NAMING-001 卡 §5.1」（5 处，注释级） |
+
+**docgate 在本分支的红不是 C2 引起的**：缺口是分支基线 `d9cf0b9`（脚本护栏线），
+其记录随 `27aa03a`/`827ab41` 在 master 线的 `2026-10-21.md` §38，本分支不含。
+已在 dev-log §97.7 登记该 SHA 的去向（不复制正文，避免后续合并冲突），
+登记后 `TestDevLogCoversRecentCommits` 转绿。
 
 ## 11. 纪律
 
