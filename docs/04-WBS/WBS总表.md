@@ -15,6 +15,7 @@
 | TASK-BINDING-IMPLEMENT-002 | codegen | 绑定运行时读取与显式重新布局验收 | TASK-BINDING-IMPLEMENT-001 | go test -count=1 -run '^TestBindingRuntime' ./internal/compiler/codegen/ |
 | TASK-BINDING-IMPLEMENT-003 | codegen | 绑定显示缓存与 shaping 观测验证 | TASK-BINDING-IMPLEMENT-002 | 显示缓存已实现；契约场景③/⑤和 Gio shaping 证据未闭环，见验收报告 |
 | TASK-CODEGEN-STATIC-CACHE-001 | codegen | 实现静态子树固化（`op.Record`/`op.CallOp`，关闭契约 §15.1 缺口）| TASK-CODEGEN-001 | go test -bench BenchmarkStaticSubtree ./internal/compiler/codegen/ |
+| TASK-CODEGEN-NAMING-001 | codegen | 生成符号命名与包级冲突契约（同包多 `.gxml` 的 `renderKey`/`textCache` 重名；**边界已冻结，待裁决 D-1~D-5，未开工**） | TASK-CODEGEN-001、TASK-GENERATE-CACHE-001 | 待裁决后定；暂以 `go test -run TestNaming ./internal/compiler/codegen/` 为预留前缀 |
 | TASK-ORCH-001 | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 条） | TASK-CODEGEN-001 | go test -v ./internal/compiler/pipeline/ |
 | TASK-GENERATE-CLI-001 | cli/generate | 实现 Generate CLI、Manifest 与输出清理边界 | TASK-CODEGEN-001、TASK-ORCH-001、TASK-SEC-001 | go test -v ./cmd/goxml/... |
 | TASK-GENERATE-CACHE-001 | cli/cache | 增量生成与缓存（契约 §11：缓存键、命中条件、失效、原子性、可观测性；**B1–B5 已实现**，42 个缓存用例全绿） | TASK-GENERATE-CLI-001 | go test -run TestCache ./internal/cli/ |
