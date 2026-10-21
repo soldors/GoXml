@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（2026-10-21，D-1~D-5 通过）；切片 C1 已完成（仅预检检测），C2–C5 未开始**。缺陷本身仍存在：产物里仍是固定名 `renderKey`/`textCache`，不得标记为已修复
+- 状态：**已裁决（D-1~D-5）；C1 完成（预检）；C2 完成（类型名按源唯一，产物层缺陷已修）；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -204,7 +204,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 | 切片 | 内容 | 验收 |
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
-| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | `go test -run TestNamingUnique ./internal/compiler/codegen/` |
+| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **完成（2026-10-22）**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0 |
 | C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | `go test ./internal/docgate/ ./internal/compiler/diagdoc/` |
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
