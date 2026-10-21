@@ -70,6 +70,9 @@ if (-not $SkipGates) {
     Write-Host "  ✓ 门禁通过" -ForegroundColor Green
 }
 
+# 记录本次运行**之前**索引里已有的条目：失败时要能只撤销自己加的那部分。
+$preStaged = @(git -c core.quotePath=false diff --cached --name-only)
+
 # ---- 3. 暂存 ----
 if ($All) {
     git add -A
@@ -106,6 +109,12 @@ if ($All) {
     if ($foreign.Count -gt 0) {
         Write-Host "✗ 索引里有本次清单之外的文件（可能来自并发会话）：" -ForegroundColor Red
         $foreign | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        # 失败即撤销**本次**新加的暂存，避免"失败一次就把文件留在索引里"。
+        # 2026-10-21 事故：护栏调试失败后未撤销，随后被并发会话的提交卷走。
+        foreach ($f in $Files) {
+            $norm = $f -replace '\\', '/'
+            if ($preStaged -notcontains $norm) { git restore --staged -- $f 2>&1 | Out-Null }
+        }
         Fail "拒绝提交：先 `git restore --staged <上述文件>`，或确认要整体提交时改用 -All"
     }
 
