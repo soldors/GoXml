@@ -1,4 +1,4 @@
-﻿# 提交并推送到 GitHub（origin/master）。
+# 提交并推送到 GitHub（origin/master）。
 #
 # 用法：
 #   .\scripts\commit-push.ps1 -Message "feat: xxx" -Files "a.go","b.md"
@@ -87,7 +87,31 @@ if ($All) {
 }
 
 # ---- 4. 打印实际暂存清单（核对点）----
-$staged = git diff --cached --name-status
+# 共享工作树下，索引里可能存在**别人**已暂存的文件。`git commit` 会提交整个索引，
+# 于是「只提交我声明的文件」会悄悄变成「顺手提交别人的在制品」（2026-10-21 已发生一次）。
+# 因此这里必须硬校验：声明了 -Files 时，索引里不允许出现清单外的条目。
+if ($All) {
+    $staged = git diff --cached --name-status
+} else {
+    # core.quotePath=false：否则非 ASCII 路径会被输出成 \345\274\200 形式，
+    # 与 -Files 里的中文路径比对必然失败（首版护栏因此把自家文件误判为「清单外」）。
+    $stagedPaths = @(git -c core.quotePath=false diff --cached --name-only)
+    $wanted = @{}
+    foreach ($f in $Files) { $wanted[($f -replace '\\', '/')] = $true }
+
+    $foreign = @()
+    foreach ($p in $stagedPaths) {
+        if (-not $wanted.ContainsKey(($p -replace '\\', '/'))) { $foreign += $p }
+    }
+    if ($foreign.Count -gt 0) {
+        Write-Host "✗ 索引里有本次清单之外的文件（可能来自并发会话）：" -ForegroundColor Red
+        $foreign | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        Fail "拒绝提交：先 `git restore --staged <上述文件>`，或确认要整体提交时改用 -All"
+    }
+
+    # 只取本次声明的文件（-- 之后是 pathspec）。
+    $staged = git -c core.quotePath=false diff --cached --name-status -- $Files
+}
 if (-not $staged) { Fail "暂存区为空，没有可提交的内容" }
 
 Write-Host "→ 即将提交以下文件：" -ForegroundColor Cyan
@@ -100,7 +124,12 @@ if (-not $Yes) {
 }
 
 # ---- 6. 提交 ----
-git commit -m $Message | Out-Null
+# 同样按 pathspec 提交：即使索引里还有别的条目，也只提交声明过的文件。
+if ($All) {
+    git commit -m $Message | Out-Null
+} else {
+    git commit -m $Message -- $Files | Out-Null
+}
 if ($LASTEXITCODE -ne 0) { Fail "git commit 失败" }
 $sha = (git rev-parse --short HEAD).Trim()
 Write-Host "  ✓ 提交 $sha" -ForegroundColor Green
