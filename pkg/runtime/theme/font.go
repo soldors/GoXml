@@ -14,6 +14,7 @@ import (
 
 	"github.com/goxml/goxml/contracts"
 	platformfont "github.com/goxml/goxml/pkg/platform/font"
+	"github.com/goxml/goxml/pkg/runtime/theme/embedded"
 )
 
 // ============================================================================
@@ -93,6 +94,48 @@ type ProbeReport struct {
 	Elapsed time.Duration
 	// Scanned 是实际发生读取/解析尝试的候选数（缓存命中的测试用它证明没重扫）。
 	Scanned int
+	// Embedded 是嵌入兜底链路的诊断（B 卡 §4）。
+	//
+	// 系统命中时**必须**为 nil 或 Attempted=false：那证明嵌入字体没有被解析，
+	// 而不是"解析了但没用上"。这是 B4 的可观测断言点。
+	Embedded *EmbeddedResult
+}
+
+// EmbeddedResult 是嵌入兜底链路的诊断。
+//
+// 与 CandidateResult 分开而不是塞进 Candidates，是因为两条链路的语义不同：
+// 系统候选是"按路径逐个试"，嵌入兜底是"一次加载 + 一次解析"。
+type EmbeddedResult struct {
+	// Attempted 表示是否真的走了嵌入链路（系统命中时为 false）。
+	Attempted bool
+	// ID 是命中后的稳定标识（形如 embedded:GoxmlSansSC-Regular）。
+	ID string
+	// Bytes 是嵌入字体字节数（Attempted 且加载成功时有意义）。
+	Bytes int
+	// Faces 是解析出的字体面数。
+	Faces int
+	// Err 是失败原因。
+	Err error
+	// Elapsed 是嵌入链路的耗时（加载 + 解析，同步）。
+	Elapsed time.Duration
+}
+
+// String 返回可打印的诊断文本。
+func (e *EmbeddedResult) String() string {
+	if e == nil {
+		return "<未尝试嵌入兜底>"
+	}
+	if !e.Attempted {
+		return "<未尝试嵌入兜底（系统已命中）>"
+	}
+	s := fmt.Sprintf("embedded attempted bytes=%d faces=%d elapsed=%v", e.Bytes, e.Faces, e.Elapsed)
+	if e.ID != "" {
+		s += " id=" + e.ID
+	}
+	if e.Err != nil {
+		s += " err=" + e.Err.Error()
+	}
+	return s
 }
 
 // String 返回可打印的诊断文本。
@@ -115,6 +158,9 @@ func (r *ProbeReport) String() string {
 		}
 		fmt.Fprintf(&b, "\n  - %s [%s]", c.Path, c.Status)
 	}
+	if r.Embedded != nil {
+		fmt.Fprintf(&b, "\n  * %s", r.Embedded)
+	}
 	return b.String()
 }
 
@@ -128,6 +174,26 @@ type fontSet struct {
 	Faces []font.FontFace
 }
 
+// EmbeddedFontLoader 提供嵌入兜底字体的字节（B 卡 §3/§4）。
+//
+// 抽成接口的唯一理由是**可观测**：B4 要求证明「系统命中时不解析嵌入字体」，
+// 而那只能用计数器注入来证明——直接调用 embedded 包就没法计数了。
+type EmbeddedFontLoader interface {
+	// Load 返回字体字节与其稳定标识名。不可用时返回错误（不得返回空字节 + nil）。
+	Load() (data []byte, name string, err error)
+}
+
+// defaultEmbeddedLoader 读取 //go:embed 进来的子集字体。
+type defaultEmbeddedLoader struct{}
+
+func (defaultEmbeddedLoader) Load() ([]byte, string, error) {
+	a, err := embedded.Load()
+	if err != nil {
+		return nil, "", err
+	}
+	return a.Font, embedded.PostScriptName, nil
+}
+
 // ProviderOptions 配置一个 Provider。
 type ProviderOptions struct {
 	// Read 读取候选文件；nil 表示 os.ReadFile。
@@ -138,6 +204,10 @@ type ProviderOptions struct {
 	Candidates []string
 	// Now 注入时钟；nil 表示 time.Now。
 	Now func() time.Time
+	// Embedded 嵌入兜底字体加载器；nil 表示 //go:embed 的子集字体。
+	//
+	// 它只在**系统候选全部不可用**时才被调用（B 卡 §4），系统命中时不会被触碰。
+	Embedded EmbeddedFontLoader
 }
 
 func (o ProviderOptions) withDefaults() ProviderOptions {
@@ -152,6 +222,9 @@ func (o ProviderOptions) withDefaults() ProviderOptions {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.Embedded == nil {
+		o.Embedded = defaultEmbeddedLoader{}
 	}
 	return o
 }
@@ -219,13 +292,81 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 	p.scans++
 	id, faces, rep := probe(p.opts)
 	p.last = rep
-	if rep.Err != nil {
-		return "", rep, rep.Err
+	if rep.Err == nil {
+		p.sets[id] = &fontSet{ID: id, Path: rep.Resolved, Faces: faces}
+		p.resolved[family] = id
+		rep.ID = id
+		return id, rep, nil
 	}
-	p.sets[id] = &fontSet{ID: id, Path: rep.Resolved, Faces: faces}
-	p.resolved[family] = id
-	rep.ID = id
-	return id, rep, nil
+
+	// 系统链路失败 → 嵌入兜底（B 卡 §4 第 2 步）。
+	//
+	// 注意顺序：只有系统**全部**不可用时才走到这里，因此「系统命中时
+	// 不解析嵌入字体」是由控制流保证的，而不是靠开关。
+	sysErr := rep.Err
+	embID, embFaces, embRes := p.loadEmbedded()
+	rep.Embedded = embRes
+	if embRes.Err == nil {
+		p.sets[embID] = &fontSet{ID: embID, Path: "embedded", Faces: embFaces}
+		p.resolved[family] = embID
+		rep.ID = embID
+		// 系统链路确实全失败了，但整体解析成功：Err 必须清空，
+		// 否则调用方会把"已兜底成功"读成"失败"。
+		rep.Err = nil
+		return embID, rep, nil
+	}
+
+	// 两条链路都失败 → 严格失败，且错误里两条链路的原因都要在（B 卡 §6）。
+	rep.Err = fmt.Errorf("%w: 系统候选 %d 个与嵌入兜底均不可用（system: %v | embedded: %v）",
+		contracts.ErrFontNotFound, len(rep.Candidates), sysErr, embRes.Err)
+	return "", rep, rep.Err
+}
+
+// loadEmbedded 加载并解析嵌入字体，返回标识、集合与诊断。
+//
+// 同步执行：B 不实现异步/懒加载（B 卡 §9 风险 3）。实测解析耗时约 1.6ms，
+// 远低于系统探测的 ~110ms，因此不引入异步。
+func (p *Provider) loadEmbedded() (string, []font.FontFace, *EmbeddedResult) {
+	res := &EmbeddedResult{}
+	start := p.opts.Now()
+	defer func() { res.Elapsed = p.opts.Now().Sub(start) }()
+
+	res.Attempted = true
+	data, name, err := p.opts.Embedded.Load()
+	if err != nil {
+		res.Err = fmt.Errorf("加载嵌入字体失败: %w", err)
+		return "", nil, res
+	}
+	if len(data) == 0 {
+		// 空字节 + nil 错误属于伪装成功，必须转成显式错误。
+		res.Err = errors.New("加载嵌入字体失败: 字节为空")
+		return "", nil, res
+	}
+	res.Bytes = len(data)
+
+	faces, err := opentype.ParseCollection(data)
+	if err != nil {
+		res.Err = fmt.Errorf("解析嵌入字体失败: %w", err)
+		return "", nil, res
+	}
+	if len(faces) == 0 {
+		res.Err = errors.New("解析嵌入字体失败: collection 解析结果为空")
+		return "", nil, res
+	}
+	id := embeddedID(name)
+	res.ID = id
+	res.Faces = len(faces)
+	return id, faces, res
+}
+
+// embeddedID 生成嵌入集合的稳定标识。
+//
+// 与 system: 前缀区分开，诊断时一眼能看出"这一轮用的是兜底字体"。
+func embeddedID(name string) string {
+	if name == "" {
+		name = "unknown"
+	}
+	return "embedded:" + name
 }
 
 // Faces 按标识反查已解析的字体集合（评审要点 1 的验证入口）。

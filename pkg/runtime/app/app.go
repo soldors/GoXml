@@ -52,15 +52,19 @@ const (
 // 生产代码从不修改它。
 var mainFunc = app.Main
 
-// newTheme 是默认主题构建入口的注入点（与 mainFunc 同构）。
+// newThemeWithReport 是默认主题构建入口的注入点（与 mainFunc 同构）。
 //
 // 存在的唯一理由：默认主题来自 pkg/runtime/theme，而测试需要在**不启动
 // 主循环**的前提下证明 Run 确实走了这个入口，而不是绕回
 // material.NewTheme()。生产代码从不修改它。
 //
+// 用 `NewThemeWithReport` 而不是 `NewTheme`：Run 需要区分"主题构建成功"与
+// "字体两条链路都失败"——后者必须返回错误（TASK-FONT-001-B / B6），
+// 不能拿着一个装了默认 Shaper 的主题继续跑到 Layout 才暴露。
+//
 // 它只影响 Run（便捷入口）。RunWith / NewApp / RunWindow* 走显式注入，
 // 与本变量无关——这是两条路径的行为差异，不可合并。
-var newTheme = theme.NewTheme
+var newThemeWithReport = theme.NewThemeWithReport
 
 // Invalidator 是状态变化后请求重新布局的入口（状态更新契约 §2）。
 //
@@ -92,14 +96,32 @@ func (c Config) withDefaults() Config {
 
 // Run 启动主循环，直到窗口关闭。
 //
-// 默认主题由 pkg/runtime/theme.NewTheme() 构建（路线 B：字体决策在运行时
-// 一侧），传给 View.Layout。需要复用主题、注入受控主题或注入字体策略时，
+// 默认主题由 pkg/runtime/theme 构建（路线 B：字体决策在运行时一侧），
+// 传给 View.Layout。需要复用主题、注入受控主题或注入字体策略时，
 // 改用 RunWith / NewApp——本函数**不会**把默认主题暴露给调用方。
+//
+// # 失败语义（TASK-FONT-001-B / B6）
+//
+// 默认主题构建失败（系统字体与嵌入兜底都不可用）时**返回错误**，不启动窗口：
+// 错误包装了 `contracts.ErrFontNotFound`，可用 `errors.Is` 判定；
+// 详细原因见 `theme.Diagnostics()`。这是规范 §1.2
+// 「字体加载失败必须产生明确诊断，不得静默降级到空白渲染」的落地。
+//
+// 显式注入主题的入口（RunWith / NewApp / RunWindow*）**不受此影响**：
+// 调用方已经提供了主题，运行时不再做字体决策。
 //
 // 本函数阻塞，且必须调用 Gio 的 app.Main()——该函数要求运行在主系统线程
 // （契约 §4）。
 func Run(view View, cfg Config) error {
-	return RunWith(view, newTheme(), cfg)
+	th, rep := newThemeWithReport()
+	if rep == nil {
+		// 没有诊断就等于没有证据：宁可报错也不假装成功。
+		return fmt.Errorf("app: 默认主题构建未返回诊断报告")
+	}
+	if rep.Err != nil {
+		return fmt.Errorf("app: 默认主题字体不可用: %w", rep.Err)
+	}
+	return RunWith(view, th, cfg)
 }
 
 // App 是生产形态的运行入口：先持有句柄，后阻塞驱动（ADR-0010 实现项）。

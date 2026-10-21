@@ -1,0 +1,60 @@
+{
+  "familyName": "Goxml Sans SC",
+  "postScriptName": "GoxmlSansSC-Regular",
+  "version": "Version 1.000",
+  "upstream": {
+    "repository": "https://github.com/notofonts/noto-cjk",
+    "tag": "Sans2.004",
+    "commit": "523d033d6cb47f4a80c58a35753646f5c3608a78",
+    "path": "Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
+    "license": "SIL Open Font License 1.1"
+  },
+  "source": {
+    "file": "NotoSansSC-Regular.otf",
+    "bytes": 8331336,
+    "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+    "gitBlobSha1": "fc0fda9394367c16c1af7555a2ae4d5e2e6a6f02"
+  },
+  "subset": {
+    "file": "GoxmlSansSC-Regular.otf",
+    "bytes": 1625796,
+    "sha256": "652910bee7fb0facfd9333b173c5ea7819eeadea8950592cf3f748bcb158e507"
+  },
+  "charset": {
+    "file": "charset.txt",
+    "bytes": 52780,
+    "sha256": "d059792a99c1973fae338abaf24f54c383f91e7146888a75af61fa78487ae06f",
+    "codepoints": 7540,
+    "hanzi": 6763
+  },
+  "license": {
+    "file": "LICENSE",
+    "bytes": 4301,
+    "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+    "name": "SIL Open Font License 1.1"
+  },
+  "tool": {
+    "name": "fontTools.pyftsubset",
+    "version": "4.67.0",
+    "args": [
+      "--no-hinting",
+      "--no-recalc-timestamp",
+      "--drop-tables+=DSIG,LTSH,VDMX,hdmx,PCLT",
+      "--name-IDs=0,1,2,3,4,5,6,7,13,14",
+      "--notdef-outline",
+      "--recommended-glyphs"
+    ]
+  },
+  "coverage": {
+    "charset": "ASCII 可打印 + GB2312（一级+二级常用字）",
+    "completeCJK": false,
+    "note": "不是完整 CJK 覆盖：清单外码位无字形，属已知边界而非缺陷",
+    "outsideCodepoints": [
+      "U+20000",
+      "U+2A700",
+      "U+3400",
+      "U+9FA6",
+      "U+E000"
+    ]
+  }
+}

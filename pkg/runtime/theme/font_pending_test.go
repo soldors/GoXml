@@ -20,14 +20,11 @@ import "testing"
 // ============================================================================
 
 // TestFontProbe 已由 TASK-FONT-001-A 实现：占位用例删除，真实断言见 font_test.go。
-// 另外三项（B/C/D）仍是显式 skip 占位，未实现。
-
-// TestEmbeddedFallback 占位：TASK-FONT-001-B 嵌入兜底。
-func TestEmbeddedFallback(t *testing.T) {
-	t.Skip("未执行：TASK-FONT-001-B 未实现。需要覆盖：//go:embed + **构建期**子集化" +
-		"（GB2312 约 6763 字，运行时不做子集化）、二进制增量 ≤3MB 断言、" +
-		"系统无 CJK 字体时兜底生效并给出诊断")
-}
+// TestEmbeddedFallback 已由 TASK-FONT-001-B 实现：占位用例删除，真实断言见
+// embedded_fallback_test.go（TestEmbeddedFallbackMetadata / SubsetCoverage /
+// ParseAndCorrupted / SelectionOrder / SizeBudget / FailureSemantics）。
+// 前缀 TestEmbeddedFallback 保持不变，任务卡的验收命令才不会退化为空转。
+// 另外两项（C/D）仍是显式 skip 占位，未实现。
 
 // TestFontFallbackChain 占位：TASK-FONT-001-C 按字形覆盖的 fallback 链。
 func TestFontFallbackChain(t *testing.T) {

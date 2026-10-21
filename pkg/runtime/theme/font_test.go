@@ -147,6 +147,10 @@ func TestFontProbeTimeoutAndDiagnostics(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		// B 之后"系统全失败"不再等于"整体失败"（还有嵌入兜底）。
+		// 本用例要测的是**系统链路**的超时语义，因此必须把兜底链路也置为不可用，
+		// 否则断言到的是兜底成功，而不是系统链路的诊断。
+		Embedded: &failingLoader{err: errors.New("测试注入：嵌入不可用")},
 	})
 
 	_, rep, err := p.ResolveWithReport(FamilyCJK)
@@ -176,10 +180,15 @@ func TestFontProbeTimeoutAndDiagnostics(t *testing.T) {
 
 // TestFontProbeErrFontNotFound 全部失败 → ErrFontNotFound，且不得返回空串+nil
 // （A 卡约束 5）。
+//
+// B 之后注意：这里的"全部失败"必须同时包含**嵌入兜底也失败**——
+// 只让系统候选失败的话，B 的兜底会接管并成功返回，那是 B 的正确行为，
+// 不是本用例要断言的东西（见 TestEmbeddedFallbackSelectionOrder）。
 func TestFontProbeErrFontNotFound(t *testing.T) {
 	p := NewProvider(ProviderOptions{
 		Candidates: []string{filepath.Join(t.TempDir(), "a.ttc"), filepath.Join(t.TempDir(), "b.ttc")},
 		Timeout:    time.Second,
+		Embedded:   &failingLoader{err: errors.New("测试注入：嵌入不可用")},
 	})
 
 	id, rep, err := p.ResolveWithReport(FamilyCJK)

@@ -79,8 +79,9 @@ var ErrFontNotFound = errors.New("goxml: font family not found")
 // （性能预算 INV-PERF-2：稳定帧文本节点 allocs/op == 0），
 // 且实现必须自带超时，不得阻塞首帧。
 //
-// **当前状态：未接线（0 个调用方）**，接线条件 = `TASK-FONT-001-A`
-// （平台字体探测 + Provider 单元测试）。在此之前本接口只定义语义，不承诺行为。
+// **当前状态：已接线**。`pkg/runtime/theme.Provider` 实现本接口
+// （`TASK-FONT-001-A` 系统探测；`TASK-FONT-001-B` 追加嵌入兜底与
+// 两条链路诊断）。尚未实现的只有 C（按字形 fallback 链）与 D（懒加载）。
 type FontProvider interface {
 	Resolve(family string) (string, error)
 }

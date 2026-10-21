@@ -2,12 +2,11 @@
 
 ## 元信息
 
-- 状态：**边界已冻结 + B1/B2/B3前置已取证通过（2026-10-20）；
-  仓库内实现未开始**；两个开工阻塞项**均已解除**（§7）
+- 状态：**B3–B6 已实现并通过验收（2026-10-21）**；两个开工阻塞项均已解除（§7）
 - 父卡：[TASK-FONT-001.md](TASK-FONT-001.md)
 - 前置：[TASK-FONT-001-A](TASK-FONT-001-A.md) ✅（`c4ec28b`）
 - 规范依据：[字体与文本渲染策略.md](../../03-架构/字体与文本渲染策略.md) §2.2、§3.1、§3.2、§1.2
-- 立卡日期：2026-10-20
+- 立卡日期：2026-10-20；实现完成：2026-10-21
 
 ## 0. 定位：B 不是「放一个字体文件进去」
 
@@ -155,8 +154,8 @@ python -m fontTools.subset NotoSansSC-Regular.otf \
 | 项 | 实测 |
 |---|---|
 | 子集耗时 | 5.5 s（构建期一次性，运行时绝不执行） |
-| 子集产物（改名前） | 1,626,340 B，SHA-256 `210979abdaee11a8472f1c84574436b7e6de2be28513d1a77026980aa1a7fa1e` |
-| **改名后产物** | **1,625,796 B（1.55 MB）**，SHA-256 `21c297a60425f20694997d515ed7b2f4b023fa196353c7c87ee15df5607a9550` |
+| 子集产物（改名前） | 1,626,340 B，SHA-256 `210979ab…fa1e`（**不可复现**：见下方说明） |
+| **改名后产物** | **1,625,796 B（1.55 MB）**，SHA-256 **`652910bee7fb0facfd9333b173c5ea7819eeadea8950592cf3f748bcb158e507`** |
 | 改名后 nameID 1 / 4 | `Goxml Sans SC` |
 | 改名后 nameID 3 / 6 | `1.000;GOXML;GoxmlSansSC-Regular` / `GoxmlSansSC-Regular` |
 | 子集 cmap | 7,542 |
@@ -165,6 +164,17 @@ python -m fontTools.subset NotoSansSC-Regular.otf \
 | 轮廓 / 表 | CFF；`BASE CFF GDEF GPOS GSUB OS/2 VORG cmap head hhea hmtx maxp name post vhea vmtx` |
 
 → **1.55 MB 远低于 §5 的 3 MB 门槛**，且**未牺牲覆盖**（GB2312 6,763 汉字零缺失）。
+
+#### 可复现性修正（重要）
+
+首次试跑记录的 `21c297a6…` **不可复现**：改名步骤用 `TTFont(src)` 构造，
+其默认 `recalcTimestamp=True` 会在保存时把 `head.modified` 改写成当前时间，
+于是同样的输入每次产出不同字节。
+
+已修正为 `TTFont(src, recalcTimestamp=False)`，并在 `pyftsubset` 参数里显式加
+`--no-recalc-timestamp`（该版本默认已是 no-recalc，显式写出来是为了防止默认值变化）。
+**验证方式：连跑两次脚本，产物 SHA-256 相同**（见 dev-log §27.3）。
+落地后的冻结值以 `652910be…` 为准，并写进 `TestEmbeddedFallbackMetadata`。
 
 ## 3. B3 嵌入与解析（冻结）
 
@@ -203,6 +213,16 @@ python -m fontTools.subset NotoSansSC-Regular.otf \
 - 注入"系统探测失败"（候选指向不存在/全部损坏）→ 选中嵌入集合，标识前缀 `embedded:`；
 - 系统命中时**不解析**嵌入（用计数器注入断言嵌入解析未被调用）——避免无谓的解析成本。
 
+### 4.1 实现要点（已落地）
+
+- `ProviderOptions.Embedded EmbeddedFontLoader`：嵌入加载走**注入点**，
+  否则"系统命中时不解析"根本无法观测。默认实现读 `//go:embed`。
+- 控制流保证顺序：`probe()` 成功即 return，**只有** `rep.Err != nil` 才调用
+  `loadEmbedded()`——不是靠开关或标志位。
+- `ProbeReport.Embedded *EmbeddedResult`：与 `Candidates` 分开，因为两条链路语义不同
+  （系统是"按路径逐个试"，嵌入是"一次加载 + 一次解析"）。
+- 兜底成功后 `rep.Err` **必须清空**，否则调用方会把"已兜底成功"读成"失败"。
+
 ## 5. B5 体积预算（冻结）
 
 | 项 | 冻结 |
@@ -215,9 +235,43 @@ python -m fontTools.subset NotoSansSC-Regular.otf \
 ⚠️ **不得为压 3MB 牺牲覆盖**：若子集后仍超 3MB，正确的做法是**缩小字符集并如实标注边界**
 （§2.2），不是删掉覆盖清单的一部分再宣称"覆盖完整"。
 
-**当前实测**：子集产物 **1,625,796 B（1.55 MB）**，距 3 MB 门槛有约 1.45 MB 余量。
-二进制增量（`examples/demo` 同标志构建两次的字节差）仍需在 B5 实现时**实测**——
-嵌入数据经 `//go:embed` 进入二进制，增量预期≈子集大小，但不做假设。
+### 5.1 实测（2026-10-21）
+
+为了能量出"嵌入前后"的差，引入构建标签 **`nofontembed`**：
+`pkg/runtime/theme/embedded` 在该标签下改用 `assets_stub.go`，嵌入数据整段不进二进制。
+
+**关键发现：`examples/demo` 不能作为断言靶子。**
+
+| 目标 | 未嵌入 | 嵌入 | 增量 |
+|---|---|---|---|
+| `examples/demo`（参考，**不断言**） | 15,158,272 B | 15,157,760 B | **−512 B** |
+| `testdata/sizeprobe`（**断言靶子**） | 5,454,848 B | 7,636,992 B | **2,182,144 B** |
+
+demo 的差值是**负数**，原因不是压缩，而是 demo 用的是
+`app.NewApp(view, material.NewTheme(), …)` —— 它自己注入 Gio 默认主题，
+**根本不链接 `pkg/runtime/theme`**，链接器把 theme/embedded 整段丢弃了。
+拿它做前后对比得到"没超预算"，是**假绿**：不是达标，是没测到东西。
+
+因此建立一个最小靶子 `pkg/runtime/theme/testdata/sizeprobe`（只调一次
+`theme.NewTheme()`），让 `theme → probe → defaultEmbeddedLoader → embedded.Load → fontData`
+被真实链接。放在 `testdata/` 下是刻意的：`go build ./...`、`go vet ./...`
+都会跳过它，不会被当成本项目的产物入口。
+
+| 项 | 实测 |
+|---|---|
+| 增量 | **2,182,144 B ≈ 2.08 MiB** |
+| 硬门槛 | 3,145,728 B（3 MiB） |
+| 余量 | ≈ 963,584 B |
+| 判定 | **通过**，且增量 > 1,500,000 B 的下限断言 → 证明字体确实进了二进制 |
+
+> 增量为 2.18 MB 而子集只有 1.63 MB：多出的约 0.5 MB 是 `//go:embed` 一并带入的
+> `charset.txt`（52,780 B）、`LICENSE`（4,301 B）、`METADATA.json`（1,754 B），
+> 以及 `nofontembed` 构建下被 DCE 掉的 `encoding/json` 等元数据解析依赖。
+> 也就是说这个数字是**保守上界**。
+
+⚠️ 遗留（交给 DEMO 线，不在 B 范围内修改）：demo 绕开 `theme.NewTheme()`
+意味着旗舰样例不会展示嵌入兜底与字体诊断，这是否符合路线 B 的意图需要单独裁决。
+本卡只记录现象，不动 demo。
 
 ## 6. B6 A→B 失败语义（冻结，关闭 A 卡约束 10）
 
@@ -239,6 +293,35 @@ B 必须关闭它，冻结为：
 > 若后续评估认为改变 `Run` 的失败模式风险过大，应**先改本卡并登记理由**再实现，
 > 不得在实现里悄悄保持旧行为。该变更会影响 `pkg/runtime/app` 的现有用例
 > （需同步更新并给出证据）。
+
+### 6.1 实现结果（2026-10-21）
+
+| 层 | 落地 |
+|---|---|
+| `Provider.Resolve` | 两条链路都失败 → `fmt.Errorf("%w: 系统候选 N 个与嵌入兜底均不可用（system: … \| embedded: …）", ErrFontNotFound, …)`；`errors.Is` 成立 |
+| `ProbeReport` | `Candidates`（系统）+ `Embedded`（嵌入）两条链路同时在；`String()` 一并打印 |
+| `theme.Diagnostics()` | 返回**副本**（含 `Candidates` 切片与 `Embedded` 深拷贝），调用方改动不污染 Provider |
+| `app.Run` | 改用注入点 `newThemeWithReport = theme.NewThemeWithReport`；`rep == nil` 或 `rep.Err != nil` 均返回错误，后者 `%w` 包装 → `errors.Is(err, contracts.ErrFontNotFound)` 成立 |
+| `app.RunWith` / `NewApp` / `RunWindow*` | **未改**，显式注入路径完全不受影响（用例 `TestRunWithDoesNotUseDefaultThemeBuilder` 断言默认入口被破坏时它们仍成功且未被调用） |
+
+**`NewTheme()` 仍是宽容包装**（签名固定，无错误返回位）：两条链路都失败时它返回
+Gio 默认主题，但诊断经 `NewThemeWithReport` / `Diagnostics` 可见，
+且 `app.Run` 走严格路径。这一点写进了包注释的「宽容入口 vs 严格入口」小节，
+避免后来者把两者混为一谈。
+
+#### 被同步更新的既有用例（必须给证据）
+
+B 改变了"系统全失败"的语义，A 期两个用例的**前提**因此失效：
+
+| 用例 | 原断言 | 为何必须改 |
+|---|---|---|
+| `TestFontProbeErrFontNotFound` | 所有候选不存在 → `ErrFontNotFound` | B 之后会兜底成功，`err == nil`（实测首次失败：`font_test.go:187: 期望 ErrFontNotFound，实际 <nil>`） |
+| `TestFontProbeTimeoutAndDiagnostics` | 超时后整体失败 → `ErrFontNotFound` | 同上（实测首次失败在断言行 153） |
+
+**改法不是放宽断言**，而是给这两个 Provider **注入一个失败的嵌入加载器**
+（`Embedded: &failingLoader{...}`），把被测对象重新隔离为"系统链路"。
+A 的严格性断言（必须 `ErrFontNotFound`、不得空串+nil、候选状态正确）**一条没删**。
+"系统全失败但兜底成功"这一新行为由 `TestEmbeddedFallbackSelectionOrder` 单独覆盖。
 
 ## 7. 开工阻塞项
 
@@ -268,17 +351,23 @@ B 必须关闭它，冻结为：
 命令统一：`go test -run TestEmbeddedFallback ./pkg/runtime/theme/...`
 （命中真实用例；`SKIP` 计为未执行，不计入通过）。
 
-| 测试名 | 覆盖 | 证据等级 |
-|---|---|---|
-| `TestEmbeddedFallbackMetadata` | B1：来源/版本/许可证全文/改名后字体名/两套 SHA-256 可断言 | 逻辑（读仓库内元数据文件） |
-| `TestEmbeddedFallbackSubsetCoverage` | B2：覆盖清单内的字**逐个**有字形；并断言存在清单外 CJK 码位无字形（如实标注边界，不伪造"完整 CJK"） | 逻辑 |
-| `TestEmbeddedFallbackParseAndCorrupted` | B3：有效字体解析成功且含「中」；损坏字节 → 可诊断错误（非 panic、非空集合） | 逻辑 |
-| `TestEmbeddedFallbackSelectionOrder` | B4：系统失败→选嵌入（前缀 `embedded:`）；系统命中→嵌入解析**未被调用** | 逻辑 |
-| `TestEmbeddedFallbackSizeBudget` | B5：二进制增量 ≤ 3MB（构建两次比较） | **实测**（本机 Windows） |
-| `TestEmbeddedFallbackFailureSemantics` | B6：系统与嵌入都失败 → `ErrFontNotFound` + 报告含两条链路原因 + app 默认路径返回错误 | 逻辑 |
+| 测试名 | 覆盖 | 证据等级 | 结果（2026-10-21） |
+|---|---|---|---|
+| `TestEmbeddedFallbackMetadata` | B1：来源/版本/许可证全文/改名后字体名/两套 SHA-256 可断言 | 逻辑（读仓库内元数据文件） | **PASS** |
+| `TestEmbeddedFallbackSubsetCoverage` | B2：覆盖清单内的字**逐个**有字形；并断言存在清单外 CJK 码位无字形（如实标注边界，不伪造"完整 CJK"） | 逻辑 | **PASS**（含反向自检子用例） |
+| `TestEmbeddedFallbackParseAndCorrupted` | B3：有效字体解析成功且含「中」；损坏字节 → 可诊断错误（非 panic、非空集合） | 逻辑 | **PASS**（非字体/截断/空三种输入） |
+| `TestEmbeddedFallbackSelectionOrder` | B4：系统失败→选嵌入（前缀 `embedded:`）；系统命中→嵌入解析**未被调用** | 逻辑 | **PASS**（4 个子用例） |
+| `TestEmbeddedFallbackSizeBudget` | B5：二进制增量 ≤ 3MB（构建两次比较） | **实测**（本机 Windows, `CGO_ENABLED=0`） | **PASS**（2,182,144 B） |
+| `TestEmbeddedFallbackFailureSemantics` | B6：系统与嵌入都失败 → `ErrFontNotFound` + 报告含两条链路原因 + `Diagnostics()` 可见 | 逻辑 | **PASS**（4 个子用例） |
 
-占位用例 `TestEmbeddedFallback`（当前 `t.Skip`）在实现时替换为上述真实断言；
-**函数名前缀保持不变**，否则验收命令退化为空转（docgate 会报红）。
+占位用例 `TestEmbeddedFallback`（`t.Skip`）**已删除**，由上述六个真实用例替代；
+**函数名前缀保持不变**，验收命令 `go test -run TestEmbeddedFallback ./pkg/runtime/theme/...`
+实际命中 6 个测试（不是 `no tests to run`，也不是 `SKIP`）。
+
+补充：app 侧的 B6 证据在 `pkg/runtime/app`：
+`TestRunFailsOnFontDiagnostics`、`TestRunWrapsFontNotFound`、
+`TestRunWithDoesNotUseDefaultThemeBuilder`。
+完整命令：`go test -run 'TestRun(FailsOnFontDiagnostics|WrapsFontNotFound)' ./pkg/runtime/app/`。
 
 ## 9. 风险与边界（用户提出，必须留在卡里）
 
@@ -297,26 +386,53 @@ B 必须关闭它，冻结为：
 
 | 项目 | 内容 |
 |---|---|
-| 当前提交 SHA | 见 dev-log 2026-10-20 §26 |
-| 已完成 | B1–B6 边界与验收矩阵冻结；**B1 来源核验通过（阻塞项 1 解除）**；
-  **B2 子集化试跑成功**（1.55 MB / 6,763 汉字零缺失）；
-  **B3 解析前置实测通过**（Gio 可解析 CFF 子集，1.58 ms，损坏输入可诊断） |
-| 未完成 | **仓库内实现尚未开始**：`//go:embed` 接入、B4 选择顺序、
-  B5 二进制增量实测、B6 失败语义（含 `pkg/runtime/app` 用例同步） |
-| 已运行命令及结果 | 见 §1.1 / §1.3 / §1.4 / §2.4 / §3。
-  取证脚本与报告在 `%TEMP%\goxml-b-font\`（report.txt ~ report5.txt） |
-| 待确认（1 项） | 改名后字体名 **`Goxml Sans SC`**（§1.2）——确认后写入
-  `TestEmbeddedFallbackMetadata` 断言；未确认前不落地 embed 文件 |
-| 已知失败或风险 | 见 §9 |
-| 下一位接手人 | B 实现：① 确认改名后的字体名 → ② B3–B5 接入与体积实测 → ③ B6 失败语义。
-  顺序上不并行开 C/D |
+| 当前提交 SHA | 见 dev-log 2026-10-21 §27 |
+| 已完成 | **B1–B6 全部实现并通过验收**：来源核验（官方 tag `Sans2.004` + git blob 校验）、
+  构建期子集化（1.55 MB / 6,763 汉字零缺失 / 可复现）、`//go:embed` 接入、
+  系统优先后嵌入兜底（计数器证明系统命中不解析嵌入）、
+  二进制增量实测（2,182,144 B ≤ 3 MiB）、失败语义收紧（`ErrFontNotFound` + `Diagnostics()` + app 严格路径） |
+| 未完成 | 无（B 范围内）。C（按字形 fallback 链）/ D（懒加载 + 110ms 探测延迟）未开工 |
+| 已运行命令及结果 | 验收：`go test -run TestEmbeddedFallback ./pkg/runtime/theme/...` → 6 个测试全 PASS；
+  `go test ./pkg/runtime/app/` → PASS；
+  `go test ./pkg/runtime/theme/` → PASS（11.6 s，含两次二进制构建）；
+  `go build ./...` 0、`go vet ./...` 0、`gofmt -l` 空、`go test ./internal/docgate/` 0 |
+| 复现方式 | `python scripts/font/subset.py --source <官方 NotoSansSC-Regular.otf> --license <官方 LICENSE>`；
+  只校验已落地产物：`python scripts/font/subset.py --verify-only` |
+| 已知失败或风险 | 见 §9 / §10.1 |
+| 下一位接手人 | C / D；顺序上不并行。C 之前先读 §5.1 关于 demo 绕开 `theme.NewTheme()` 的遗留 |
 
-### 10.1 本轮新增风险
+### 10.1 累积风险
 
-6. **取证产物不在仓库内**：B2 子集产物目前只在 `%TEMP%`，**尚未写入仓库**。
-   下一次执行必须把「子集脚本 + 字符集清单 + 产物 + 许可证全文 + 元数据」
-   一并入库，并把产物 SHA-256 写进断言，否则产物不可复现。
-7. **网络可达性是时序状态**：本轮 GitHub 可达、上一轮不可达。
-   若将来需要重新取证，应先复测连通性，不得沿用"GitHub 不可达"的旧结论。
+6. ~~取证产物不在仓库内~~ → **已解决**：`scripts/font/subset.py`（脚本）+
+   `pkg/runtime/theme/embedded/`（字体 / charset.txt / LICENSE / METADATA.json）已入库。
+   产物 SHA-256 写进 `TestEmbeddedFallbackMetadata` 的冻结常量。
+7. **网络可达性是时序状态**：2026-10-20 上一轮 GitHub 不可达、本轮可达。
+   若将来需要重新取证，应先复测连通性，不得沿用旧结论。
 8. **Git blob API 的大小上限**：本次文件 8.3 MB（API 上限 100 MB）。
    若将来改用更大的输入（如 Super OTC 19.5 MB）仍在限内，但超大文件需改走 release asset。
+9. **`nofontembed` 是测量专用标签**，生产构建绝不能用：用了就没有兜底，
+   而 B6 的失败语义会让程序直接返回错误而不是渲染。该风险由
+   `TestEmbeddedFallbackFailureSemantics` 的"两条链路都失败"路径间接覆盖。
+10. **字体产物 1.55 MB 进 git**：这是 `//go:embed` 方案的固有代价。
+    若将来要达到更小的克隆体积，应改走 `git-lfs` 或"首次运行下载"，两者都需要新 ADR。
+11. **demo 不链接 theme 包**（§5.1）：旗舰样例看不到字体兜底与诊断，
+    属 DEMO 线的边界问题，本卡只记录不改。
+
+## 11. 落地清单（文件级）
+
+| 路径 | 作用 |
+|---|---|
+| `scripts/font/subset.py` | 构建期子集化：校验输入 SHA-256 → 生成 charset → `pyftsubset` → 改名 → 写元数据 → 自校验。`--verify-only` 只核验产物 |
+| `pkg/runtime/theme/embedded/GoxmlSansSC-Regular.otf` | 子集字体（1,625,796 B） |
+| `pkg/runtime/theme/embedded/charset.txt` | 7,540 个码位，一行一个，可逐项核对 |
+| `pkg/runtime/theme/embedded/LICENSE` | OFL 1.1 全文（4,301 B） |
+| `pkg/runtime/theme/embedded/METADATA.json` | 上游来源、两级 SHA-256、工具与参数、覆盖边界 |
+| `pkg/runtime/theme/embedded/metadata.go` | 元数据结构与自洽校验（`PostScriptName` / `FamilyName` 常量） |
+| `pkg/runtime/theme/embedded/assets.go` | `//go:embed` + `Load()`（`!nofontembed`） |
+| `pkg/runtime/theme/embedded/assets_stub.go` | `nofontembed` 下的空实现（`ErrNotEmbedded`），供 B5 测量 |
+| `pkg/runtime/theme/font.go` | B4：`EmbeddedFontLoader` 注入点、`ProbeReport.Embedded`、两条链路编排 |
+| `pkg/runtime/theme/theme.go` | B6：`Diagnostics()`、宽容入口 vs 严格入口的书面边界 |
+| `pkg/runtime/theme/embedded_fallback_test.go` | B3–B6 六个验收用例（`TestEmbeddedFallback*`） |
+| `pkg/runtime/theme/testdata/sizeprobe/main.go` | B5 的二进制增量测量靶子（testdata 不参与 `./...`） |
+| `pkg/runtime/app/app.go` | B6：`Run` 改走 `newThemeWithReport`，字体诊断失败即返回错误 |
+| `pkg/runtime/app/theme_entry_test.go` | 严格/宽容两条路径的用例（含 `errors.Is` 判定） |

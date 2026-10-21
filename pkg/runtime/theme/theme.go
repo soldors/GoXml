@@ -11,16 +11,25 @@
 //
 // # 当前状态（重要）
 //
-// `NewTheme()` 当前做两件事：构建 Gio 默认主题，并在探测成功时把 CJK 字体集合
-// 装配进 `text.Shaper`（TASK-FONT-001-A）。**尚未实现**：嵌入兜底（B）、
-// 按字形的 fallback 链（C）、懒加载与加载失败强制诊断（D）。
+// 已实现：
 //
-// ⚠️ **A 阶段的已知缺口**：探测失败时 `NewTheme()` 仍返回 Gio 默认主题
-// （Shaper 零值 → 隐式加载系统字体），只保证「诊断可见」。
-// 这是有意的暂缓：A 阶段没有兜底可回退，此时强制失败会让无 CJK 字体的环境
-// 直接不可用。**退出条件 = B 落地后必须收紧**为「探测失败即诊断失败」，
-// 否则长期违反规范 §1.2「不得静默降级到空白渲染」。
-// 失败信息由 `NewThemeWithReport` 返回的 `*ProbeReport` 暴露。
+//   - **A**：CJK 系统字体探测（候选表、超时、诊断、缓存）并在命中时把集合
+//     装配进 `text.Shaper`；
+//   - **B**：系统探测失败后回退到 `//go:embed` 的子集字体（GB2312 6,763 汉字，
+//     不是完整 CJK）；两条链路的诊断都进 `ProbeReport`，并对 app 暴露
+//     `Diagnostics()`。
+//
+// 尚未实现：按字形覆盖的 fallback 链（C）、懒加载与探测延迟优化（D）。
+//
+// # 宽容入口 vs 严格入口（不要混淆）
+//
+//   - `NewTheme() *material.Theme` 是**宽容包装**：签名固定，无法返回错误，
+//     因此两条链路都失败时它仍返回 Gio 默认主题。诊断不会消失——用
+//     `NewThemeWithReport()` 或 `Diagnostics()` 取。
+//   - `pkg/runtime/app.Run` 走**严格路径**：默认主题构建失败时直接返回
+//     包装了 `contracts.ErrFontNotFound` 的错误，不再静默降级
+//     （规范 §1.2「不得静默降级到空白渲染」）。显式注入主题的
+//     `RunWith` / `NewApp` 不受影响。
 package theme
 
 import (
@@ -39,9 +48,14 @@ var defaultProvider = NewProvider(ProviderOptions{})
 
 // NewTheme 构建默认主题。
 //
-// 探测成功时把命中的 CJK 字体集合装配进 `text.Shaper`（系统字体仍保留，
-// 不传 `text.NoSystemFonts()`）；探测失败时保持 Gio 默认行为，
-// 诊断通过 NewThemeWithReport 可见（A 阶段已知缺口，见包注释）。
+// 字体解析顺序（B 卡 §4）：系统探测命中 → 用系统字体；系统全部不可用 →
+// 用嵌入子集字体。任一命中都会把集合装配进 `text.Shaper`（保留系统字体，
+// 不传 `text.NoSystemFonts()`）。
+//
+// 两条链路都失败时**仍返回 Gio 默认主题**——本函数签名固定，没有返回错误的
+// 位置。诊断不会消失：`NewThemeWithReport()` 返回的 `*ProbeReport` 与
+// `Diagnostics()` 都能拿到完整原因。需要"失败即报错"的严格语义时，走
+// `pkg/runtime/app.Run`（它返回错误）或直接调用 `NewThemeWithReport`。
 //
 // # 稳定性承诺
 //
@@ -56,6 +70,27 @@ var defaultProvider = NewProvider(ProviderOptions{})
 func NewTheme() *material.Theme {
 	th, _ := NewThemeWithReport()
 	return th
+}
+
+// Diagnostics 返回最近一次**默认主题**字体解析的诊断报告（副本）。
+//
+// 这是 B6 要求的观测入口（A 卡约束 10 的另一半）：系统探测与嵌入兜底两条
+// 链路的结果与原因都在里面。返回副本，调用方改动不会污染 Provider 内部状态。
+//
+// 尚未发生过解析时返回 nil——nil 与"解析成功"必须能区分开，因此不要用
+// `Diagnostics() != nil` 来判断成功，要看 `rep.Err`。
+func Diagnostics() *ProbeReport {
+	rep := defaultProvider.LastReport()
+	if rep == nil {
+		return nil
+	}
+	cp := *rep
+	cp.Candidates = append([]CandidateResult(nil), rep.Candidates...)
+	if rep.Embedded != nil {
+		e := *rep.Embedded
+		cp.Embedded = &e
+	}
+	return &cp
 }
 
 // NewThemeWithReport 与 NewTheme 相同，另外返回字体探测的诊断报告。
