@@ -310,3 +310,4 @@ IME 的验收路径 `pkg/widgets` 与 `<Input>` 控件本身都**不存在**，�
 | `5aea209` | `feat(font)`：TASK-FONT-001-C 实现（GlyphID 反解与 notdef 可观测、覆盖判定准入、按需补充链、emoji 降级），10 个验收用例全 PASS，5 次变异全部如期变红。记录见 dev-log 10-21 §29 |
 | `49d18c5` | `docs(font)`：冻结 TASK-FONT-001-D 设计（D1 基线、状态机、三个设计问题）+ 写入评审点名的两条风险。记录见 dev-log 10-21 §30 |
 | `2dbe874` | `docs(dev-log)`：登记 `49d18c5`。**确立为后续评审基线** |
+| `948c406` | `feat(naming)` 提交里**一并包含** `TASK-FONT-001-D-IMPL-1` 的实现（`lazy.go` +437 / `lazy_test.go` +685 / `theme_build.go` +88 / `internal/docgate/font_lazy_test.go` +93 及本卡、IMPL-1、ACCEPT、WBS 的文档改动）。**归属说明见 dev-log 10-21 §37.5**：我方按路径 `add` 后被并发线的 `add -A` 卷入，内容已核验无损、在 `948c406` 上复跑范围测试全绿，只是提交信息不描述这批改动 |
