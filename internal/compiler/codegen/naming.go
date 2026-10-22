@@ -64,6 +64,11 @@ type namingConflict struct {
 // 这里保留保守上界（缓存类型即使没有绑定槽位也计入），
 // 影响仅限于：若同包两个源派生出**同一后缀**（如 a-b.gxml 与 a_b.gxml 的 pascal 塌缩），
 // 会连同缓存类型一起被判冲突——这正是期望行为，不会误伤不同后缀的源。
+//
+// 保守上界的代价不止塌缩一类：包内既有同名 `goxmlTextCache<Source>` 用户符号时，
+// 静态页/纯事件页（槽位为 0，产物不声明该类型）也会被报冲突，即**误报**。
+// 该误报已被 `naming_textcache_boundary_test.go` 钉为可复现事实；
+// 收窄判据是 `bindSlots > 0`（不是 `usesVM`），归 C4/C5，不在 C2 处理。
 func generatedPackageSymbols(sourcePath string) ([]string, error) {
 	view, err := viewSymbol(sourcePath)
 	if err != nil {

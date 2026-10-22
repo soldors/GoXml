@@ -117,7 +117,10 @@ func buildTwoSourcesTogether(t *testing.T, a, b dualSource) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "./"+filepath.ToSlash(rel)+"/...")
+	// 用**无通配**的显式路径，不用 `./<dir>/...`：实测 `go build ./<空目录>/...`
+	// 会打印 "matched no packages" 并退出 0——那会让本用例在产物未写入时静默"通过"。
+	// 去掉 `...` 后，目录不存在或包内无 Go 文件时退出码非 0。
+	cmd := exec.Command("go", "build", "./"+filepath.ToSlash(rel))
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOPROXY=off")
 	out, err := cmd.CombinedOutput()
@@ -211,8 +214,13 @@ func TestStaticAndBindingSourcesSamePackage(t *testing.T) {
 	assertSymbolsOfSource(t, srcB, b.sourcePath, a.sourcePath)
 
 	// 含绑定页声明自己的槽位缓存类型；静态页不声明。
-	if !strings.Contains(srcB, "goxmlTextCacheDetail") {
-		t.Errorf("%s 是含绑定页，应声明 goxmlTextCacheDetail:\n%s", b.sourcePath, headOf(srcB, 40))
+	// 类型名由 generatedTypeNames 派生（返回顺序 (keyType, cacheType)），不硬编码。
+	_, cacheB, err := generatedTypeNames(b.sourcePath)
+	if err != nil {
+		t.Fatalf("generatedTypeNames(%q): %v", b.sourcePath, err)
+	}
+	if !strings.Contains(srcB, "type "+cacheB+" struct") {
+		t.Errorf("%s 是含绑定页，应声明 %q:\n%s", b.sourcePath, cacheB, headOf(srcB, 40))
 	}
 	if strings.Contains(srcA, "goxmlTextCache") {
 		t.Errorf("%s 是静态页，不应声明绑定槽位缓存类型:\n%s", a.sourcePath, headOf(srcA, 40))
@@ -231,20 +239,29 @@ func TestTwoBindingSourcesSamePackage(t *testing.T) {
 	assertSymbolsOfSource(t, srcA, a.sourcePath, b.sourcePath)
 	assertSymbolsOfSource(t, srcB, b.sourcePath, a.sourcePath)
 
-	for name, src := range map[string]string{
-		"goxmlTextCacheHome":   srcA,
-		"goxmlTextCacheDetail": srcB,
+	// 类型名由 generatedTypeNames 派生，不硬编码字面量。
+	for _, tc := range []struct{ sourcePath, src string }{
+		{a.sourcePath, srcA},
+		{b.sourcePath, srcB},
 	} {
-		if !strings.Contains(src, name) {
-			t.Errorf("含绑定页产物应声明 %q", name)
+		_, cache, err := generatedTypeNames(tc.sourcePath)
+		if err != nil {
+			t.Fatalf("generatedTypeNames(%q): %v", tc.sourcePath, err)
+		}
+		if !strings.Contains(tc.src, "type "+cache+" struct") {
+			t.Errorf("含绑定页 %s 的产物应声明 %q", tc.sourcePath, cache)
 		}
 	}
 }
 
 // TestSamePackageTwoSourcesUseDistinctTypeNames 不启动子进程的类型名唯一性判据。
 //
-// 上面的编译测试是最强证据但较慢；这里给出同一事实的快速判据：
-// 两个不同源派生的**包级类型名**必须两两不同（C2 的核心不变量）。
+// 上面的编译测试是最强证据但较慢；这里给出同一事实的快速判据。
+//
+// 措辞纪律：断言的是"**下面这批样本**两两不同"，不是"任意两个源必然不同"——
+// pascal 塌缩（a-b.gxml 与 a_b.gxml 派生同一后缀）是**预期会撞名**的，
+// 由 C1 预检报冲突（见 naming_test.go 的 TestNamingDetectsPascalCollapse），
+// 不是靠随机后缀掩盖。把不变量写成"任意两源必不同"会在塌缩用例上给出虚假覆盖感。
 func TestSamePackageTwoSourcesUseDistinctTypeNames(t *testing.T) {
 	paths := []string{"home.gxml", "detail.gxml", "sub/home.gxml", "ui/detail.gxml", "settings_page.gxml"}
 

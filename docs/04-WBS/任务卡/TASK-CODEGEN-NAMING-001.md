@@ -244,9 +244,27 @@ P0 决定了方案走向，**必须由裁决给出**：
 |---|---|
 | `gofmt -l` / `go vet ./internal/compiler/codegen/` / `go build ./...` | 空 / 0 / 0 |
 | 新增 8 用例定向跑 | PASS=8 |
-| `go test -timeout 30m ./internal/compiler/codegen/` | ok 525.4s |
-| 其余 17 个包（排除 codegen） | 全 `ok`（3 个无测试文件），无 FAIL |
-| `go test -timeout 20m -v ./internal/docgate/` | 14/14 PASS |
+| `go test -timeout 30m ./internal/compiler/codegen/` | ok 525.4s（复审实测 523.1s） |
+| 其余 17 个包（排除 codegen） | 13 个 `ok` + 4 个 `[no test files]`，无 FAIL |
+| `go test -timeout 20m ./internal/docgate/` | 13/13 PASS |
+
+> 上表初版把 docgate 写成 14/14、其余包写成 14 ok + 3 无测试文件，两个数字都记错
+> （实际 13 / 13+4），由独立复审指出后订正——见 dev-log 2026-10-22 §2。
+
+### 10.3 独立复审后的订正（2026-10-22，dev-log `2026-10-22.md` §2）
+
+复审结论 **PASS WITH NON-BLOCKING**，无 P0/P1。已处理的 P2/P3：
+
+| 编号 | 等级 | 问题 | 处理 |
+|---|---|---|---|
+| P2-3 | P2 | 边界测试文件头称 `bindCacheDecl` 只在 `usesVM` 为真时生成，与生产代码冲突（实际条件 `slots > 0`） | 注释订正 + **补纯事件页用例** `TestPrecheckOverreportsForEventOnlyPage` + 给 C4 留判据提醒 |
+| P2-4 | P2 | `naming.go` 注释称保守上界"影响仅限于同后缀塌缩"，被本补丁自己的测试证伪 | 注释补记第二类误报与收窄判据 |
+| P3-1 | P3 | 3 处硬编码符号字面量 | 改为 `viewSymbol`/`generatedTypeNames` 派生 |
+| P3-2 | P3 | `go build ./<dir>/...` 对空目录退出 0（潜在空转） | 改用显式路径（去掉 `...`） |
+| P3-3 | P3 | 唯一性用例的注释把"样本互不冲突"写成普遍不变量 | 注释订正（塌缩是预期撞名，归 C1 预检） |
+
+复审登记但**未处理**的残余风险：跨平台未实测（仅 Windows）；冷 module cache
++ 无网络未验证；`testdata/` 孤儿包场景未构造。均属环境类，不阻塞本轮验收。
 
 ## 11. 纪律
 
