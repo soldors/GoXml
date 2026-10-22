@@ -39,7 +39,7 @@ const ownArtifactCallerSource = `ui\dashboard.gxml`
 // 派生，不写死字面量），因此只要排除逻辑失效，就一定会被判为冲突。
 func writeOwnArtifact(t *testing.T, dir, name, headerSource, callerSource string) string {
 	t.Helper()
-	syms, err := generatedPackageSymbols(callerSource)
+	syms, err := generatedPackageSymbols(callerSource, 0, false)
 	if err != nil {
 		t.Fatalf("generatedPackageSymbols(%q): %v", callerSource, err)
 	}

@@ -48,6 +48,17 @@ const bindingPageGxml = `<Goxml Version="1" ViewModel="VM">
 </Goxml>
 `
 
+// eventOnlyPageGxml 是**纯事件页**：有 ViewModel、有事件，但没有任何 `{...}` 绑定。
+//
+// 它的存在是为了钉住收窄判据必须是 `bindSlots > 0` 而**不是** `usesVM`：
+// 纯事件页 usesVM 为真，却不声明 goxmlTextCache<Source>。
+const eventOnlyPageGxml = `<Goxml Version="1" ViewModel="VM">
+  <Page Route="/">
+    <Button Text="加一" Click="Increment"/>
+  </Page>
+</Goxml>
+`
+
 // writeGxml 写一个 .gxml 源到 dir。
 func writeGxml(t *testing.T, dir, name, content string) string {
 	t.Helper()
@@ -331,16 +342,17 @@ func TestNamingConflictDoesNotCreateOutDir(t *testing.T) {
 	}
 }
 
-// TestNamingStaticPageTextCacheOverreport：**已知误报**，在此钉住接线后的
-// 真实代价（卡 §10.4.2 的第 1 条限制；收窄归 C5，判据是 `bindSlots > 0`）。
+// TestNamingStaticPageTextCacheNotOverreported：C5 收窄后，静态页**不再**被误报。
 //
-// 静态页不声明 goxmlTextCache<Source>，但预检的符号集合是"只看路径"的
-// 保守上界，把它也算进去了 → 包里只要有同名用户符号，生成就被拦下。
+// 历史：C4 接线后本用例叫 TestNamingStaticPageTextCacheOverreport，钉住的是
+// 「预检只看路径 → 静态页也被算上 textCache → 包内有同名用户符号就生成不了」
+// 这个真实代价（卡 §10.4.2 第 1 条限制）。C5 按 `bindSlots > 0` 收窄后，
+// 该行为必须消失——所以本用例的期望**整体反过来了**，并保留反向对照：
 //
-// 本用例不消除该行为，只把它变成可复现、可复核的事实，并自带反向对照：
-// 去掉那个用户符号后，同一份静态页能正常生成，且产物里**没有**该类型
-// ——两条合起来才说明"拦下它是没有必要的"。
-func TestNamingStaticPageTextCacheOverreport(t *testing.T) {
+//   - 静态页（bindSlots=0，产物不声明该类型）+ 包内同名用户符号 → **生成成功**；
+//   - 同一份用户符号 + **绑定页**（bindSlots>0，产物真声明它）→ **仍然拦下**
+//     （CODEGEN-NAME-001）。没有这一条，收窄就可能退化成"根本不查 textCache"。
+func TestNamingStaticPageTextCacheNotOverreported(t *testing.T) {
 	tmp := tempProjectInRepo(t)
 	copyFixture(t, tmp)
 
@@ -356,7 +368,20 @@ func TestNamingStaticPageTextCacheOverreport(t *testing.T) {
 	}
 	cacheType := textCacheTypeName(t, genData)
 
-	// ---- 换成静态页：先确认它本身能生成，且产物不声明该类型 ----
+	// ---- 反向对照（同一份用户符号必须对绑定页仍然生效）----
+	writeUserDecl(t, tmp, "miniproj", cacheType)
+	out.Reset()
+	errb.Reset()
+	code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb)
+	if code != ExitFailure {
+		t.Fatalf("绑定页声明 %q，与用户符号撞名时必须失败，退出码 = %d；stdout:\n%s",
+			cacheType, code, out.String())
+	}
+	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-001:") || !strings.Contains(errb.String(), cacheType) {
+		t.Errorf("诊断应点名 %q 并按冻结格式给出 CODEGEN-NAME-001:\n%s", cacheType, errb.String())
+	}
+
+	// ---- 换成静态页：同一份用户符号在包里，生成必须**成功** ----
 	if err := os.Remove(genPath); err != nil {
 		t.Fatal(err)
 	}
@@ -365,27 +390,156 @@ func TestNamingStaticPageTextCacheOverreport(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	if code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb); code != ExitOK {
-		t.Fatalf("静态页应能正常生成（退出码 %d）:\n%s", code, errb.String())
+		t.Fatalf("静态页不声明 %q，用户符号不构成冲突，应生成成功；退出码 = %d\nstderr:\n%s",
+			cacheType, code, errb.String())
 	}
 	staticGen, err := os.ReadFile(genPath)
 	if err != nil {
 		t.Fatalf("静态页产物不存在: %v", err)
 	}
-	if strings.Contains(string(staticGen), "type "+cacheType) {
-		t.Fatalf("静态页产物声明了 %q，与「保守上界」前提矛盾:\n%s", cacheType, headOfStatic(string(staticGen), 40))
+	// 前提复核：产物确实不声明该类型——否则"不该报冲突"的判断本身就没依据。
+	if strings.Contains(string(staticGen), "type "+cacheType+" struct") {
+		t.Fatalf("静态页产物声明了 %q，收窄判据的前提被破坏:\n%s",
+			cacheType, headOfStatic(string(staticGen), 40))
 	}
+}
 
-	// ---- 反向对照：包内出现同名用户符号 → 预检拦下（误报）----
+// TestNamingEventOnlyPageTextCacheNotOverreported：纯事件页（usesVM 真、槽位 0）
+// 同样不该被 textCache 撞名误报。
+//
+// 这条用例是判据选择的反证：若收窄写成 `usesVM == false` 才排除，纯事件页
+// 仍会被误报（它的 usesVM 为真）；只有用 `bindSlots > 0` 才是对的。
+func TestNamingEventOnlyPageTextCacheNotOverreported(t *testing.T) {
+	tmp := tempProjectInRepo(t)
+	copyFixture(t, tmp)
+
+	// 用绑定页产物拿到 text cache 类型名（不写死字面量）。
+	var out, errb bytes.Buffer
+	if code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb); code != ExitOK {
+		t.Fatalf("预置生成失败（退出码 %d）:\n%s", code, errb.String())
+	}
+	genPath := filepath.Join(tmp, "home_gen.go")
+	genData, err := os.ReadFile(genPath)
+	if err != nil {
+		t.Fatalf("预置产物不存在: %v", err)
+	}
+	cacheType := textCacheTypeName(t, genData)
+
+	// 换成纯事件页 + 包内同名用户符号。
+	if err := os.Remove(genPath); err != nil {
+		t.Fatal(err)
+	}
+	writeGxml(t, tmp, "home.gxml", eventOnlyPageGxml)
 	writeUserDecl(t, tmp, "miniproj", cacheType)
 
 	out.Reset()
 	errb.Reset()
-	code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb)
-	if code != ExitFailure {
-		t.Fatalf("当前实现下应被预检拦下（误报），退出码 = %d；stdout:\n%s", code, out.String())
+	if code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb); code != ExitOK {
+		t.Fatalf("纯事件页不声明 %q，应生成成功；退出码 = %d\nstderr:\n%s",
+			cacheType, code, errb.String())
 	}
-	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-001:") || !strings.Contains(errb.String(), cacheType) {
-		t.Errorf("诊断应点名 %q 并按冻结格式给出 CODEGEN-NAME-001:\n%s", cacheType, errb.String())
+	eventGen, err := os.ReadFile(genPath)
+	if err != nil {
+		t.Fatalf("纯事件页产物不存在: %v", err)
+	}
+	// 前提复核两件：确实生成了（不能是靠失败后保留旧产物蒙过），且不含该类型。
+	if strings.Contains(string(eventGen), "type "+cacheType+" struct") {
+		t.Fatalf("纯事件页产物声明了 %q，与「槽位为 0 不声明」矛盾:\n%s",
+			cacheType, headOfStatic(string(eventGen), 40))
+	}
+}
+
+// TestNamingConflictStdoutSilentMultiFile 覆盖 S4 的 stdout 那一半，
+// 并**自带正对照**。
+//
+// 为什么必须有正对照：`共 %d 个文件生成成功（按路径排序处理）` 只在
+// len(sorted) > 1 时打印（pipeline.go）。在单文件用例里断言它「不得出现」
+// 是**永真**的——那条断言会变成装饰品，永远绿，也永远证明不了任何事。
+// 所以这里先用两个源成功生成一次，证明该行**确实会出现**，再触发冲突，
+// 断言两行文案都不出现。
+func TestNamingConflictStdoutSilentMultiFile(t *testing.T) {
+	tmp := tempProjectInRepo(t)
+	copyFixture(t, tmp) // home.gxml（绑定页）+ vm.go
+	// 第二个源：静态页，与 home 不同名 → 首次生成必然两个都未命中。
+	writeGxml(t, tmp, "detail.gxml", staticPageGxml)
+
+	// ---- 正对照：两个文件成功时，两行文案都必须出现 ----
+	var out, errb bytes.Buffer
+	if code := Run([]string{"generate", tmp}, &out, &errb); code != ExitOK {
+		t.Fatalf("两文件应能生成（退出码 %d）:\n%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "已生成") {
+		t.Fatalf("成功时 stdout 应有「已生成」:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "共 2 个文件生成成功") {
+		t.Fatalf("成功时 stdout 应有「共 2 个文件生成成功」——正对照不成立，后面的断言就没有意义:\n%s",
+			out.String())
+	}
+
+	// ---- 触发冲突：包内既有用户符号占用 detail 产物的一个类型名 ----
+	detailGen, err := os.ReadFile(filepath.Join(tmp, "detail_gen.go"))
+	if err != nil {
+		t.Fatalf("detail 产物不存在: %v", err)
+	}
+	names := packageTypeNames(t, detailGen)
+	if len(names) == 0 {
+		t.Fatalf("detail 产物里没有包级类型，无法构造冲突:\n%s", detailGen)
+	}
+	writeUserDecl(t, tmp, "miniproj", names[0])
+
+	// --no-cache：第一次已把缓存写满，否则第二次会全部命中而根本不进预检。
+	out.Reset()
+	errb.Reset()
+	code := Run([]string{"generate", tmp, "--no-cache"}, &out, &errb)
+	if code != ExitFailure {
+		t.Fatalf("冲突时应失败，退出码 = %d；stdout:\n%s", code, out.String())
+	}
+	// S4：失败路径的 stdout 不得出现任何「生成成功」的语气。
+	for _, forbidden := range []string{"已生成", "个文件生成成功"} {
+		if strings.Contains(out.String(), forbidden) {
+			t.Errorf("冲突失败时 stdout 不得出现 %q:\n%s", forbidden, out.String())
+		}
+	}
+}
+
+// TestNamingDoesNotMaskCompileErrors：前端未通过的源，报错必须是**编译错误**，
+// 不能被命名预检伪装成符号冲突。
+//
+// 为什么需要这条：C5 收窄要判断 `bindSlots > 0`，而这个值只能由前端给出。
+// 前端失败时预检会**回退为保守上界**并继续——这是刻意的，但如果实现成
+// 「预检自己也跑前端，失败就把前端诊断当命名冲突报出来」，用户会看到
+// 一个指错方向的 CODE（去改命名，实际是语法错）。本用例把正确归属钉住。
+func TestNamingDoesNotMaskCompileErrors(t *testing.T) {
+	tmp := tempProjectInRepo(t)
+	copyFixture(t, tmp)
+	// 故意未闭合的标签：Parser 必然失败。
+	writeGxml(t, tmp, "broken.gxml", `<Goxml Version="1">
+  <Page Route="/broken">
+    <Text Value="x">
+  </Page>
+</Goxml>
+`)
+
+	var out, errb bytes.Buffer
+	code := Run([]string{"generate", tmp}, &out, &errb)
+	if code != ExitFailure {
+		t.Fatalf("语法错误应失败，退出码 = %d；stdout:\n%s", code, out.String())
+	}
+	if !strings.Contains(errb.String(), "GXML-") {
+		t.Errorf("stderr 应给出编译/解析诊断（含 GXML-* 码）:\n%s", errb.String())
+	}
+	if strings.Contains(errb.String(), "CODEGEN-NAME-") {
+		t.Errorf("stderr 不得出现命名冲突码——那会把语法错误指向错误的修复方向:\n%s", errb.String())
+	}
+	// 失败路径仍应零产物。
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), "_gen.go") {
+			t.Errorf("失败后不应出现产物: %s", e.Name())
+		}
 	}
 }
 

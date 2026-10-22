@@ -130,7 +130,10 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			missResolved = append(missResolved, d.r)
 		}
 	}
-	if err := precheckPackageSymbols(missResolved, stderr); err != nil {
+	// preparedFE 缓存未命中输入的编译前端结果：预检要用它算 bindSlots，
+	// 阶段一要用它生成。跑两遍会让每次生成多花 ~285 ms/文件（实测，见 dev-log §6）。
+	preparedFE := make(map[*resolvedInput]*pipeline.Prepared, len(missResolved))
+	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr); err != nil {
 		return err
 	}
 
@@ -155,12 +158,18 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			return fmt.Errorf("创建输出目录 %s: %w", d.r.targetDir, err)
 		}
 
-		res := pipeline.Run(d.r.sourcePath, d.r.source, pipeline.Config{
-			ModuleRoot:  moduleRoot,
-			SourceDir:   d.r.in.sourceDir,
-			PackageName: d.r.pkgName,
-			SourcePath:  d.r.sourcePath,
-		}, pipelineHooks)
+		// 复用阶段零 C 已算好的前端结果；缺失时（理论上不该发生）现算，
+		// 宁可慢一次也不要静默跳过生成。
+		prep, ok := preparedFE[d.r]
+		if !ok {
+			prep = pipeline.Prepare(d.r.sourcePath, d.r.source, pipeline.Config{
+				ModuleRoot:  moduleRoot,
+				SourceDir:   d.r.in.sourceDir,
+				PackageName: d.r.pkgName,
+				SourcePath:  d.r.sourcePath,
+			}, pipelineHooks)
+		}
+		res := pipeline.RunPrepared(prep, pipelineHooks)
 
 		for _, dg := range res.Diags {
 			// 统一诊断格式：contracts.CompilerError.Error() 给出
@@ -270,18 +279,43 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 //     「命中产物 × 未命中输入」的撞名照样报得出来，只是归类为 existing
 //     而不是 same-batch（语义仍然成立：那个符号确实已被包内文件占用）。
 //
+// C5 起按 `bindSlots > 0` 收窄（卡 §10.4.2 第 1 条限制的消除）：
+// 静态页与纯事件页的产物**不声明** `goxmlTextCache<Source>`，因此不再把它
+// 计入符号集合；否则包里只要恰好有同名用户符号，合法工程就生成不了。
+// 槽位数由 pipeline.SlotsFor（与生成共用同一条编译前端）算出。
+//
+// 前端未通过（语法/绑定错误）时**回退为保守上界**：那种情况阶段一会报编译
+// 错误，预检不该抢在前面声称自己"确定"槽位数，更不能把语法错误伪装成命名冲突。
+//
 // 有诊断即返回 error：调用方（runPipeline）在阶段一之前调用，故磁盘零变更。
-func precheckPackageSymbols(rs []*resolvedInput, stderr io.Writer) error {
+func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer) error {
 	if len(rs) == 0 {
 		return nil
 	}
 	targets := make([]codegen.NamingTarget, 0, len(rs))
 	for _, r := range rs {
+		cfg := pipeline.Config{
+			ModuleRoot:  moduleRoot,
+			SourceDir:   r.in.sourceDir,
+			PackageName: r.pkgName,
+			SourcePath:  r.sourcePath,
+		}
+		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
+		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)
+		preparedFE[r] = prep
+
+		// 槽位数：known=false 表示前端未通过，预检按保守上界处理。
+		slots, slotsKnown := 0, false
+		if n, err := prep.Slots(); err == nil {
+			slots, slotsKnown = n, true
+		}
 		targets = append(targets, codegen.NamingTarget{
-			SourceAbs:  r.in.abs,
-			SourcePath: r.sourcePath,
-			TargetDir:  r.targetDir,
-			OutputPath: r.target,
+			SourceAbs:      r.in.abs,
+			SourcePath:     r.sourcePath,
+			TargetDir:      r.targetDir,
+			OutputPath:     r.target,
+			BindSlots:      slots,
+			BindSlotsKnown: slotsKnown,
 		})
 	}
 	diags, err := codegen.CheckNamingConflicts(targets)

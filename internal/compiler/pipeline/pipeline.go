@@ -58,6 +58,11 @@ type Result struct {
 	Diags []contracts.CompilerError
 	// Artifact 只在全部阶段成功、且 Codegen 成功时非 nil。
 	Artifact *Artifact
+	// ModulePath 是模块路径，由前端构造类型环境时顺带带出。
+	//
+	// 为什么放在 Result 里：frontEnd 与 Run 拆开后，Codegen 需要的
+	// ModulePath 必须有个载体；它属于前端产物，不是调用方输入。
+	ModulePath string
 }
 
 // OK 报告是否产出了可提交的产物。
@@ -79,65 +84,84 @@ type Hooks struct {
 	Analyze func(file string, doc *contracts.DocumentIR, schemas expander.SchemaRegistry, env *analyzer.TypeEnv) *analyzer.Result
 }
 
-// Run 执行完整管线。
+// Run 执行完整管线（前端 + Codegen）。
 //
 // 任一中止点之后不再执行任何后续阶段（编译编排契约 §2）。
+//
+// 只需跑一次前端的场景（预检要拿 bindSlots，随后还要生成同一个文件）请用
+// Prepare + RunPrepared 复用，不要把 Run 跑两遍——实测三文件工程会多出
+// ~0.86 s（+40%），见 dev-log `2026-10-22.md` §6。
 func Run(file string, src []byte, cfg Config, hooks Hooks) *Result {
+	return RunPrepared(Prepare(file, src, cfg, hooks), hooks)
+}
+
+// Prepared 是一次编译前端运行的结果，可在**预检**与**生成**之间复用。
+//
+// 存在理由：C5 的预检需要 `bindSlots`（只有跑完前端才知道），而阶段一还要
+// 用同一个文件生成产物。若两边各跑一遍前端，光是类型环境构造就会让每次
+// 生成多花 ~285 ms/文件。复用后总代价与 C4 持平。
+//
+// 不可变性：Prepared 一旦产出就不该被改写；它持有 VerifiedDoc，
+// 而 VerifiedDoc 被 Facts freeze 保护（Analyzer 契约）。
+type Prepared struct {
+	file string
+	cfg  Config
+	// Doc 是已验证文档；前端失败时为 nil。
+	Doc *analyzer.VerifiedDoc
+	// Status / Diags 复制自前端结果，供调用方在失败时判断与回退。
+	Status analyzer.Status
+	Diags  []contracts.CompilerError
+	// modulePath 由前端构造类型环境时带出，Codegen 需要。
+	modulePath string
+}
+
+// Prepare 只跑编译前端（parse→expand→analyze→verify），不进入 Codegen。
+//
+// 失败不返回 error：前端失败是**正常输入**（语法/绑定错误），诊断在 Diags 里，
+// 由调用方决定是「回退保守上界」还是「进入生成阶段报错」。
+func Prepare(file string, src []byte, cfg Config, hooks Hooks) *Prepared {
+	v, res := frontEnd(file, src, cfg, hooks)
+	return &Prepared{
+		file:       file,
+		cfg:        cfg,
+		Doc:        v,
+		Status:     res.Status,
+		Diags:      res.Diags,
+		modulePath: res.ModulePath,
+	}
+}
+
+// Slots 返回页面会分配的显示缓存槽位数。
+//
+// 前端未通过时返回 error —— 调用方必须**回退为保守上界**，不得把语法错误
+// 伪装成命名冲突（阶段一才是报编译错误的地方）。
+func (p *Prepared) Slots() (int, error) {
+	if p == nil || p.Doc == nil {
+		n := 0
+		st := analyzer.StatusBlocked
+		if p != nil {
+			n, st = len(p.Diags), p.Status
+		}
+		return 0, fmt.Errorf("编译前端未通过（状态 %v，%d 条诊断），无法确定绑定槽位数", st, n)
+	}
+	return codegen.CountBindSlots(p.Doc)
+}
+
+// RunPrepared 在已准备好的前端结果上执行 Codegen 并产出 Artifact。
+//
+// 前端诊断会被原样带进结果：调用方看到的诊断与「前端是否复用」无关。
+func RunPrepared(p *Prepared, hooks Hooks) *Result {
 	res := &Result{Status: analyzer.StatusBlocked}
-
-	// ---- 1. Parser ----
-	doc, pdiags := parser.Parse(file, src)
-	if len(pdiags) > 0 {
-		res.Diags = append(res.Diags, pdiags...)
+	if p == nil {
 		return res
 	}
-
-	// ---- 2. Expander ----
-	er := expander.Expand(file, doc)
-	if len(er.Diags) > 0 {
-		res.Diags = append(res.Diags, er.Diags...)
+	res.Status = p.Status
+	res.Diags = append(res.Diags, p.Diags...)
+	res.ModulePath = p.modulePath
+	if p.Doc == nil {
 		return res
 	}
-
-	// ---- 3. Analyzer ----
-	env, err := loadEnv(cfg, hooks)
-	if err != nil {
-		res.Status = analyzer.StatusBlocked
-		res.Diags = append(res.Diags, contracts.CompilerError{
-			File:    file,
-			Code:    "GXML-ROOT-002",
-			Message: fmt.Sprintf("cannot prepare type environment: %v", err),
-		})
-		return res
-	}
-
-	analyze := hooks.Analyze
-	if analyze == nil {
-		analyze = analyzer.Analyze
-	}
-	ar := analyze(file, er.Doc, er.Schemas, env)
-	res.Status = ar.Status
-	res.Diags = append(res.Diags, ar.Diags...)
-
-	// 门禁：只有 StatusOK 且无诊断才继续。
-	//
-	// 「OK 但有诊断」是内部不变量违反——Verified() 本应拒绝，
-	// 这里再加一道，避免依赖单点防护。
-	if ar.Status != analyzer.StatusOK || len(ar.Diags) > 0 {
-		return res
-	}
-
-	// ---- 4. 凭证 ----
-	v, err := ar.Verified()
-	if err != nil {
-		// 走到这里说明 Analyzer 的内部不变量被破坏。不改状态，
-		// 只补一条诊断说明原因。
-		res.Diags = append(res.Diags, contracts.CompilerError{
-			File:    file,
-			Message: fmt.Sprintf("analyzer reported OK but verification failed: %v", err),
-		})
-		return res
-	}
+	file := p.file
 
 	// ---- 5. Codegen ----
 	//
@@ -145,15 +169,15 @@ func Run(file string, src []byte, cfg Config, hooks Hooks) *Result {
 	// 缺它会报 "Options.ModulePath is empty"（同包 ViewModel 不需要，
 	// 因此只有跨包场景会暴露——由 TestRunPassesModulePath 守住）。
 	opts := codegen.Options{
-		PackageName: cfg.PackageName,
-		SourcePath:  cfg.SourcePath,
-		ModulePath:  env.ModulePath(),
+		PackageName: p.cfg.PackageName,
+		SourcePath:  p.cfg.SourcePath,
+		ModulePath:  p.modulePath,
 	}
 	gen := hooks.Generate
 	if gen == nil {
 		gen = codegen.Generate
 	}
-	out, err := gen(v, opts)
+	out, err := gen(p.Doc, opts)
 	if err != nil {
 		res.Diags = append(res.Diags, contracts.CompilerError{
 			File:    file,
@@ -172,12 +196,80 @@ func Run(file string, src []byte, cfg Config, hooks Hooks) *Result {
 
 	// ---- 6. 产物 ----
 	res.Artifact = &Artifact{
-		PackageName: cfg.PackageName,
-		SourcePath:  cfg.SourcePath,
+		PackageName: p.cfg.PackageName,
+		SourcePath:  p.cfg.SourcePath,
 		Source:      out,
-		OutputName:  outputName(cfg.SourcePath),
+		OutputName:  outputName(p.cfg.SourcePath),
 	}
 	return res
+}
+
+// frontEnd 执行 parse→expand→analyze→verify，产出已验证文档。
+//
+// 与 Run 共用同一实现是刻意的：预检若另写一条前端链，就会出现
+// 「预检认定的绑定」与「生成时认定的绑定」不一致的第二份真相。
+//
+// 返回 nil 文档表示前端已失败（诊断已累积在 res 中），调用方必须立即返回。
+func frontEnd(file string, src []byte, cfg Config, hooks Hooks) (*analyzer.VerifiedDoc, *Result) {
+	res := &Result{Status: analyzer.StatusBlocked}
+
+	// ---- 1. Parser ----
+	doc, pdiags := parser.Parse(file, src)
+	if len(pdiags) > 0 {
+		res.Diags = append(res.Diags, pdiags...)
+		return nil, res
+	}
+
+	// ---- 2. Expander ----
+	er := expander.Expand(file, doc)
+	if len(er.Diags) > 0 {
+		res.Diags = append(res.Diags, er.Diags...)
+		return nil, res
+	}
+
+	// ---- 3. Analyzer ----
+	env, err := loadEnv(cfg, hooks)
+	if err != nil {
+		res.Status = analyzer.StatusBlocked
+		res.Diags = append(res.Diags, contracts.CompilerError{
+			File:    file,
+			Code:    "GXML-ROOT-002",
+			Message: fmt.Sprintf("cannot prepare type environment: %v", err),
+		})
+		return nil, res
+	}
+
+	analyze := hooks.Analyze
+	if analyze == nil {
+		analyze = analyzer.Analyze
+	}
+	ar := analyze(file, er.Doc, er.Schemas, env)
+	res.Status = ar.Status
+	res.Diags = append(res.Diags, ar.Diags...)
+
+	// 门禁：只有 StatusOK 且无诊断才继续。
+	//
+	// 「OK 但有诊断」是内部不变量违反——Verified() 本应拒绝，
+	// 这里再加一道，避免依赖单点防护。
+	if ar.Status != analyzer.StatusOK || len(ar.Diags) > 0 {
+		return nil, res
+	}
+
+	// ---- 4. 凭证 ----
+	v, err := ar.Verified()
+	if err != nil {
+		// 走到这里说明 Analyzer 的内部不变量被破坏。不改状态，
+		// 只补一条诊断说明原因。
+		res.Diags = append(res.Diags, contracts.CompilerError{
+			File:    file,
+			Message: fmt.Sprintf("analyzer reported OK but verification failed: %v", err),
+		})
+		return nil, res
+	}
+
+	// ModulePath 由前端顺带带出：Codegen 阶段要用，而 SlotsFor 用不到。
+	res.ModulePath = env.ModulePath()
+	return v, res
 }
 
 // loadEnv 构造类型环境。

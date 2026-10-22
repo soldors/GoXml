@@ -38,6 +38,13 @@ func tempProjectInRepo(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 先清空再建：t.Cleanup 只在进程正常退出时执行，测试被 SIGTERM 掐断
+	// （或 go test 超时 panic）时残留会留在磁盘上。不清空的话，残留的
+	// user_decl.go 之类文件会让下一次运行在**预置阶段**就因"已有声明"失败——
+	// 表现为一条与本次改动无关的假红（2026-10-22 实测踩过）。
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

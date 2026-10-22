@@ -23,11 +23,12 @@ import (
 // | 纯事件页（有 VM、有 Click）   |    ✓     |     ✓     |     ✗     |
 // | 绑定页（有 `{...}` 绑定）     |    ✓     |     ✓     |     ✓     |
 //
-// 预检集合（generatedPackageSymbols）对三类页面**一律**是这四项全含：
-// 它只看路径，拿不到"有没有绑定槽位"这个前端事实。后果是静态页与纯事件页
-// 在包内恰好有同名 textCache 用户符号时会被误报——代价已由 CLI 侧的
-// `TestNamingStaticPageTextCacheOverreport` 钉住，收窄归 C5
-// （判据 `bindSlots > 0`，不是 `usesVM`）。
+// 预检集合（generatedPackageSymbols）的四项，是**槽位数已知时**的上界；
+// C5 起按 `bindSlots > 0` 收窄：静态页与纯事件页不再计入 textCache
+// （判据是槽位数，不是 usesVM——纯事件页 usesVM 为真但零槽位）。
+// CLI 侧证据：`TestNamingStaticPageTextCacheNotOverreported`、
+// `TestNamingEventOnlyPageTextCacheNotOverreported`。
+// 槽位**未知**（前端未通过）时仍按四项全含的保守上界处理。
 //
 // 变红方式（已实测，见 dev-log `2026-10-22.md` §5.4）：
 //   - 把 renderKeyDecl 的调用挪进 `if g.usesVM` → 静态页那一格红（真冲突会漏报）。
@@ -79,7 +80,7 @@ func TestNamingPageKindsSymbolSets(t *testing.T) {
 // TestNamingPrecheckSetIsUpperBoundOfAllKinds：预检集合必须是每类产物
 // 实际声明集合的**超集**——漏一项就可能漏报真冲突。
 func TestNamingPrecheckSetIsUpperBoundOfAllKinds(t *testing.T) {
-	declared, err := generatedPackageSymbols("home.gxml")
+	declared, err := generatedPackageSymbols("home.gxml", 0, false)
 	if err != nil {
 		t.Fatalf("generatedPackageSymbols: %v", err)
 	}

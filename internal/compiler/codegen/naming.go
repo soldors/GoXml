@@ -39,6 +39,21 @@ type NamingTarget struct {
 	TargetDir string
 	// OutputPath 是产物绝对路径，用于排除「自己上一版产物」。
 	OutputPath string
+	// BindSlots 是该源页面会分配的显示缓存槽位数（C5 收窄判据）。
+	//
+	// 只有 BindSlotsKnown 为真时有意义。为 0 表示产物**不会声明**
+	// `goxmlTextCache<Source>`（静态页 / 纯事件页 / 绑定全在 <For> 内），
+	// 此时把该类型计入符号集合就是误报。
+	BindSlots int
+	// BindSlotsKnown 表示 BindSlots 已由编译前端确定。
+	//
+	// 为假时必须回退为**保守上界**（把缓存类型计入）：前端未通过
+	// （语法/绑定错误）的源，我们无从知道产物会不会声明它，而那种情况的
+	// 正确报错点是阶段一的编译诊断，不是这里的命名冲突。
+	//
+	// 这个字段存在的原因：预检发生在任何解析之前（阶段零 C），
+	// 它自己拿不到这个事实；而"保守"在接线之后等于"合法工程生成不了"。
+	BindSlotsKnown bool
 }
 
 // namingConflictKind 是冲突来源分类（诊断文案与后续诊断码要按它区分）。
@@ -69,18 +84,16 @@ type namingConflict struct {
 // generatedPackageSymbols 返回一个 .gxml 生成文件将声明的**包级**标识符。
 //
 // C2 之后类型名按源文件唯一，因此「两个不同源同包」不再撞名。
-// 这里保留保守上界（缓存类型即使没有绑定槽位也计入），代价有**两类**：
 //
-//  1. 同包两个源派生出**同一后缀**（如 a-b.gxml 与 a_b.gxml 的 pascal 塌缩）时，
-//     会连同缓存类型一起被判冲突——这正是期望行为，不会误伤不同后缀的源；
-//  2. 包内既有同名 `goxmlTextCache<Source>` 用户符号时，静态页/纯事件页
-//     （没有绑定槽位、产物并不声明该类型）也会被报冲突，这是**误报**。
+// 缓存类型是否计入由调用方给出的 bindSlots 决定（C5 起收窄）：
+//   - known 且 bindSlots == 0 → **不计入**：产物根本不声明它
+//     （静态页 / 纯事件页 / 绑定全在 <For> 内，见卡 §10.7.4 三类页面表）；
+//   - known 且 bindSlots > 0 → 计入（真声明，漏了就是漏报）；
+//   - 未知 → 计入（保守上界，见 NamingTarget.BindSlotsKnown 的说明）。
 //
-// 第 2 类已被 `naming_textcache_boundary_test.go` 钉为可复现事实；
-// C4 接线后又由 CLI 侧 `TestNamingStaticPageTextCacheOverreport` 钉住了它的
-// 真实代价（合法工程生成不了）。收窄判据是 `bindSlots > 0`（不是 `usesVM`），
-// **归 C5**；三类页面的完整判定规则见卡 §10.7.4 与 `naming_pagekinds_test.go`。
-func generatedPackageSymbols(sourcePath string) ([]string, error) {
+// 塌缩仍然照旧被拦：`a-b.gxml` 与 `a_b.gxml` 的 view / key 类型同名，
+// 即使两者的缓存类型都不计入，冲突依旧成立（卡 §8.1 A4）。
+func generatedPackageSymbols(sourcePath string, bindSlots int, slotsKnown bool) ([]string, error) {
 	view, err := viewSymbol(sourcePath)
 	if err != nil {
 		return nil, err
@@ -91,7 +104,12 @@ func generatedPackageSymbols(sourcePath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{view, "New" + view, keyType, cacheType}, nil
+	syms := []string{view, "New" + view, keyType}
+	// 未知槽位数时保守纳入；已知为 0 时排除。
+	if !slotsKnown || bindSlots > 0 {
+		syms = append(syms, cacheType)
+	}
+	return syms, nil
 }
 
 // detectNamingConflicts 执行预检：只读磁盘，不写任何文件。
@@ -110,7 +128,7 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 
 	symbolsByTarget := make([][]string, len(targets))
 	for i, t := range targets {
-		syms, err := generatedPackageSymbols(t.SourcePath)
+		syms, err := generatedPackageSymbols(t.SourcePath, t.BindSlots, t.BindSlotsKnown)
 		if err != nil {
 			return nil, fmt.Errorf("预检 %s: %w", t.SourcePath, err)
 		}

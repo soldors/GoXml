@@ -20,29 +20,27 @@ import (
 //	→ 静态页与**纯事件页**的产物都不声明 goxmlTextCache<Source>，预检却把它算作占用，
 //	  若包内恰好有同名用户符号，会被报冲突：这是**过度报告**（误报）。
 //
-// 本文件不修改该行为，只把"保守上界"的**现状与后果**钉成可执行判据：
+// 本文件钉住的是"保守上界"的**后果**，并把两条对照都变成可执行判据：
 //
 //	① 不声明该类型的页面形态（静态页 / 纯事件页）与预检集合的差距被显式记录；
 //	② 该差距的后果：预检报冲突，而真实 go build 仍通过 → 证明是误报不是真冲突；
 //	③ 反向对照：含绑定页确实声明该类型，同名用户符号会让 go build 真失败
 //	   → 证明保守上界对绑定页是**必要**的，不能整体删掉。
 //
-// 归属裁决（本轮结论，已同步任务卡与 dev-log）：
+// 归属与现状（2026-10-22 更新）：
 //
-//	**不在 C2 收窄，留给 C4/C5。**
-//	理由有三：
-//	  a. 保守上界是 C1 的有意设计（见 naming.go 里 generatedPackageSymbols 的函数
-//	     注释）：宁可误报，不可漏报；误报的表现是"生成前被拦下并给出明确诊断"，
-//	     漏报的表现是"生成成功、build 才炸"，后者正是 C2 要消灭的失败模式。
-//	  b. 要精确判定必须知道"该源是否含绑定槽位"（bindSlots > 0），而这是前端事实，
-//	     预检拿不到——NamingTarget 只带路径，预检只解析包内既有 .go，不跑 Parser/Analyzer；
-//	     引入该判定等于改预检的契约输入，超出 C2 范围。
-//	  c. C4（CLI 接线）才是预检的唯一调用点（当前 detectNamingConflicts 零接线），
-//	     也是收窄的自然时机；收窄必须同步更新本文件，否则本测试会红——
-//	     这是防回归的钩子，不是负担。
+//	C2 判"不在本切片收窄，留给 C4/C5" → **C5 已收窄**：生产链路上
+//	`goxml generate` 现在按 `bindSlots > 0` 排除该类型（CLI 侧证据见
+//	`TestNamingStaticPageTextCacheNotOverreported` 与
+//	`TestNamingEventOnlyPageTextCacheNotOverreported`）。
 //
-// 给 C4 的提醒：收窄的判据是 `bindSlots > 0`，不是 `usesVM`。按后者收窄会让
-// 纯事件页继续被误报（见 TestPrecheckOverreportsForEventOnlyPage）。
+//	于是本文件里的用例**现在的语义**是「槽位数**未知**时的保守上界」：
+//	它们构造的 NamingTarget 不设 BindSlotsKnown，预检按上界处理。
+//	这个上界依然必须存在——前端未通过的源（语法/绑定错误）正是这种情况，
+//	此时不计入就可能漏报，而漏报的代价是"生成成功、build 才炸"。
+//
+//	收窄后若本文件仍全绿，说明"未知 → 计入"这条回退没有被误删；
+//	若有人把收窄写成了"永远不计入"，这里的 ② 会红。
 // ============================================================================
 
 // TestTextCacheIsDeclaredOnlyForBindingPages 钉住「谁声明 goxmlTextCache<Source>」。
@@ -74,7 +72,7 @@ func TestTextCacheIsDeclaredOnlyForBindingPages(t *testing.T) {
 //
 // 判据：预检宣称的符号集合 ⊋ 静态页产物实际声明的符号集合，多出的正是 textCache。
 func TestPrecheckIsConservativeForStaticTextCache(t *testing.T) {
-	declared, err := generatedPackageSymbols("home.gxml")
+	declared, err := generatedPackageSymbols("home.gxml", 0, false)
 	if err != nil {
 		t.Fatalf("generatedPackageSymbols: %v", err)
 	}

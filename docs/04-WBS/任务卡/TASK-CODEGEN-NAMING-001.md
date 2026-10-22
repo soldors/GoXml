@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（**独立复审 PASS WITH NON-BLOCKING，复审发现已修复**）；C4 **项目负责人最终验收通过**（2026-10-22，附带一项非阻塞文档事项，见 §10.8）；C5 未开始**。**C4 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3、§10.8.3）
+- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（**独立复审 PASS WITH NON-BLOCKING，复审发现已修复**）；C4 **项目负责人最终验收通过**（2026-10-22，附带一项非阻塞文档事项，见 §10.8）；C5 实现完成（**待独立复审**，见 §10.9）**。**C5 实现完成 ≠ 命名流程完成**（§10.4.5、§10.5.3、§10.8.3、§10.9.6）
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -151,16 +151,23 @@ P0 决定了方案走向，**必须由裁决给出**：
 
 ### 8.1 冲突验收
 
-| # | 场景 | 预期 | 计划测试 |
+| # | 场景 | 预期 | 测试（实际函数名） |
 |---|---|---|---|
-| A1 | 同包两个 `.gxml`（N1） | `go build` 该包通过；两个 `_gen.go` 符号互不冲突 | `TestNamingTwoFilesSamePackageCompiles` |
-| A1' | 同包两个 `.gxml`（N3） | 第二个文件生成失败，诊断指明冲突源与符号 | `TestNamingSamePackageRejected` |
-| A2 | 用户已有 `renderKey` 类型 | 生成失败并报冲突（不得覆盖、不得改名） | `TestNamingUserSymbolConflict` |
-| A3 | 不同目录同名 `home.gxml` | 两个包各自 `GoxmlHomeView`，互不影响 | `TestNamingSameBaseDiffDirs` |
-| A4 | pascal 塌缩：`a-b.gxml` 与 `a_b.gxml` 同包 | 检测并报错（或以可区分命名生成），**不得静默产出重名** | `TestNamingPascalCollapse` |
-| A5 | 静态页 + 绑定页同包 | 两种形态都能编译 | `TestNamingMixedPagesSamePackage` |
-| A6 | 重复生成两次 | 字节一致 | 既有 `TestGenerationDeterminism` |
-| A7 | 单文件产物 | 除本次改名涉及的符号外，其余字节不变（防止顺手改坏） | `TestNamingSingleFileStable` |
+| A1 | 同包两个 `.gxml`（N1） | `go build` 该包通过；两个 `_gen.go` 符号互不冲突 | `TestTwoStaticSourcesSamePackage` / `TestTwoBindingSourcesSamePackage`（均真实 `go build ./<dir>`） |
+| A1' | 同包两个 `.gxml`（N3） | 第二个文件生成失败，诊断指明冲突源与符号 | `TestNamingDetectsSameBatchConflict`（codegen）+ `TestNamingConflictSameBatchRejected`（CLI） |
+| A2 | 用户已有 `renderKey` 类型 | 生成失败并报冲突（不得覆盖、不得改名） | `TestNamingDetectsExistingUserSymbol` + CLI `TestNamingConflictNoWrites` |
+| A3 | 不同目录同名 `home.gxml` | 两个包各自 `GoxmlHomeView`，互不影响 | `TestNamingSameBaseDifferentDirsOK` / `...NoConflict` / `...NoDiagnostics` |
+| A4 | pascal 塌缩：`a-b.gxml` 与 `a_b.gxml` 同包 | 检测并报错（或以可区分命名生成），**不得静默产出重名** | `TestNamingDetectsPascalCollapse` + `TestNamingSameDirCollapseStillConflicts` |
+| A5 | 静态页 + 绑定页同包 | 两种形态都能编译 | `TestStaticAndBindingSourcesSamePackage` + `TestNamingPageKindsSymbolSets` |
+| A6 | 重复生成两次 | 字节一致 | 既有 `TestGenerationDeterminism`（`internal/cli/determinism_test.go`） |
+| A7 | 单文件产物 | 除本次改名涉及的符号外，其余字节不变（防止顺手改坏） | `TestNamingSingleFileStable`（C5 新增） |
+
+> **计划名与实现名的重映射（2026-10-22，C5 开工核对）**：本表初版写的 8 个
+> 「计划测试」名里，只有 `TestGenerationDeterminism` 真实存在，其余 7 个
+> 从未创建——实现用了别的名字（如 A1 落在 `TestTwoStaticSourcesSamePackage`）。
+> 矩阵若照旧挂着计划名，会让读者误判「A1/A2/A3/A4/A5/A7 都没做」。
+> 本表已按**行为等价**重映射到真实函数名；A7 是核对时唯一**确实缺失**的一项，
+> 由 C5 补齐。核对方法与逐项结论见 dev-log `2026-10-22.md` §6.1。
 ### 8.2 副作用验收（预置既有状态，再触发冲突）
 
 | # | 预置状态 | 触发方式 | 断言 |
@@ -170,6 +177,14 @@ P0 决定了方案走向，**必须由裁决给出**：
 | S3 | `.goxml/cache/` 已有记录 | 同上 | 缓存目录文件集合与每个文件内容均不变 |
 | S4 | 三者同时存在 | 同上 | 三者同时不变，且 stdout 不出现「已生成」「共 N 个文件生成成功」 |
 | S5 | 无任何预置（首次） | 同上 | 目录内不出现新文件、不出现 `.tmp` 残骸 |
+
+> **S4 的 stdout 断言必须带正对照**（C5 核对时发现）：`共 %d 个文件生成成功`
+> 只在本次写入文件数 **> 1** 时打印。若在单文件场景里断言它「不得出现」，
+> 那条断言**永远成立**——是装饰品，证明不了任何事。因此 S4 必须构造
+> **两个源**：先成功生成一次证明该行**确实会出现**，再触发冲突断言它不出现。
+> 实现见 `TestNamingConflictStdoutSilentMultiFile`。
+> 注意适用范围：「已生成」在单文件成功时**也会**打印，所以 C4 的单文件用例里
+> 断言它不出现是有意义的；只有 `共 N 个文件生成成功` 受 `> 1` 条件限制。
 
 ## 9. 裁决结果（2026-10-21）
 
@@ -210,7 +225,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 > C3 只做「定义 + 发射 + 登记 + 门禁」，**不接 CLI**（归 C4）、**不修 F-06**
 > （归 C4-PRE-1）、**不把 C1 预检标记为已验收**（判定规则仍待 C4-PRE-2）。
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | ✅ **项目负责人最终验收通过（2026-10-22，见 §10.8）**：`precheckPackageSymbols` 挂在阶段零 C（缓存判定之后、阶段一 `MkdirAll` 之前），只对未命中输入；`codegen.CheckNamingConflicts` 为唯一入口；三项前置 C4-PRE-1/2/3 均完成；接线暴露并修复「批内冲突未按目标包分组」（§10.7.5）；首轮复审 R1–R4 + fail-open 已修、二轮复审通过（§10.7.8–§10.7.10）；变异共 9 组。**附带一项非阻塞文档事项：命令文本已统一**（§10.8.2） |
-| C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
+| C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | ⏳ **实现完成（2026-10-22），待独立复审**（§10.9）：`TextCache` 按 `bindSlots > 0` 收窄（`slots.go` 单一派生 + 前端复用）；A7 补齐；S4 补正对照；§8.1 计划名重映射；契约 §5/§16.5.1 同步；变异 7 组。**未获验收，不宣称通过** |
 
 ### 10.1 C2 复核轮补记（2026-10-22，dev-log §97.7/§97.8）
 
@@ -605,6 +620,76 @@ Manifest 字节、缓存目录集合与内容、stdout 无「已生成」）与
   （C1 预检仍未单独验收，见 §10.4.5）。
 - 本次状态更新是**文档-only**：不重跑全量测试，也**不得**把 docgate / diagdoc
   这类文档检查描述成"代码测试通过"。
+
+### 10.9 C5 开工与实现：TextCache 收窄 + 矩阵收口（2026-10-22，dev-log §6）
+
+**状态：实现完成，待独立复审。本节不宣称 C5 通过。**
+
+#### 10.9.1 开工前的现状核对（不照抄本卡的声称）
+
+逐项对照 §8.1 的"计划测试"列与仓库实际函数名，结论：
+
+- **8 项里 7 项的计划名从未创建**（只有 `TestGenerationDeterminism` 存在），
+  实现用了别的名字；
+- **A7 是唯一确实缺失的项**。
+
+已按行为等价重映射 §8.1 表（表后附说明），避免"照旧挂计划名 → 读者误判
+A1–A5/A7 都没做"。
+
+#### 10.9.2 S4 的断言陷阱（本轮发现）
+
+`共 N 个文件生成成功` 只在写入文件数 **> 1** 时打印（`internal/cli/pipeline.go:208`）。
+在 C4 的单文件用例里补"不得出现该行"是**恒真断言**——不会红，也证明不了
+§8.2 S4 想证明的事。
+
+处理：新增 `TestNamingConflictStdoutSilentMultiFile`，先做**正对照**（两源成功 →
+该行必须出现），再触发冲突断言两行文案都不出现。§8.2 表后已加说明。
+
+#### 10.9.3 收窄机制：判据已冻结，机制需裁决（已裁决 A）
+
+卡冻结的是判据 `bindSlots > 0`；`bindSlots` 本身是 generator 私有累加字段，
+预检发生在任何解析之前，因此"槽位数从哪来"是架构选择。三选项与代价：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A（项目负责人裁决）** | 抽共享 `CountBindSlots`，预检侧自行解析 | 冷路径多一次前端；**不动 §6.1 形状、不动诊断顺序** |
+| B | 纯编译上移到预检之前 | 零额外解析，但改 §6.1 冻结结构 + 诊断顺序变化 |
+| C | 不收窄，写进契约 | 把"合法工程生成不了"合法化 |
+
+#### 10.9.4 实现要点
+
+| 文件 | 改动 |
+|---|---|
+| `codegen/slots.go`（新增） | `textBindSlot`（**唯一**占槽规则）+ `CountBindSlots`（纯遍历） |
+| `codegen/codegen.go` | `nodeExpr` 的 Text 分支改调 `textBindSlot`，与预检共用规则 |
+| `codegen/naming.go` | `NamingTarget` 增 `BindSlots`/`BindSlotsKnown`；`generatedPackageSymbols(sourcePath, slots, known)` 三态 |
+| `pipeline/pipeline.go` | 前端拆出 `Prepare`/`Prepared.Slots()`/`RunPrepared`；`Run` 签名不变 |
+| `cli/pipeline.go` | 阶段零 C 每个未命中输入 `Prepare` 一次并存 `preparedFE`，阶段一复用；`Slots()` 失败 → 保守回退 |
+
+**前端复用不是优化洁癖**：双跑前端的实测代价是 3 文件 +0.86 s（≈+285 ms/文件，
++40%，主因 `go/types` 环境构造）。复用后回到基线（中位数 1770 ms vs 收窄前 2162 ms，
+差异在噪声量级，不主张"更快"）。
+
+#### 10.9.5 护栏与变异（7 组，`go build` 退出码均为 0）
+
+- 护栏 `TestSlotCountAgreesWithDeclaredTextCache`：断言「槽位为零 ⟺ 不声明 TextCache」
+  互为充要。**它首次运行即抓出真分叉**：`<If>` 的分支在 `If.Then/Else` 而非
+  `Children`，只走 `Children` 会低估槽位 → 漏报。
+- 变异 M1–M7 见 dev-log §6.7：分别为 If 不遍历、For 不传播、永不收窄、
+  去未知回退、多发射类型、保护头源名变异、前端失败提前返回。
+  M3 同时证明 codegen 层与 CLI 层都能抓到"永不收窄"；M4 钉住"去掉回退"方向。
+
+#### 10.9.6 边界（照此登记，不外推）
+
+- **A7 只部分覆盖"防止顺手改坏"**：归一化字节比对抓不到**全局形状变化**
+  （两侧一起变仍相等）。要抓那类需要签入 golden（契约 §6 要求），本仓**没有**
+  golden 机制，本轮不新建。
+- **C5 实现完成 ≠ 命名流程完成**：C1 预检仍未单独验收；C5 尚未独立复审；
+  本卡不宣称整链闭环。
+- 未处理（C4 已登记的遗留）：`binding_compile_test.go`/`binding_runtime_test.go`
+  的 `go build ./<dir>/...` 通配空转面；`001` 与 `GXML-ROOT-002` 是否去重。
+- 本轮顺带修了测试基建：`tempProjectInRepo` 先 `RemoveAll` 再建（否则被
+  SIGTERM 掐断的残留会让下一次运行在预置阶段假红）。
 
 ## 11. 纪律
 

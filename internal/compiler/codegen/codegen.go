@@ -556,7 +556,10 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 
 		// 优先按绑定处理。绑定信息**只**来自 Facts；查不到就报错，
 		// 绝不回退成字符串常量（那会把 "{Title}" 当成字面文本）。
-		if ra, ok := lookupAttr(n, "Value", g.facts); ok && ra.Path != nil {
+		//
+		// 绑定判定与「是否占槽」走**同一条规则** textBindSlot（slots.go），
+		// 预检的 CountBindSlots 用的也是它——不允许在这里另写一份条件。
+		if ra, isBinding, takesSlot := textBindSlot(n, g.facts, g.inFor); isBinding {
 			expr, err := bindingExpr(ra, "v.vm")
 			if err != nil {
 				return "", err
@@ -565,7 +568,7 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 			// 循环体内**不**分配显示缓存槽位：槽位按节点分配，
 			// N 行复用同一槽位会在同一帧内互相覆写，命中率恒为 0
 			// （<For> 列表契约 §6.2）。直接布局。
-			if g.inFor {
+			if !takesSlot {
 				g.imports.add("gioui.org/widget/material", "material")
 				return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
 			}

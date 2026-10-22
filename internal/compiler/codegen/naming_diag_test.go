@@ -87,7 +87,7 @@ func TestNamingDiagnosticsSameBatch(t *testing.T) {
 
 	// 塌缩的两个源派生出**完全相同**的符号集合，因此每个符号各一条冲突。
 	// 期望集合由生产函数派生，不硬编码——但条数与覆盖面必须精确核对。
-	wantSyms, err := generatedPackageSymbols("a-b.gxml")
+	wantSyms, err := generatedPackageSymbols("a-b.gxml", 0, false)
 	if err != nil {
 		t.Fatalf("generatedPackageSymbols: %v", err)
 	}
