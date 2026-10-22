@@ -172,41 +172,53 @@ func TestNamingCodeConstantsUseContractsPrefix(t *testing.T) {
 		t.Fatalf("解析 %s: %v", path, err)
 	}
 
-	want := map[string]bool{
-		"CodeNamingExisting":  false,
-		"CodeNamingSameBatch": false,
-	}
+	// 扫**所有**导出的 Code* 常量，而不是硬编码两个名字——
+	// 否则将来新增 CODEGEN-NAME-003 时会静默逃出这条约束（复审 N-1）。
+	const wantPrefix = "CodePrefixCodegenName"
+
+	checked := 0
 	ast.Inspect(f, func(n ast.Node) bool {
 		vs, ok := n.(*ast.ValueSpec)
-		if !ok || len(vs.Names) == 0 {
+		if !ok {
 			return true
 		}
-		name := vs.Names[0].Name
-		if _, tracked := want[name]; !tracked {
-			return true
-		}
-		// 值里必须出现 contracts.CodePrefixCodegenName 这个选择器。
-		usesPrefix := false
-		ast.Inspect(vs, func(m ast.Node) bool {
-			sel, ok := m.(*ast.SelectorExpr)
-			if !ok {
+		for _, id := range vs.Names {
+			if !strings.HasPrefix(id.Name, "Code") || !id.IsExported() {
+				continue
+			}
+			checked++
+
+			// 值里出现的 contracts.<X> 选择器。
+			sel := ""
+			ast.Inspect(vs, func(m ast.Node) bool {
+				s, ok := m.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if x, ok := s.X.(*ast.Ident); ok && x.Name == "contracts" {
+					sel = s.Sel.Name
+				}
 				return true
+			})
+
+			switch {
+			case sel == "":
+				// 内联字面量同样能通过"值以 CODEGEN-NAME 开头"这类表面判据，
+				// 所以必须查到选择器本身。
+				t.Errorf("%s 的值里没有 contracts.* 选择器（疑似内联了字面量）", id.Name)
+			case sel != wantPrefix:
+				// 拼了但用了别的前缀 → 号段混用，这是一个**不同**的失败，
+				// 文案必须分开，否则排查者会被"不得内联"带偏（复审 N-2）。
+				t.Errorf("%s 用的是 contracts.%s，期望 contracts.%s（前缀不得混用）",
+					id.Name, sel, wantPrefix)
 			}
-			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "contracts" &&
-				sel.Sel.Name == "CodePrefixCodegenName" {
-				usesPrefix = true
-			}
-			return true
-		})
-		if !usesPrefix {
-			t.Errorf("%s 的值未使用 contracts.CodePrefixCodegenName 拼接（不得内联字面量）", name)
 		}
-		want[name] = true
 		return true
 	})
-	for name, seen := range want {
-		if !seen {
-			t.Errorf("未在 %s 中找到常量 %s", path, name)
-		}
+
+	// 防空转：头文件改名或常量搬家时这里会响亮失败，而不是"没查到所以通过"。
+	if checked == 0 {
+		t.Fatalf("未在 %s 中找到任何导出的 Code* 常量", path)
 	}
+	t.Logf("已校验 %d 个导出 Code* 常量均使用 contracts.%s 拼接", checked, wantPrefix)
 }

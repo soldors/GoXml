@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（待独立复审）；C4–C5 未开始**。CLI 接线仍归 C4。**C2 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3）
+- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（**独立复审 PASS WITH NON-BLOCKING，复审发现已修复**；最终验收由项目负责人裁决）；C4–C5 未开始**。CLI 接线仍归 C4。**C2 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3）
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -205,7 +205,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
 | C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **验收通过，附带非阻塞遗留项（2026-10-22 裁决，见 §10.4）**；实现与补丁过程见 §10.2/§10.3：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
-| C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | ✅ **实现完成（2026-10-22，待独立复审）**：`codegen.CodeNamingExisting`/`CodeNamingSameBatch`（`CODEGEN-NAME-001/002`）；语义先冻结于 §10.5.2；目录 §2.8 登记 + 门禁 5 处同步；`naming_diag_test.go` 6 用例；两码互换的变异取证已做 |
+| C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | ✅ **实现完成（2026-10-22）；独立复审 PASS WITH NON-BLOCKING，发现项已修复（§10.6）**：`codegen.CodeNamingExisting`/`CodeNamingSameBatch`（`CODEGEN-NAME-001/002`）；语义先冻结于 §10.5.2；目录 §2.8 登记 + 门禁 5 处同步；`naming_diag_test.go` 6 用例；两码互换的变异取证已做 |
 
 > C3 只做「定义 + 发射 + 登记 + 门禁」，**不接 CLI**（归 C4）、**不修 F-06**
 > （归 C4-PRE-1）、**不把 C1 预检标记为已验收**（判定规则仍待 C4-PRE-2）。
@@ -381,6 +381,23 @@ C3（诊断码）→ C4（接线，**含 §10.4.3 三项前置**）→ C5（冲�
 - **不顺手修 F-06**（归 C4-PRE-1）；
 - **不把 C1 预检标记为已验收**（C1 判定规则仍待 C4-PRE-2 补齐）；
 - 不改动 `sourceSymbolSuffix` / `generatedTypeNames` 的已冻结算法。
+
+### 10.6 C3 独立复审结论（2026-10-22，dev-log `2026-10-22.md` §4.8/§4.10）
+
+两轮复审，均**未越界**（未接 CLI、未修 F-06、未把 C1 标为已验收、未动冻结算法）：
+
+| 轮次 | 对象 | 结论 | 处理 |
+|---|---|---|---|
+| 1 | `c15ee4a` | **PASS WITH NON-BLOCKING**（无 P0/P1） | P2-1 章节错位、P2-2 **装饰性断言**（`HasPrefix` 判不出内联字面量）已修；P3-1~P3-5 已修 |
+| 2 | `a850e28`（修复） | **CONFIRMED WITH MINOR** | 7 条全部改对；P2-2 新判据经两种变异实证有牙；N-1/N-2 已修 |
+
+**遗留（登记未处理，均属门禁既有弱点）**：`codePattern` 会误匹配裸写的
+`CODEGEN-NAMING-001`、会漏掉前导字母与连字符连写的第二个码；`pkgConstants`
+用 `HasPrefix(name,"Code")` 与包名 `Codegen` 天然冲突；`TestEveryConstantIsEmitted`
+不查生产链路可达性。
+
+**C3 结束时的边界**：两码**生产链路不可达**（`namingDiagnostics` 无生产调用方），
+要等 C4 接线后用户才看得到——目录与 dev-log 均已如实写明，未伪装成"已接线"。
 
 ## 11. 纪律
 
