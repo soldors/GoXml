@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 完成（预检）；C2 实现完成 + 验收补丁已补（见 §10.2），最终验收待独立复审——维护者已明确"暂不标记最终验收通过"；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成
+- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成。**C2 通过 ≠ 整个命名流程完成**（§10.4 第 5 条）
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -204,7 +204,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 | 切片 | 内容 | 验收 |
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
-| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **实现完成（2026-10-22），验收补丁见 §10.2**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
+| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **验收通过，附带非阻塞遗留项（2026-10-22 裁决，见 §10.4）**；实现与补丁过程见 §10.2/§10.3：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
 | C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | `go test ./internal/docgate/ ./internal/compiler/diagdoc/` |
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
@@ -265,6 +265,63 @@ P0 决定了方案走向，**必须由裁决给出**：
 
 复审登记但**未处理**的残余风险：跨平台未实测（仅 Windows）；冷 module cache
 + 无网络未验证；`testdata/` 孤儿包场景未构造。均属环境类，不阻塞本轮验收。
+
+### 10.4 C2 最终验收裁决（项目负责人，2026-10-22）
+
+**裁决：C2 验收通过，附带非阻塞遗留项。**
+
+- 裁决人：项目负责人（在 GitHub 上核对远端提交与公司比较接口后作出）
+- 裁决时点分支状态：`feat/codegen-naming-c2` HEAD `de5031c`，领先 `master` 7 笔、落后 1 笔
+- 裁决依据：本节 §10.2/§10.3 的实测记录 + 两轮独立复审报告；
+  **项目负责人未重新执行本地 Go 测试，测试结果依据执行记录与复审报告**
+- 边界提醒：远端存在 `de5031c`、GitHub 比较接口确认提交数，
+  **但当前提交没有可见的 GitHub CI 状态记录，不得等同于 CI 全绿**
+
+#### 10.4.1 四项验收工作的判断
+
+| 验收项 | 判断 | 依据与边界 |
+|---|---|---|
+| 双文件同包真实编译 | **通过** | 三种页面组合的真实编译回归 + 退回固定旧符号名的变异能触发真实编译失败 |
+| `docgate` 基线核查 | **通过（按报告）** | 补丁前后均运行，记录 13/13；**不得写成 14/14** |
+| text cache 预检边界 | **已查明，留待后续修复** | 静态页与纯事件页的保守预检误报已证明；绑定槽位边界已记录 |
+| 全量回归与文档 | **通过（按报告）** | codegen 全包与其余包均无失败；任务卡/WBS/dev-log 已更新并经两轮复审订正 |
+
+#### 10.4.2 必须保留的三个限制（不因 C2 通过而关闭）
+
+1. **预检误报没有被修掉。** 留 C4/C5 是合理的：C2 的目标是**生成符号唯一化**，
+   不是提前完成 CLI 预检的精确判定。收窄判据见 §10.2 与
+   `naming_textcache_boundary_test.go` 顶部（`bindSlots > 0`，不是 `usesVM`）。
+2. **F-06 路径归一化必须在 C4 接线前处理。** `isOwnArtifact` 用 raw `SourcePath`
+   比对，而保护头写的是 `normalizeSourcePath()`（`\`→`/`）→ Windows 风格路径下
+   自家生成产物会被误判成"用户声明的冲突"。**列为 C4 的前置验收项**（见 §10.4.3），
+   不因 C2 测试通过而关闭。
+3. **测试环境覆盖仍不完整。** 跨平台（仅 Windows 实测）、冷 module cache + 无网络、
+   `testdata/` 孤儿包场景均未验证。写"**未覆盖**"，**不得写成已通过**。
+
+#### 10.4.3 C4 接线的前置验收项（进 C4 前必须完成）
+
+| 编号 | 前置项 | 说明 |
+|---|---|---|
+| C4-PRE-1 | F-06 路径归一化 | `isOwnArtifact` 改用 `normalizeSourcePath()` 比对并配 Windows 风格路径回归测试 |
+| C4-PRE-2 | 预检对三类页面的判定规则 | 明确：静态页（`bindSlots == 0`）/ 纯事件页（`usesVM` 真、`bindSlots == 0`）/ 含绑定页（`bindSlots > 0`）分别是否计入 `goxmlTextCache<Source>`，并写回 `naming.go` 与本节 |
+| C4-PRE-3 | 诊断码就绪 | 依赖 C3：`CODEGEN-NAME-001/002` 已登记并进 diagdoc 校验 |
+
+#### 10.4.4 后续顺序（项目负责人确认）
+
+C3（诊断码）→ C4（接线，**含 §10.4.3 三项前置**）→ C5（冲突矩阵 + 零副作用 +
+跨层验收）→ 各任务分别通过审查后**再评估与 `master` 整合**。
+当前分支落后 `master` 1 笔，**先核对差异、不直接合并、不重放或改写已推送历史**。
+
+#### 10.4.5 C2 通过的边界（不可外推）
+
+**C2 验收通过 ≠ C1 预检与整个命名流程已完成。** 具体而言：
+
+- C1 的"检测已实现"**不等于**已验收：它的判定规则（含 §10.4.3 C4-PRE-2 的三类页面）
+  仍有待 C4 补齐，零副作用也尚未验证；
+- 预检**至今零接线**（`detectNamingConflicts` 仅 codegen 包内引用），
+  因此"两个 .gxml 同包"这个原始缺陷在 **CLI 路径上仍未消除**——
+  C2 修的是产物层（生成的代码能一起编译），不是 CLI 层的提前拦截；
+- 整个命名流程完成 = C3 + C4 + C5 全部完成并分别通过审查。
 
 ## 11. 纪律
 
