@@ -1,6 +1,6 @@
-# 提交并推送到 GitHub（origin/master）。
+﻿# 提交并推送到 GitHub（origin/master）。
 #
-# 用法：
+# 用法（PowerShell 7 / pwsh 推荐）：
 #   .\scripts\commit-push.ps1 -Message "feat: xxx" -Files "a.go","b.md"
 #   .\scripts\commit-push.ps1 -Message "docs: xxx" -All -Yes
 #
@@ -8,6 +8,14 @@
 #   - 默认必须显式列文件，避免 -A 把并发会话内容/临时垃圾带入提交；
 #   - 提交前打印实际暂存清单，供人工核对；
 #   - 推送失败必须报错退出，不得假装成功。
+#
+# 解释器约束（2026-10-21 隔离实测，见 dev-log）：
+#   - 本文件含中文，必须保存为 **UTF-8 with BOM**。否则 Windows PowerShell 5.1
+#     （按 ANSI/CP936 解码）连语法都通不过，进程直接 exit 1——那不是护栏拦下了，
+#     而是脚本没跑起来。
+#   - 因此 $ErrorActionPreference 用 'Continue' 而不是 'Stop'：5.1 下 native 命令
+#     写到 stderr 会被 'Stop' 升级成终止错误，`git push` **成功**也会被当成失败
+#     （推送完成却 exit 1）。改为 'Continue' 后所有关键命令都显式检查 $LASTEXITCODE。
 
 [CmdletBinding()]
 param(
@@ -27,8 +35,19 @@ param(
     [switch]$SkipGates
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+
+# git 以 UTF-8 字节输出路径。若解释器的控制台输出编码是 CP936（zh-CN Windows 默认），
+# 中文路径会被解成乱码，于是下一节「本轮清单 vs 索引内容」的比对必然失败，
+# 把**自家的中文路径文件**误判成「并发会话的文件」而拒绝提交。
+# 本仓库 docs/04-WBS/任务卡/ 下大量中文文件名，这条几乎必然触发，故强制 UTF-8 解码。
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+
+Write-Host ("→ 解释器：PowerShell {0}" -f $PSVersionTable.PSVersion) -ForegroundColor DarkGray
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Host "  提示：本脚本按 PowerShell 7 验证；5.1 下 git 的 stderr 行为不同，建议改用 pwsh。" -ForegroundColor Yellow
+}
 
 function Fail($msg) {
     Write-Host "✗ $msg" -ForegroundColor Red
@@ -81,10 +100,21 @@ if ($All) {
         if (-not (Test-Path -LiteralPath $f)) {
             # 允许删除：文件不存在但 git 知道它 → 记录删除
             $known = git ls-files --error-unmatch -- $f 2>&1
-            if ($LASTEXITCODE -ne 0) { Fail "文件不存在且未被跟踪：$f" }
-            git rm --cached --ignore-unmatch -- $f | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                # 用 -File 调用本脚本时，命令行的 -Files "a","b" 会被 PowerShell 合成**一个**
+                # 字符串 "a,b" 传给这里，症状是报"文件不存在"——看起来像路径写错。
+                $hint = ''
+                if ($f -like '*,*') {
+                    $hint = '（提示：-Files 是数组参数。用 -File 调用时不能在命令行用逗号列表，' +
+                            '请在 PowerShell 会话里直接 .\scripts\commit-push.ps1 调用，或逐项传参）'
+                }
+                Fail "文件不存在且未被跟踪：$f$hint"
+            }
+            git rm --cached --ignore-unmatch -- $f 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail "git rm --cached 失败：$f" }
         } else {
             git add -- $f
+            if ($LASTEXITCODE -ne 0) { Fail "git add 失败：$f" }
         }
     }
 }
@@ -124,7 +154,9 @@ if ($All) {
 if (-not $staged) { Fail "暂存区为空，没有可提交的内容" }
 
 Write-Host "→ 即将提交以下文件：" -ForegroundColor Cyan
-$staged | ForEach-Object { Write-Host "  $_" }
+# --name-status 的输出以制表符分隔，不同终端下制表符可能被吞掉（实测显示成 "Ma.md"），
+# 这里显式替换成两个空格，保证人工核对点可读。
+$staged | ForEach-Object { Write-Host ("  " + ($_ -replace "`t", "  ")) }
 
 # ---- 5. 确认 ----
 if (-not $Yes) {
