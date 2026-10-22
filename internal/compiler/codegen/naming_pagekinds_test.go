@@ -41,7 +41,12 @@ func declaresType(t *testing.T, src, typeName string) bool {
 	return strings.Contains(src, "type "+typeName+" struct")
 }
 
-// TestNamingPageKindsSymbolSets：三类页面 × 两个包级类型的对照表。
+// TestNamingPageKindsSymbolSets：**四类页面** × 两个包级类型的对照表。
+//
+// 第 4 行「绑定全在 <For> 内」来自契约 §16.5.1 的同一张表：这类页面有 VM、
+// 有绑定，但 `<For>` 体内不分配槽位（列表契约 §6.2），所以槽位数为 0、
+// 不声明 TextCache。它必须进表——只靠槽位测试间接证明，会让
+// 「页面分类」与「槽位统计」两套口径的漂移无人察觉（C1 核对 G2）。
 func TestNamingPageKindsSymbolSets(t *testing.T) {
 	keyType, cacheType, err := generatedTypeNames("home.gxml")
 	if err != nil {
@@ -54,6 +59,9 @@ func TestNamingPageKindsSymbolSets(t *testing.T) {
 		Options{PackageName: "demo", ModulePath: "github.com/goxml/goxml", SourcePath: "home.gxml"}))
 	bindingSrc := string(mustGen(t, `<Column><Text Value="Static"/><Text Value="{Title}"/></Column>`,
 		Options{PackageName: "demo", ModulePath: "github.com/goxml/goxml", SourcePath: "home.gxml"}))
+	// 绑定全部位于 <For> 体内：绑定语法存在，但槽位数为 0。
+	forOnlySrc := string(mustGen(t, `<For Each="item" In="{Items}"><Text Value="{item.Name}"/></For>`,
+		Options{PackageName: "demo", ModulePath: "github.com/goxml/goxml", SourcePath: "home.gxml"}))
 
 	cases := []struct {
 		name      string
@@ -64,6 +72,8 @@ func TestNamingPageKindsSymbolSets(t *testing.T) {
 		{"静态页", staticSrc, true, false},
 		{"纯事件页", eventSrc, true, false},
 		{"绑定页", bindingSrc, true, true},
+		// 与纯事件页的区别：它有绑定（不是"无绑定"），判据落在槽位数上。
+		{"绑定全在 For 内", forOnlySrc, true, false},
 	}
 	for _, c := range cases {
 		gotKey := declaresType(t, c.src, keyType)
@@ -72,7 +82,8 @@ func TestNamingPageKindsSymbolSets(t *testing.T) {
 			t.Errorf("%s 声明 %s = %v，期望 %v", c.name, keyType, gotKey, c.wantKey)
 		}
 		if gotCache != c.wantCache {
-			t.Errorf("%s 声明 %s = %v，期望 %v", c.name, cacheType, gotCache, c.wantCache)
+			t.Errorf("%s 声明 %s = %v，期望 %v（契约 §16.5.1 第 4 行）",
+				c.name, cacheType, gotCache, c.wantCache)
 		}
 	}
 }

@@ -225,7 +225,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 
 | 切片 | 内容 | 验收 |
 |---|---|---|
-| C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
+| C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **实现完成（2026-10-21）**；**未单独验收**——2026-10-22 完成现状核对与验收清单冻结（§10.10）。`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）；**用例数口径 = 测试函数数**：`naming_test.go` 现有 **12** 个函数（10-21 记录的 "8"/`PASS=8` 是当时时点值，不含子测试与表内形态）；2026-10-22 复跑 `go test ./internal/compiler/codegen -run '^(TestNaming\|TestSlot\|TestGenerated\|TestTextCacheIs\|TestPrecheck)'` → **39 PASS / 0 SKIP**；C1 冻结核对补齐 4 条断言 + 修 1 处 fail-open（§10.10.4/§10.10.5） |
 | C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **验收通过，附带非阻塞遗留项（2026-10-22 裁决，见 §10.4）**；实现与补丁过程见 §10.2/§10.3：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
 | C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | ✅ **实现完成（2026-10-22）；独立复审 PASS WITH NON-BLOCKING，发现项已修复（§10.6）**：`codegen.CodeNamingExisting`/`CodeNamingSameBatch`（`CODEGEN-NAME-001/002`）；语义先冻结于 §10.5.2；目录 §2.8 登记 + 门禁 5 处同步；`naming_diag_test.go` 6 用例；两码互换的变异取证已做 |
 
@@ -779,6 +779,113 @@ A1–A5/A7 都没做"。
 - `master`：**不合并**，维持现有分支治理决定。
 - 测试证据：沿用此前记录的全量测试（14 包 `ALL_EXIT=0`）、M8/M9 变异、三二进制
   A/B、S1–S5 矩阵；**本轮未重新执行这些测试**，只跑文档门禁。
+
+### 10.10 C1 现状核对与验收清单冻结（2026-10-22）
+
+#### 10.10.1 基线与方法
+
+- **远端本轮未能核对**：`ls-remote` 连续 3 次 502（隧道失败）。依据是本地
+  `24671e8`——该 SHA 在 6 分钟前经 `ls-remote` 核对等于远端，此后无新提交、
+  工作树干净。**这不能替代本轮远端复核**，恢复后须重新对齐。
+- 方法：读生产代码 + 读测试**断言本身**；每项分「已实现 / 已有测试证据 /
+  缺少证据 / 存在缺陷」四类登记，不混用；**不采信切片表的完成标记**。
+
+#### 10.10.2 六项结论（核对结果）
+
+| # | 项 | 已实现 | 已有测试证据 | 缺证据 / 缺陷 |
+|---|---|---|---|---|
+| 1 | 预检接线 | 阶段零 C（`cli/pipeline.go:123-138`），在缓存判定后、阶段一 `MkdirAll` 前；失败即 return | `TestNamingConflictSameBatchRejected`（整批放弃）、`...DoesNotCreateOutDir` | **缺**：只对未命中的规则（G6）；退出码字面量（G3） |
+| 2 | F-06 | `isOwnArtifact` **两侧**都过 `normalizeSourcePath`（`naming.go:356`） | 4 条反斜杠用例 + 反控（`naming_ownartifact_test.go`） | 边界：CLI 的 `SourcePath` 是 base name（`cache_wire.go:93`）→ 生产路径结构性不含分隔符 |
+| 3 | 页面分类 | `generatedPackageSymbols` + `bindCacheDecl`（`slots==0→""`）+ 两处发射点 | `TestNamingPageKindsSymbolSets`、`...IsUpperBoundOfAllKinds`、两条 `NotOverreported` | **缺**：契约 §16.5.1 第 4 行（For-only）无直接断言（G2） |
+| 4 | 前端复用 | CLI 不调 `pipeline.Run`；`Prepare`(304) → `preparedFE` → `RunPrepared`(172) | `TestPipelineHooksFiredOncePerFile`（C5） | 复用 C5 结论，未重复开发 |
+| 5 | 副作用 S1–S5 | 预检前只有读（`loadManifest` 纯读、`decideCacheHit` 无写） | 见 §10.10.6 的分层覆盖表 | **边界**：两类冲突 × S1–S5 非全排列（G4） |
+| 6 | 诊断一致性 | 两码常量；消息冻结；零 span → `file:0:0:`；四级全键排序；§2.8 登记 | 6 条 `naming_diag_test`、`...OrderIsFullyDetermined`（8 条全序） | **缺**：001 与 `GXML-ROOT-002` 不共存（G5）；CLI 多诊断顺序 |
+
+#### 10.10.3 真缺陷（唯一一条，已修）
+
+`naming_test.go` 的 `TestNamingDetectsSameBatchConflict` 用 `t.Skipf` 守卫
+**D-4 冻结的「塌缩必须检测」前提**，而同文件 `TestNamingDetectsPascalCollapse`
+对同一前提用 `t.Fatalf` 并明确写「这里**不放 Skip**」——同一冻结行为两种守卫。
+
+改为 `t.Fatalf`。**变异取证（M-D1）**：让含 `-` 的源派生出 `…ABX` 后缀
+（人为制造"塌缩消失"），`go build ./...` 退出码 0，然后：
+
+| 守卫写法 | 结果 |
+|---|---|
+| 旧（`t.Skipf`） | `--- SKIP`，`go test` **exit 0**（能力丢失却静默通过） |
+| 新（`t.Fatalf`） | `--- FAIL`：「派生应塌缩……实际 "GoxmlA_BXView" vs "GoxmlA_BView"」 |
+
+#### 10.10.4 冻结清单的最小补齐（4 条断言 + 1 处修复）
+
+| 项 | 改动 | 变异取证（`go build` 退出码均为 0） |
+|---|---|---|
+| G2 | `TestNamingPageKindsSymbolSets` 增第 4 行 "绑定全在 For 内"（期望 `RenderKey=true`、`TextCache=false`）；CLI 增 `TestNamingForOnlyPageTextCacheNotOverreported` | **M-G2**（`textBindSlot` 忽略 `inFor`）：codegen 行红「声明 goxmlTextCacheHome = true，期望 false」；CLI 用例红「应生成成功；退出码 = 2」 |
+| G3 | `TestNamingConflictNoWrites` 改断言字面量 **2**（注明不引用常量，避免常量漂移跟着绿） | **M-G3**（`ExitFailure = 3`）：红「应以退出码 2 失败，实际 = 3」 |
+| G5 | 新增 `TestNamingConflictDiagnosticsNotDuplicated`：命名诊断**恰好 1 条**、`CODEGEN-NAME-001` 格式正确、**不出现 `GXML-ROOT-002`**；正对照为同工程内两个文件重复声明（无命名冲突）→ 证明 ROOT-002 确可产生 | **M-G5**（预检打印后不中止）：红「不应同时出现 GXML-ROOT-002」 |
+| G6 | 新增 `TestNamingPrecheckSkippedOnAllHit`：两源首跑 → 把 Manifest 已登记的 `detail_gen.go` 改写成用户声明（该路径不进 K3）→ 只跑 `home.gxml`，断言 exit 0、stdout 含「缓存命中」（**证明真走命中路径**）、无命名诊断；正对照 `--no-cache` → 退出码 2 + 001 | **M-G6**（`resolved` 代替 `missResolved`）：红「全部命中时不应失败；退出码 = 2」 |
+| D1 | `t.Skipf` → `t.Fatalf` | **M-D1/M-D1b**，见 §10.10.3 |
+
+**为什么 G6 要用 Manifest 已登记产物路径**：新增一个用户 `.go` 会改变 K3 包指纹
+（`packageSourcesFingerprint`），运行会变成未命中，就测不到命中路径。Manifest
+产物在 K3 排除集里，改写它既能造出"包内同名符号"，又保持缓存键不变。
+
+#### 10.10.5 G4 的覆盖口径（分层覆盖，逐项登记）
+
+| 冲突类型 | 关键副作用 | 由谁证明 |
+|---|---|---|
+| existing-symbol | S1 产物内容 + mtime 不变 | `TestNamingConflictNoWrites` |
+| existing-symbol | S2 Manifest 字节不变 | 同上（目录快照） |
+| existing-symbol | S3 缓存集合与内容不变 | 同上 |
+| existing-symbol | S4 stdout 静默（含 `共 N 个`） | `TestNamingConflictStdoutSilentMultiFile`（自带正对照） |
+| same-batch | S5 无产物、无 `.tmp` | `TestNamingConflictSameBatchRejected` |
+| same-batch | 输出目录不被创建 | `TestNamingConflictDoesNotCreateOutDir` |
+
+**未直接覆盖的交叉组合（不得写成"全部覆盖"）**：
+
+1. **same-batch × S1/S2/S3**（"有预置 + 批内冲突"）：现有 S1–S3 只在 existing 场景，
+   批内场景覆盖的是"无预置"。理论上同一条 early-return 路径，但无独立证据。
+2. **existing × S5**（"无预置 + 既有声明冲突"）：无独立用例；被 `TestNamingConflictDiagnosticsNotDuplicated`
+   间接涉及（先成功生成过，有预置），严格说仍缺"首次生成即冲突"的残留断言。
+3. **S4 的「三者同时不变 + stdout 静默」** 未在同一条用例内断言，而是拆成 S1–S3 与 stdout 两条。
+4. **多诊断（>1 条冲突）时的副作用与输出**：只断言了"恰好 1 条"的场景，未测 N 条。
+
+结论：**接受分层覆盖**——三种冲突路径（existing / same-batch / 命中）的关键保证都有
+直接证据；上述 4 项作为已披露边界，若将来把其中某项升为独立硬要求，必须补测试，
+不得以"分层覆盖"免除。
+
+#### 10.10.6 门禁（本轮定向复跑，数字摘自输出）
+
+| 命令 | 结果 |
+|---|---|
+| `go test ./internal/compiler/codegen -run '^(TestNaming\|TestSlot\|TestGenerated\|TestTextCacheIs\|TestPrecheck)' -count=1 -v` | **39 PASS / 0 SKIP / 0 FAIL**，`ok 34.719s` |
+| `go test ./internal/cli -run '^TestNaming' -count=1 -v` | **12 PASS / 0 SKIP / 0 FAIL**，`ok 25.144s` |
+| `go vet ./internal/cli ./internal/compiler/codegen` | 退出码 0 |
+
+**计数口径**：以上是**测试函数数**（`--- PASS` 行数），不是子测试数、也不是表内
+形态数（`TestNamingPageKindsSymbolSets` 一个函数里 4 行形态）。三者混写会重演
+C5 那次"14 vs 13"的口径错误。
+
+#### 10.10.7 C1 验收清单（冻结）
+
+**门槛（必须通过）**
+
+| # | 门槛 | 现状 |
+|---|---|---|
+| G1 | 符号枚举与生成器同源（共用 `generatedTypeNames`/`viewSymbol`） | 满足 |
+| G2 | 页面分类与契约 §16.5.1 一致，**含 For-only 那一行** | 满足（本轮补齐） |
+| G3 | 接线在写盘前 + 整批放弃 + 退出码 **2** | 满足（本轮补字面量断言） |
+| G4 | S1–S5 覆盖两类冲突，或按 §10.10.5 明确接受分层覆盖 | 满足（分层 + 4 项边界已登记） |
+| G5 | 码值/消息/格式/排序 + 不与 Analyzer 重复 | 满足（本轮补"不重复"） |
+| G6 | 只对未命中输入预检 | 满足（本轮补直接测试） |
+| G7 | 命名线 **`SKIP=0`** 且无 fail-open 守卫 | 满足（本轮修 D1，两包 SKIP=0 实测） |
+| G8 | 文档与实现一致（含计数口径） | 满足（§10 切片表 C1 行已改） |
+
+**非阻塞遗留（登记，不阻断）**：CLI 层多诊断输出顺序无断言（codegen 层有全序用例）｜
+F-06 在 CLI 端结构性不可达（记边界）｜`indexOfTarget` 的 O(n) 与"target 不重复"隐含前提｜
+A7 无 golden｜`binding_compile/runtime_test` 的 `./<dir>/...` 通配面（C4 遗留）。
+
+**状态**：C1 **仍未验收**。本轮只做现状核对 + 冻结清单 + 最小证据补齐；
+需项目负责人单独裁定。`master` 不合并。
 
 ## 11. 纪律
 

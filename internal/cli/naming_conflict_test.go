@@ -250,8 +250,10 @@ func TestNamingConflictNoWrites(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	code := Run([]string{"generate", filepath.Join(tmp, "home.gxml")}, &out, &errb)
-	if code != ExitFailure {
-		t.Fatalf("冲突时应失败，退出码 = %d；stdout:\n%s", code, out.String())
+	// 退出码字面量：契约冻结命名冲突为 2。这里**不**只断言 ExitFailure——
+	// 常量本身若被改动，断言会跟着绿，就与"退出码 2"这条对外承诺脱钩了（C1 冻结清单 G3）。
+	if code != 2 {
+		t.Fatalf("冲突时应以退出码 2 失败，实际 = %d；stdout:\n%s", code, out.String())
 	}
 	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-001:") {
 		t.Errorf("stderr 应输出冻结格式 `file:0:0: CODEGEN-NAME-001: message`:\n%s", errb.String())

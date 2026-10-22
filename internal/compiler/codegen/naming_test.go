@@ -118,7 +118,10 @@ func TestNamingDetectsSameBatchConflict(t *testing.T) {
 		t.Fatalf("viewSymbol(a_b.gxml): %v", err)
 	}
 	if va != vb {
-		t.Skipf("当前实现未塌缩（%q vs %q）", va, vb)
+		// 这里**不放 Skip**（与 TestNamingDetectsPascalCollapse 一致）：
+		// D-4 裁决已冻结「塌缩必须检测并报错」。用 Skip 表达"将来可能不塌缩"
+		// 会让能力丢失时测试静默通过——fail-open 比红更危险。
+		t.Fatalf("派生应塌缩（D-4 裁决的前提），实际 %q vs %q；若规则已改须先改契约与卡", va, vb)
 	}
 	ka, ca, err := generatedTypeNames("a-b.gxml")
 	if err != nil {
