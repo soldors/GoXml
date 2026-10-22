@@ -48,6 +48,72 @@ func slotsAndArtifact(t *testing.T, body string) (int, []byte) {
 	return n, out
 }
 
+// TestSlotCountEqualsEmittedSlots：**槽位绝对数**必须与发射侧累加值逐一相等。
+//
+// 这是独立复审指出的缺口（P1-1）：既有护栏只断言「零 ⟺ 不声明 TextCache」，
+// 只能证明**零与非零**一致——3 个绑定被统计成 2 个，那条护栏是绿的，
+// 但 CountBindSlots 这个名字承诺的是「统计槽位数」。本用例把它兑现：
+// 以生成器发射时实际累加的 g.bindSlots（经 generateWithSlots 暴露）为基准。
+//
+// 覆盖形态刻意包含「规则相同但遍历形状不同」的所有已知分支点：
+// 嵌套容器、If 的 Then/Else、嵌套 If、For 内的 If、For 内外混排。
+func TestSlotCountEqualsEmittedSlots(t *testing.T) {
+	opts := Options{
+		PackageName: "demo",
+		ModulePath:  "github.com/goxml/goxml",
+		SourcePath:  "home.gxml",
+	}
+
+	cases := []struct {
+		name string
+		body string
+		// want 是**期望的绝对槽位数**（-1 表示只要求与发射值相等）。
+		want int
+	}{
+		{"静态文本", `<Text Value="Hello"/>`, 0},
+		{"纯事件页", `<Button Text="加一" Click="Increment"/>`, 0},
+		{"单个绑定", `<Text Value="{Title}"/>`, 1},
+		{"两个绑定", `<Column><Text Value="{Title}"/><Text Value="{Title}"/></Column>`, 2},
+		// 三个绑定：抓「3 被统计成 2」这类绝对值误差。
+		{"三个绑定", `<Column><Text Value="{Title}"/><Text Value="{User.Name}"/><Text Value="{User.Email}"/></Column>`, 3},
+		// 两层容器嵌套。
+		{"两层容器嵌套", `<Column><Row><Column><Text Value="{Title}"/></Column></Row></Column>`, 1},
+		// 嵌套容器里多个绑定 + 静态文本混排。
+		{"嵌套+混排", `<Column><Text Value="s"/><Row><Text Value="{Title}"/><Text Value="{User.Name}"/></Row><Column><Text Value="s2"/><Text Value="{User.Email}"/></Column></Column>`, 3},
+		// If 的 Then 与 Else 各一个绑定 → 2（分支不影响分配）。
+		{"If 两分支各一", `<If Condition="{Dirty}"><Then><Text Value="{Title}"/></Then><Else><Text Value="{User.Name}"/></Else></If>`, 2},
+		// 嵌套 If。
+		{"嵌套 If", `<If Condition="{Dirty}"><Then><If Condition="{Dirty}"><Then><Text Value="{Title}"/></Then></If></Then></If>`, 1},
+		// For 内绑定：不占槽（<For> 列表契约 §6.2）。
+		{"For 内绑定", `<For Each="item" In="{Items}"><Text Value="{item.Name}"/></For>`, 0},
+		// For 内的 If 必须继承 inFor → 分支里的绑定同样不占槽。
+		{"For 内 If 的绑定", `<For Each="item" In="{Items}"><If Condition="{item.Done}"><Then><Text Value="{item.Name}"/></Then></If></For>`, 0},
+		// For 内外混排。
+		{"For 内外混排", `<Column><Text Value="{Title}"/><For Each="item" In="{Items}"><Text Value="{item.Name}"/></For><Text Value="{User.Name}"/></Column>`, 2},
+		// 容器里的 For（for 的 inFor 只覆盖其子树，不影响兄弟）。
+		{"For 与兄弟绑定", `<Column><Row><For Each="item" In="{Items}"><Text Value="{item.Name}"/></For></Row><Text Value="{Title}"/></Column>`, 1},
+	}
+
+	for _, c := range cases {
+		v := verified(t, c.body)
+		counted, err := CountBindSlots(v)
+		if err != nil {
+			t.Fatalf("%s: CountBindSlots: %v", c.name, err)
+		}
+		_, emitted, err := generateWithSlots(v, opts)
+		if err != nil {
+			t.Fatalf("%s: generateWithSlots: %v", c.name, err)
+		}
+		if counted != emitted {
+			t.Errorf("%s：CountBindSlots = %d，发射实际累加 = %d（必须相等，否则预检会按错误槽位数收窄）",
+				c.name, counted, emitted)
+		}
+		if c.want >= 0 && emitted != c.want {
+			t.Errorf("%s：发射实际累加 = %d，期望 %d", c.name, emitted, c.want)
+		}
+	}
+}
+
 // TestSlotCountAgreesWithDeclaredTextCache：槽位数为零 ⟺ 不声明 TextCache。
 func TestSlotCountAgreesWithDeclaredTextCache(t *testing.T) {
 	_, cacheType, err := generatedTypeNames("home.gxml")

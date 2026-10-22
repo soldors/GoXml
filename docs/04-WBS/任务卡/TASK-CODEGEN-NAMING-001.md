@@ -153,14 +153,21 @@ P0 决定了方案走向，**必须由裁决给出**：
 
 | # | 场景 | 预期 | 测试（实际函数名） |
 |---|---|---|---|
-| A1 | 同包两个 `.gxml`（N1） | `go build` 该包通过；两个 `_gen.go` 符号互不冲突 | `TestTwoStaticSourcesSamePackage` / `TestTwoBindingSourcesSamePackage`（均真实 `go build ./<dir>`） |
-| A1' | 同包两个 `.gxml`（N3） | 第二个文件生成失败，诊断指明冲突源与符号 | `TestNamingDetectsSameBatchConflict`（codegen）+ `TestNamingConflictSameBatchRejected`（CLI） |
+| A1 | 同包两个 `.gxml`，派生符号**互不相同**（N1 的正常路径） | 两个都生成成功，`go build` 该包通过；两个 `_gen.go` 符号互不冲突 | `TestTwoStaticSourcesSamePackage` / `TestTwoBindingSourcesSamePackage`（均真实 `go build ./<dir>`） |
+| A1' | 同包两个 `.gxml`，派生符号**相同**（pascal 塌缩，§5.1 第 2 条） | **写入任何产物之前**整批拒绝；诊断 `CODEGEN-NAME-002` 指明冲突源与符号；磁盘零变更 | `TestNamingDetectsSameBatchConflict`（codegen）+ `TestNamingConflictSameBatchRejected`（CLI） |
 | A2 | 用户已有 `renderKey` 类型 | 生成失败并报冲突（不得覆盖、不得改名） | `TestNamingDetectsExistingUserSymbol` + CLI `TestNamingConflictNoWrites` |
 | A3 | 不同目录同名 `home.gxml` | 两个包各自 `GoxmlHomeView`，互不影响 | `TestNamingSameBaseDifferentDirsOK` / `...NoConflict` / `...NoDiagnostics` |
 | A4 | pascal 塌缩：`a-b.gxml` 与 `a_b.gxml` 同包 | 检测并报错（或以可区分命名生成），**不得静默产出重名** | `TestNamingDetectsPascalCollapse` + `TestNamingSameDirCollapseStillConflicts` |
 | A5 | 静态页 + 绑定页同包 | 两种形态都能编译 | `TestStaticAndBindingSourcesSamePackage` + `TestNamingPageKindsSymbolSets` |
 | A6 | 重复生成两次 | 字节一致 | 既有 `TestGenerationDeterminism`（`internal/cli/determinism_test.go`） |
 | A7 | 单文件产物 | 除本次改名涉及的符号外，其余字节不变（防止顺手改坏） | `TestNamingSingleFileStable`（C5 新增） |
+
+> **A1 与 A1′ 的区别必须按"派生符号是否相同"读，不能按"是否同包"读**
+> （2026-10-22 复审澄清）：本卡只采用 **N1（唯一化）**；**N3（冲突即失败）
+> 是被否决的方案**，不是验收项。A1′ 里的"拒绝"来自 §5.1 **第 2 条（碰撞前移）**，
+> 与 N3 无关——它约束的是"两个源派生出了同一个标识符"这种退化情形，
+> 而不是"同包不允许有第二个文件"。
+> 初版把 A1′ 标成"（N3）"，读起来像本卡同时采用了两个互斥方案，已改正。
 
 > **计划名与实现名的重映射（2026-10-22，C5 开工核对）**：本表初版写的 8 个
 > 「计划测试」名里，只有 `TestGenerationDeterminism` 真实存在，其余 7 个
@@ -690,6 +697,21 @@ A1–A5/A7 都没做"。
   的 `go build ./<dir>/...` 通配空转面；`001` 与 `GXML-ROOT-002` 是否去重。
 - 本轮顺带修了测试基建：`tempProjectInRepo` 先 `RemoveAll` 再建（否则被
   SIGTERM 掐断的残留会让下一次运行在预置阶段假红）。
+
+#### 10.9.7 C5 独立复审意见：本轮可执行自检（**不是**复审结论）
+
+复审提出 3 个 P1 + 2 个 P2（2026-10-22），逐项自检证据记在 dev-log
+`2026-10-22.md` §7。结论按项登记，**不得读成"C5 已复查通过"**：
+
+| 项 | 自检结论 | 处置 |
+|---|---|---|
+| P1-1 槽位绝对数未被断言 | **缺口成立** | 新增 `generateWithSlots` + `TestSlotCountEqualsEmittedSlots`（14 形态，基准是发射侧实际累加值）；变异 M8 下旧护栏绿、新护栏红 |
+| P1-2 `Prepare/RunPrepared` 行为等价 | 未发现回归 | 三二进制 A/B（B0/B1N/B1，9 用例 × 退出码+stdout+stderr+产物哈希），B0 vs B1N 零差异；另补 `TestPipelineHooksFiredOncePerFile`（`Load`/`Analyze` 此前零断言），变异 M9 下 `Load`/`Analyze` 各 4 次而 `Generate` 仍 2 次 → FAIL |
+| P1-3 A1 与 A1′ 歧义 | 表述问题 | §8.1 改为按「派生符号是否相同」表述；说明 N3 是被否决方案 |
+| P2 A7 不是完整 golden | 维持 | 只当局部护栏，不引用为"产物稳定性已证明" |
+| P2 性能数据不构成契约 | 维持 | 样本量/方差/冷热控制不足，纳入持续验收属独立工作项 |
+
+**状态不变**：C5 仍为「实现完成、待独立复审」；`master` 不合并。
 
 ## 11. 纪律
 

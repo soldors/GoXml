@@ -103,31 +103,45 @@ func HasProtectedHeader(src []byte) bool {
 // 成功返回已格式化的源码；失败返回 error 且**不返回部分代码**——
 // 部分产物可能被调用方误写出去，破坏「失败不覆盖旧文件」的保证（契约 §2.3）。
 func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
+	out, _, err := generateWithSlots(v, opts)
+	return out, err
+}
+
+// generateWithSlots 与 Generate 完全相同，额外返回本次发射**实际累加**的
+// 显示缓存槽位数。
+//
+// 存在理由（C5 独立复审 P1-1）：CountBindSlots 是另一套遍历，必须能与发射侧
+// 的累加值**逐例相等**。只用「产物是否声明 goxmlTextCache」只能证明零/非零
+// 一致，证明不了总数相等——两个绑定被漏算成零会红，但 3 个算成 2 个不会红。
+// 把累加值暴露给同包测试，才能把「统计槽位数」这个函数名兑现。
+//
+// 不导出：生产代码没有第二个调用方，导出面越小越好。
+func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, error) {
 	if v == nil {
-		return nil, fmt.Errorf("codegen: nil VerifiedDoc")
+		return nil, 0, fmt.Errorf("codegen: nil VerifiedDoc")
 	}
 	if v.Document() == nil {
-		return nil, fmt.Errorf("codegen: VerifiedDoc has no document")
+		return nil, 0, fmt.Errorf("codegen: VerifiedDoc has no document")
 	}
 	if opts.PackageName == "" {
-		return nil, fmt.Errorf("codegen: Options.PackageName is required; it is not derived from the source path")
+		return nil, 0, fmt.Errorf("codegen: Options.PackageName is required; it is not derived from the source path")
 	}
 	if !isGoIdent(opts.PackageName) {
-		return nil, fmt.Errorf("codegen: PackageName %q is not a valid Go identifier", opts.PackageName)
+		return nil, 0, fmt.Errorf("codegen: PackageName %q is not a valid Go identifier", opts.PackageName)
 	}
 	if opts.SourcePath == "" {
-		return nil, fmt.Errorf("codegen: Options.SourcePath is required to derive the view symbol")
+		return nil, 0, fmt.Errorf("codegen: Options.SourcePath is required to derive the view symbol")
 	}
 
 	view, err := viewSymbol(opts.SourcePath)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// 包级生成类型必须**按源文件唯一**（TASK-CODEGEN-NAMING-001 卡 §5.1 的 D-2 裁决）：
 	// 同包多 .gxml 时固定名会重复声明（实测 renderKey/textCache redeclared）。
 	keyType, cacheType, err := generatedTypeNames(opts.SourcePath)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	vmRef, _ := v.ViewModel()
@@ -146,25 +160,27 @@ func Generate(v *analyzer.VerifiedDoc, opts Options) ([]byte, error) {
 	// 但 VerifiedDoc 不变量若被破坏，这里必须明确失败而不是产出空文件。
 	page := v.Document().Page
 	if page == nil {
-		return nil, fmt.Errorf("codegen: document has no <Page>; nothing to generate")
+		return nil, 0, fmt.Errorf("codegen: document has no <Page>; nothing to generate")
 	}
 
 	body, err := g.page(page)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	src, err := g.assemble(body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out, err := format.Source([]byte(src))
 	if err != nil {
 		// 格式化失败说明生成器有缺陷。返回错误并附上原文，便于定位，
 		// 但绝不把未格式化的源码当作成功结果返回。
-		return nil, fmt.Errorf("codegen: generated source does not parse: %w\n--- source ---\n%s", err, src)
+		return nil, 0, fmt.Errorf("codegen: generated source does not parse: %w\n--- source ---\n%s", err, src)
 	}
-	return out, nil
+	// g.bindSlots 是发射过程中**实际累加**的值（分配序号时 ++），
+	// 不是重新数一遍——这正是 CountBindSlots 要对齐的基准。
+	return out, g.bindSlots, nil
 }
 
 // generator 是单次生成的状态。
