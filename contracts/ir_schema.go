@@ -48,6 +48,16 @@ const (
 	CodePrefixDef    = "GXML-DEF"    // Def/Slot 定义与展开错误
 	CodePrefixScope  = "GXML-SCOPE"  // If/For 作用域与变量错误
 	CodePrefixRoot   = "GXML-ROOT"   // 根节点与文档结构错误
+
+	// CodePrefixCodegenName 是**第二类**前缀：生成/后端层的命名冲突。
+	//
+	// 与上面的 GXML-* 前缀区分：GXML-* 描述的是「.gxml 源文本写得对不对」，
+	// 由 Parser/Expander/Analyzer 在前端阶段发射；CODEGEN-NAME-* 描述的是
+	//「生成物放进目标 Go 包会不会撞名」，由 Codegen/CLI 在生成前发射。
+	// 两者面向的修复动作不同（改源文本 vs 改目标包布局），因此不共用号段。
+	//
+	// 号段与语义的唯一权威清单见 诊断码目录.md §1.1 / §2.8。
+	CodePrefixCodegenName = "CODEGEN-NAME" // 生成符号与包级声明冲突
 )
 
 // CompilerError 编译器统一诊断错误。

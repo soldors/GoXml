@@ -41,6 +41,10 @@ var stagePkgs = []stagePkg{
 	{"internal/compiler/parser", "github.com/goxml/goxml/internal/compiler/parser"},
 	{"internal/compiler/expander", "github.com/goxml/goxml/internal/compiler/expander"},
 	{"internal/compiler/analyzer", "github.com/goxml/goxml/internal/compiler/analyzer"},
+	// Codegen 自 C3 起纳入：CODEGEN-NAME-001/002 定义在本包。
+	// 若不加进来，这两个常量就享受不到「必须被发射 / 必须被登记 /
+	// 登记的符号必须存在」三条 AST 校验——那正是旧门禁失明的原因。
+	{"internal/compiler/codegen", "github.com/goxml/goxml/internal/compiler/codegen"},
 }
 
 // pkgConstants 返回包内定义的所有 Code* 常量名。

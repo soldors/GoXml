@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goxml/goxml/contracts"
 )
 
 // ============================================================================
@@ -155,6 +157,9 @@ func detectNamingConflicts(targets []namingTarget) ([]namingConflict, error) {
 					Symbol: sym,
 					Kind:   namingConflictExisting,
 					Owner:  owner,
+					// Source 补上触发方：C3 的诊断消息需要它作为第一个实参。
+					// 此前该字段为空（只有批内冲突才填），补信息不改变判定结果。
+					Source: t.SourceAbs,
 				})
 			}
 		}
@@ -170,6 +175,43 @@ func detectNamingConflicts(targets []namingTarget) ([]namingConflict, error) {
 		return conflicts[i].Owner < conflicts[j].Owner
 	})
 	return conflicts, nil
+}
+
+// namingDiagnostics 跑预检并把冲突转成带诊断码的 CompilerError。
+//
+// C3 的范围到此为止：**定义码 + 发射码 + 目录登记 + 门禁同步**。
+// 谁调用它、失败后如何不写盘（零副作用）属 C4，本函数**不接 CLI**。
+// 导出形态（是否导出 `namingTarget`、是否合并成单一入口）也留给 C4 决定，
+// 避免在本切片提前定下 CLI 侧的调用形状。
+//
+// 位置信息为零值：命名冲突是**包级**事实，不落在 .gxml 的某个行列，
+// `CompilerError.Error()` 会输出 `file:0:0: CODE: message`。
+func namingDiagnostics(targets []namingTarget) ([]contracts.CompilerError, error) {
+	conflicts, err := detectNamingConflicts(targets)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contracts.CompilerError, 0, len(conflicts))
+	for _, c := range conflicts {
+		out = append(out, conflictDiagnostic(c))
+	}
+	return out, nil
+}
+
+// conflictDiagnostic 把一条冲突转成诊断（语义冻结于卡 §10.5.2）。
+//
+// 消息文案与实参顺序是**对外承诺**：日志、文档与测试都按它匹配；
+// 改文案必须同步改卡 §10.5.2 与目录 §2.8，并更新锁定它的测试。
+func conflictDiagnostic(c namingConflict) contracts.CompilerError {
+	if c.Kind == namingConflictExisting {
+		return contracts.NewError(c.Source, contracts.SourceSpan{}, CodeNamingExisting,
+			"generated symbol %q (from %s) is already declared in package: %s",
+			c.Symbol, c.Source, c.Owner)
+	}
+	// 批内冲突：Owner 是先声明该符号的那个源，Source 是后到的源。
+	return contracts.NewError(c.Source, contracts.SourceSpan{}, CodeNamingSameBatch,
+		"sources %q and %q both generate symbol %q",
+		c.Owner, c.Source, c.Symbol)
 }
 
 // indexOfTarget 返回 target 在切片中的下标（值比较，targets 数量很小）。

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goxml/goxml/internal/compiler/codegen"
 	"github.com/goxml/goxml/internal/compiler/expander"
 	"github.com/goxml/goxml/internal/compiler/parser"
 )
@@ -80,6 +81,10 @@ func implementedCodes() []codeEntry {
 		{"GXML-DEF-008", "expander.CodePropMissing"},
 		{"GXML-DEF-009", "expander.CodeSlotNotAllowed"},
 		{"GXML-DEF-010", "expander.CodeRecursiveDef"},
+
+		// Codegen（生成/后端层，第二类前缀 CODEGEN-*，见卡 §10.5.2）
+		{"CODEGEN-NAME-001", "codegen.CodeNamingExisting"},
+		{"CODEGEN-NAME-002", "codegen.CodeNamingSameBatch"},
 	}
 }
 
@@ -107,7 +112,20 @@ var vacantCodes = map[string]bool{
 	"GXML-SCOPE-001":  true, // 原 CodeScope，从未被发射
 }
 
-var codePattern = regexp.MustCompile("GXML-[A-Z]+-[0-9]{3}")
+// codePattern 匹配两类前缀：
+//
+//	GXML-*      面向 .gxml 源文本（Parser/Expander/Analyzer 发射）
+//	CODEGEN-*   面向生成物与目标 Go 包（Codegen 发射，见卡 §10.5.2）
+//
+// 不扩展这个正则的话，目录里登记的 CODEGEN-NAME-* 不会被 codesIn 提取，
+// 于是「已实现但目录未记录」与「目录里的幻像码」两边都检查不到它——
+// 门禁会对整组新码失明。
+// 前导 `[^A-Za-z-]` 不是可选项：本仓库的任务卡编号形如
+// `TASK-CODEGEN-NAMING-001`，若只匹配 `(?:GXML|CODEGEN)-[A-Z]+-[0-9]{3}`，
+// 会把卡号里的 `CODEGEN-NAMING-001` 误当成诊断码（实测报幻像码）。
+// 诊断码不会是某个更长编号的后缀，因此要求前一个字符不是字母或连字符
+// （Go 的 RE2 不支持后行断言，只能用捕获组表达）。
+var codePattern = regexp.MustCompile(`(?:^|[^A-Za-z-])((?:GXML|CODEGEN)-[A-Z]+-[0-9]{3})`)
 
 func readCatalog(t *testing.T) string {
 	t.Helper()
@@ -120,8 +138,8 @@ func readCatalog(t *testing.T) string {
 
 func codesIn(s string) map[string]bool {
 	out := make(map[string]bool)
-	for _, m := range codePattern.FindAllString(s, -1) {
-		out[m] = true
+	for _, m := range codePattern.FindAllStringSubmatch(s, -1) {
+		out[m[1]] = true
 	}
 	return out
 }
@@ -200,7 +218,7 @@ func TestFrozenCodesHaveNoImplementation(t *testing.T) {
 
 func TestCodeCounts(t *testing.T) {
 	const (
-		wantImpl   = 35
+		wantImpl   = 37
 		wantFrozen = 0
 		wantTotal  = wantImpl + wantFrozen
 	)
@@ -212,8 +230,9 @@ func TestCodeCounts(t *testing.T) {
 	}
 
 	body := readCatalog(t)
-	if !strings.Contains(body, "共 **34 个**激活码。") {
-		t.Errorf("目录未声明激活码总数为 %d", wantTotal)
+	// 36 = 37 个实现态 − 1 个归集码（GXML-ATTR-003，见目录 §3）。
+	if !strings.Contains(body, "共 **36 个**激活码。") {
+		t.Errorf("目录未声明激活码总数为 %d", wantTotal-1)
 	}
 }
 
@@ -265,6 +284,10 @@ func TestConstantValuesMatchCatalog(t *testing.T) {
 		"GXML-DEF-008":   expander.CodePropMissing,
 		"GXML-DEF-009":   expander.CodeSlotNotAllowed,
 		"GXML-DEF-010":   expander.CodeRecursiveDef,
+
+		// Codegen：第二类前缀（CODEGEN-*），见卡 §10.5.2。
+		"CODEGEN-NAME-001": codegen.CodeNamingExisting,
+		"CODEGEN-NAME-002": codegen.CodeNamingSameBatch,
 	}
 	for want, got := range actual {
 		if want != got {
@@ -337,6 +360,7 @@ func TestCodesAreGrouped(t *testing.T) {
 
 	want := map[string]int{
 		"ROOT": 2, "SYNTAX": 3, "ATTR": 4, "EVENT": 6, "DEF": 11, "SCOPE": 4, "BIND": 5,
+		"NAME": 2, // CODEGEN-NAME-*（生成层，见卡 §10.5.2）
 	}
 	var keys []string
 	for k := range want {

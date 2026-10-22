@@ -295,15 +295,41 @@ func TestDiagnosticCodePrefixes(t *testing.T) {
 	prefixes := []string{
 		CodePrefixSyntax, CodePrefixProp, CodePrefixBind,
 		CodePrefixEvent, CodePrefixDef, CodePrefixScope, CodePrefixRoot,
+		// CODEGEN-* 是第二类前缀（生成/后端层），见 ir_schema.go 的注释。
+		// 把它放进同一张表：格式与唯一性约束对它同样适用，
+		// 不能因为前缀族不同就让它逃脱校验。
+		CodePrefixCodegenName,
 	}
+	// 允许的前缀族。GXML-* 面向 .gxml 源文本，CODEGEN-* 面向生成物与目标包。
+	allowed := []string{"GXML-", "CODEGEN-"}
 	seen := make(map[string]bool, len(prefixes))
 	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "GXML-") {
-			t.Errorf("错误码前缀 %q 应以 GXML- 开头", p)
+		ok := false
+		for _, a := range allowed {
+			if strings.HasPrefix(p, a) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			t.Errorf("错误码前缀 %q 应以 %v 之一开头", p, allowed)
 		}
 		if seen[p] {
 			t.Errorf("错误码前缀 %q 重复", p)
 		}
 		seen[p] = true
+	}
+}
+
+// TestCodegenNamePrefixIsSeparate 锁定「两类前缀不混用」这条规则。
+//
+// 前缀族混用会让工具与读者失去按前缀判断责任阶段的能力：
+// GXML-* 的修复动作是改 .gxml，CODEGEN-* 的修复动作是改目标包布局。
+func TestCodegenNamePrefixIsSeparate(t *testing.T) {
+	if strings.HasPrefix(CodePrefixCodegenName, "GXML-") {
+		t.Errorf("生成层前缀 %q 不应复用 GXML- 号段", CodePrefixCodegenName)
+	}
+	if CodePrefixCodegenName != "CODEGEN-NAME" {
+		t.Errorf("生成层前缀 = %q，期望 CODEGEN-NAME", CodePrefixCodegenName)
 	}
 }

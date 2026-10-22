@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成。**C2 通过 ≠ 整个命名流程完成**（§10.4 第 5 条）
+- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（待独立复审）；C4–C5 未开始**。CLI 接线仍归 C4。**C2 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3）
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -205,7 +205,10 @@ P0 决定了方案走向，**必须由裁决给出**：
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
 | C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **验收通过，附带非阻塞遗留项（2026-10-22 裁决，见 §10.4）**；实现与补丁过程见 §10.2/§10.3：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
-| C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | `go test ./internal/docgate/ ./internal/compiler/diagdoc/` |
+| C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | ✅ **实现完成（2026-10-22，待独立复审）**：`codegen.CodeNamingExisting`/`CodeNamingSameBatch`（`CODEGEN-NAME-001/002`）；语义先冻结于 §10.5.2；目录 §2.8 登记 + 门禁 5 处同步；`naming_diag_test.go` 6 用例；两码互换的变异取证已做 |
+
+> C3 只做「定义 + 发射 + 登记 + 门禁」，**不接 CLI**（归 C4）、**不修 F-06**
+> （归 C4-PRE-1）、**不把 C1 预检标记为已验收**（判定规则仍待 C4-PRE-2）。
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
 
@@ -322,6 +325,62 @@ C3（诊断码）→ C4（接线，**含 §10.4.3 三项前置**）→ C5（冲�
   因此"两个 .gxml 同包"这个原始缺陷在 **CLI 路径上仍未消除**——
   C2 修的是产物层（生成的代码能一起编译），不是 CLI 层的提前拦截；
 - 整个命名流程完成 = C3 + C4 + C5 全部完成并分别通过审查。
+
+### 10.5 C3 开工：诊断码定义、目录登记与门禁同步（2026-10-22）
+
+#### 10.5.1 开工时的分支真实状态（非裁决时快照）
+
+| 项 | 值 |
+|---|---|
+| 分支 | `feat/codegen-naming-c2` |
+| 开工 HEAD | **`5ae2252`** |
+| 相对 `master` | **领先 9 笔 / 落后 1 笔**（落后的是 `27aa03a`，见 §10.4.4 与 dev-log §3.2） |
+| merge base | `d9cf0b9` |
+
+> §10.4 裁决正文里的 `de5031c` 与"领先 7 笔"是**裁决当时的历史快照**，
+> 不代表当前状态；后续引用一律以本节为准。
+
+#### 10.5.2 冻结语义（先冻结，再实现）
+
+码值沿用 `CODEGEN-NAME-001/002`，**不再重新讨论命名**。
+
+| 码 | 常量（codegen 包） | 冻结语义 |
+|---|---|---|
+| `CODEGEN-NAME-001` | `CodeNamingExisting` | 生成符号与目标包**已有**包级声明冲突，包括用户声明或其他生成物 |
+| `CODEGEN-NAME-002` | `CodeNamingSameBatch` | **不同源文件**派生出相同生成符号，例如 Pascal 归一化后发生碰撞 |
+
+**触发条件**
+
+- `001`：预检检测到「待生成符号 ∈ 目标包既有包级符号集合」，
+  来源为**用户代码**或**别的生成物**（自家上一版产物不算，仍按 §8 的
+  `isOwnArtifact` 排除；**F-06 的路径归一化为 C4-PRE-1，不在 C3 修**）。
+- `002`：同一批输入中，两个不同 `.gxml` 派生出同一符号（`a-b.gxml` 与
+  `a_b.gxml` 的 pascal 塌缩是代表场景）。
+
+**消息参数（冻结后不得随意改文案）**
+
+| 码 | 消息格式 | 实参顺序 |
+|---|---|---|
+| `001` | `generated symbol %q (from %s) is already declared in package: %s` | 符号、源 `.gxml` 路径、占用者文件绝对路径 |
+| `002` | `sources %q and %q both generate symbol %q` | 源 A、源 B、符号 |
+
+**冲突来源表达**
+
+- `File` = 触发方的 `.gxml` 绝对路径；`Line/Col/EndLine/EndCol` = **零值**
+  （命名冲突是包级事实，不落在源码某个行列；`CompilerError.Error()` 会输出
+  `file:0:0: CODE: message`，与"零值表示未知"的既有约定一致）。
+- `namingConflict.Source` 在 `namingConflictExisting` 分支此前**未填**——
+  C3 补上（= 触发方的 `SourceAbs`），否则 `001` 的消息缺少第一个实参。
+  这是补信息，不改变冲突判定结果。
+
+#### 10.5.3 范围边界（严格遵守）
+
+只做三件事：**诊断码定义、目录登记、门禁同步及相应测试**。
+
+- **不提前接 CLI**（接线归 C4）；
+- **不顺手修 F-06**（归 C4-PRE-1）；
+- **不把 C1 预检标记为已验收**（C1 判定规则仍待 C4-PRE-2 补齐）；
+- 不改动 `sourceSymbolSuffix` / `generatedTypeNames` 的已冻结算法。
 
 ## 11. 纪律
 
