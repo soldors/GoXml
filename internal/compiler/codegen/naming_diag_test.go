@@ -1,12 +1,13 @@
 package codegen
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/goxml/goxml/contracts"
 )
 
 // ============================================================================
@@ -153,15 +154,59 @@ func TestNamingDiagnosticErrorString(t *testing.T) {
 	t.Logf("诊断输出样例: %s", got)
 }
 
-// TestNamingDiagnosticUsesContractsPrefix 码必须来自 contracts 前缀常量，不得内联拼接。
+// TestNamingCodeConstantsUseContractsPrefix 码必须用 contracts 前缀常量拼接，
+// 不得内联字符串（目录 §5 第 4 条）。
 //
-// 目录 §5 第 4 条要求"定义常量（不得内联拼接）"。这条把该约束变成可执行判据：
-// 若有人直接写 `CodeNamingExisting = "CODEGEN-NAME-001"`，本测试会红。
-func TestNamingDiagnosticUsesContractsPrefix(t *testing.T) {
-	if !strings.HasPrefix(CodeNamingExisting, contracts.CodePrefixCodegenName) {
-		t.Errorf("%q 应以 %q 为前缀", CodeNamingExisting, contracts.CodePrefixCodegenName)
+// 判据必须落在**源码**上：首版用 `strings.HasPrefix(CodeNamingExisting,
+// contracts.CodePrefixCodegenName)`，而内联字面量 `"CODEGEN-NAME-001"` 同样满足
+// 这个前缀判断——实测把它改成内联后 `go build` 仍是 0、本文件 6 个用例全绿。
+// 一条"看着在守规则、实际守不住"的测试比没有更危险，因此改为解析
+// `codes.go`，断言常量值里真的出现了 `contracts.CodePrefixCodegenName` 选择器。
+func TestNamingCodeConstantsUseContractsPrefix(t *testing.T) {
+	root := repoRootOf(t)
+	path := filepath.Join(root, "internal", "compiler", "codegen", "codes.go")
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("解析 %s: %v", path, err)
 	}
-	if !strings.HasPrefix(CodeNamingSameBatch, contracts.CodePrefixCodegenName) {
-		t.Errorf("%q 应以 %q 为前缀", CodeNamingSameBatch, contracts.CodePrefixCodegenName)
+
+	want := map[string]bool{
+		"CodeNamingExisting":  false,
+		"CodeNamingSameBatch": false,
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok || len(vs.Names) == 0 {
+			return true
+		}
+		name := vs.Names[0].Name
+		if _, tracked := want[name]; !tracked {
+			return true
+		}
+		// 值里必须出现 contracts.CodePrefixCodegenName 这个选择器。
+		usesPrefix := false
+		ast.Inspect(vs, func(m ast.Node) bool {
+			sel, ok := m.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "contracts" &&
+				sel.Sel.Name == "CodePrefixCodegenName" {
+				usesPrefix = true
+			}
+			return true
+		})
+		if !usesPrefix {
+			t.Errorf("%s 的值未使用 contracts.CodePrefixCodegenName 拼接（不得内联字面量）", name)
+		}
+		want[name] = true
+		return true
+	})
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("未在 %s 中找到常量 %s", path, name)
+		}
 	}
 }

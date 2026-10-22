@@ -56,7 +56,10 @@ type namingConflict struct {
 	Kind namingConflictKind
 	// Owner 是占用该符号的文件绝对路径（同类冲突时可能是本批另一个源）。
 	Owner string
-	// Source 是冲突方对应的 .gxml 绝对路径；用户代码冲突时为空。
+	// Source 是触发方对应的 .gxml 绝对路径。
+	//
+	// C3 之前只有批内冲突填它，与包内既有声明的冲突（用户代码）为空——
+	// 这使得 CODEGEN-NAME-001 的消息缺首参。自 C3 起两类冲突都填。
 	Source string
 }
 
