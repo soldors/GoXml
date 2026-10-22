@@ -223,6 +223,9 @@ func TestNamingIgnoresOwnRenamedArtifact(t *testing.T) {
 }
 
 // TestNamingDetectsPascalCollapse：a-b.gxml 与 a_b.gxml 的 view 名塌缩相同 → 必须报冲突。
+//
+// 这里**不放 Skip**（C4 复审 R3 的同类问题）：D-4 裁决已冻结"塌缩必须检测并报错"，
+// 用 Skip 表达"将来可能不塌缩"会让能力丢失时测试静默通过。
 func TestNamingDetectsPascalCollapse(t *testing.T) {
 	va, err := viewSymbol("a-b.gxml")
 	if err != nil {
@@ -232,8 +235,9 @@ func TestNamingDetectsPascalCollapse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("viewSymbol(a_b.gxml): %v", err)
 	}
+	// 先锁派生规则本身：塌缩是后续断言的前提，前提不成立必须响亮失败。
 	if va != vb {
-		t.Skipf("当前实现未塌缩（%q vs %q）；本条留待实现变更后复核", va, vb)
+		t.Fatalf("派生应塌缩（D-4 裁决的前提），实际 %q vs %q；若规则已改须先改契约与卡", va, vb)
 	}
 
 	dir := t.TempDir()

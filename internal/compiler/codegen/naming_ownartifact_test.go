@@ -119,6 +119,25 @@ func TestNamingOwnArtifactMismatchStillConflicts(t *testing.T) {
 	}
 }
 
+// TestNamingOwnArtifactNormalizesHeaderSide：保护头写成 `\` 形态
+// （旧版本产物、或被手改过的头），调用方给 `/` 形态 —— 仍须认出是自己的。
+//
+// 这条专测**左侧**归一化（复审 R2）：只归一化右侧时，`src` 仍是
+// `ui\dashboard.gxml`，与归一化后的 `ui/dashboard.gxml` 不等 → 误判冲突。
+func TestNamingOwnArtifactNormalizesHeaderSide(t *testing.T) {
+	dir := t.TempDir()
+	// 头里写反斜杠形态，符号按正斜杠形态派生（两者归一化后是同一个源）。
+	writeOwnArtifact(t, dir, "old_dashboard_gen.go", ownArtifactCallerSource, ownArtifactSource)
+
+	conflicts, err := detectNamingConflicts(ownArtifactTargets(dir, ownArtifactSource))
+	if err != nil {
+		t.Fatalf("预检报错: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("保护头为原生分隔符形态时也不应算冲突；实际=%v", symbolsOf(conflicts))
+	}
+}
+
 // TestNamingOwnArtifactDiagnosticCodesF06：F-06 修复后，自家产物场景
 // 经 CheckNamingConflicts 也不得产出任何诊断（C4 接线走的是这条入口）。
 func TestNamingOwnArtifactDiagnosticCodesF06(t *testing.T) {

@@ -194,6 +194,12 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 		}
 	}
 
+	// 排序键必须**完整**：Symbol / Kind / Owner / Source 四级全比。
+	//
+	// 漏掉 Source 时，三个以上输入撞同一符号会产生「Symbol+Kind+Owner 全同、
+	// 只有 Source 不同」的元素；sort.Slice 是**不稳定**排序，这些等价元素的
+	// 相对顺序无从规定，诊断输出就不再是"由输入决定"的确定序列。
+	// 与其依赖当前 pdqsort 的实现巧合，不如把键写全（复审 R4）。
 	sort.Slice(conflicts, func(i, j int) bool {
 		if conflicts[i].Symbol != conflicts[j].Symbol {
 			return conflicts[i].Symbol < conflicts[j].Symbol
@@ -201,7 +207,10 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 		if conflicts[i].Kind != conflicts[j].Kind {
 			return conflicts[i].Kind < conflicts[j].Kind
 		}
-		return conflicts[i].Owner < conflicts[j].Owner
+		if conflicts[i].Owner != conflicts[j].Owner {
+			return conflicts[i].Owner < conflicts[j].Owner
+		}
+		return conflicts[i].Source < conflicts[j].Source
 	})
 	return conflicts, nil
 }
@@ -306,6 +315,8 @@ func existingPackageSymbols(dir string, targets []NamingTarget) (map[string]stri
 // normalizeSourcePath（统一 `/`），而调用方给的 SourcePath 可能是平台
 // 原生分隔符（Windows 的 `\`）。直接比对会让自己的上一版产物被当成
 // 他人声明 → 误报冲突（F-06，C4-PRE-1）。
+// 实现上**两侧都过** normalizeSourcePath：不假设任何一侧"已经是目标形态"，
+// 这样判据不依赖保护头的当前写法（旧产物、手改头、未来换分隔符都不影响）。
 func isOwnArtifact(full string, targets []NamingTarget) bool {
 	for _, t := range targets {
 		if t.OutputPath != "" && filepath.Clean(full) == filepath.Clean(t.OutputPath) {
@@ -318,8 +329,13 @@ func isOwnArtifact(full string, targets []NamingTarget) bool {
 	}
 	src := generatedSourceOf(data)
 	for _, t := range targets {
-		// F-06：两侧都归一化后再比；空串不参与判定（无 Source 不算自己的）。
-		if src != "" && src == normalizeSourcePath(t.SourcePath) {
+		// F-06：**两侧都归一化**后再比。
+		//
+		// 只说"保护头是归一化形态"是不够的：那是一个未在比较处表达的隐含前提
+		// （保护头也可能来自旧版本产物或被手改）。把两侧都过一遍
+		// normalizeSourcePath，判据就只依赖"要不要在同一形态下比较"这一条，
+		// 不依赖任何一侧的当前实现细节。
+		if src != "" && normalizeSourcePath(src) == normalizeSourcePath(t.SourcePath) {
 			return true
 		}
 	}

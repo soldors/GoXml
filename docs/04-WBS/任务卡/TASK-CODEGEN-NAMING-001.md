@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（**独立复审 PASS WITH NON-BLOCKING，复审发现已修复**；最终验收由项目负责人裁决）；C4–C5 未开始**。CLI 接线仍归 C4。**C2 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3）
+- 状态：**已裁决（D-1~D-5）；C1 预检检测已实现（**未单独验收**，见 §10.4 边界）；C2 **验收通过，附带非阻塞遗留项**（项目负责人裁决 2026-10-22，见 §10.4）；C3 实现完成（**独立复审 PASS WITH NON-BLOCKING，复审发现已修复**）；C4 实现完成（**首轮独立复审 4 条发现已全部修复，待复审**，见 §10.7.8/§10.7.9）；C5 未开始**（最终验收由项目负责人裁决）。**C2/C4 通过 ≠ 整个命名流程完成**（§10.4.5、§10.5.3）
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -466,10 +466,14 @@ C3（诊断码）→ C4（接线，**含 §10.4.3 三项前置**）→ C5（冲�
 
 | 项 | 结果 |
 |---|---|
-| `go test -v -run '^TestNaming' ./internal/compiler/codegen/` | **26 PASS**（C3 结束时 18 → 本轮 +8） |
-| `go test -v -run '^TestNaming' ./internal/cli/` | **6 PASS**（本轮新增，CLI 侧此前 0） |
-| `go test ./internal/cli/` | ok 115.443s |
-| `go test ./internal/compiler/codegen/`（全包） | 见 dev-log §5.5 |
+| `go test -v -run '^TestNaming' ./internal/compiler/codegen/` | **28 PASS / 0 SKIP**（C3 结束时 18 → C4 首版 26 → 复审修复后 28） |
+| `go test -v -run '^TestNaming' ./internal/cli/` | **6 PASS / 0 SKIP**（本轮新增，CLI 侧此前 0） |
+| `go test ./internal/cli/` | ok 115.443s（首版）/ **135.198s**（复审修复后） |
+| `go test ./internal/compiler/codegen/`（全包） | ok 591.952s（首版）/ **706.869s**（复审修复后） |
+
+**SKIP 数为 0 是可核对的判据**：C4 首版有两处 `t.Skip` 兜底（复审 R3 与
+`textCacheTypeName`），指出后已改为硬断言——"0 SKIP"就是这两条 fail-open
+被清掉的实测证据（`-v` 输出里 `--- SKIP` 计数为 0）。
 | 变异 1：删掉 `precheckPackageSymbols` 调用 | 3 个冲突用例红（build 0） |
 | 变异 2：把预检挪到阶段一之后 | `TestNamingConflictNoWrites` 与 `…DoesNotCreateOutDir` 红 |
 | 变异 3：F-06 去掉归一化 | 2 红 |
@@ -488,6 +492,39 @@ Analyzer 也会报 `GXML-ROOT-002`（它加载目标包时看到 `redeclared`）
 - 遗留（登记未处理）：预检不校验"目标包能否成功加载"，因此
   `001` 与 Analyzer 的 `GXML-ROOT-002` 在"包内既有声明"场景会重叠——
   当前以预检为准（更早、码更明确），C5 决定是否去重。
+
+#### 10.7.8 独立复审（针对 `b7754a4`）与修复（2026-10-22）
+
+复审结论：**需要修正后再复审，暂不批准 C4 验收**。四条发现经逐条核对**全部属实**，
+其中 R1/R2 是我自己的**注释与代码不一致**（文档失真），比功能缺陷更需要纠正。
+
+| 编号 | 问题 | 处理 |
+|---|---|---|
+| **R1**（P1） | CLI 诊断输出手拼 `%s: %s: %s`，缺 `:0:0:`，未走统一格式化入口 | 阶段一与预检**两处**都改为 `fmt.Fprintln(stderr, dg.Error())`（`contracts.CompilerError.Error()` → `file:line:col: CODE: message`）；CLI 测试改为精确断言 `:0:0: CODEGEN-NAME-001:` / `-002:`，不再只查码前缀 |
+| **R2**（P1） | `isOwnArtifact` 只归一化右侧，与注释、卡、提交说明所称"两侧都过"不符 | 改为**两侧都过** `normalizeSourcePath`；新增"保护头为原生分隔符形态"用例专测左侧；双侧变异各自有专属红灯（见 §10.7.9） |
+| **R3**（P2） | `TestNamingSameDirCollapseStillConflicts` 用 `t.Skip` 兜底 → 能力丢失时会静默通过 | 去掉 Skip，改为硬断言必须出现 `namingConflictBatch`；同类 fail-open 的 `TestNamingDetectsPascalCollapse`（C1 遗留）一并去掉 `t.Skipf`，前提不成立即 `t.Fatalf` |
+| **R4**（P2） | 排序键只到 `Owner`，三个以上输入撞同符号时等价元素顺序无规定 | 补第四级键 `Source`；新增三源塌缩用例（声明顺序**刻意与 Source 字典序相反**），判据为"同 (Symbol,Kind,Owner) 组内 Source 升序"+ 重复运行结果一致 |
+| 补充 | `textCacheTypeName` 也用 `t.Skip` | 改 `t.Fatalf`：绑定页产物按 §10.7.4 必须声明 `goxmlTextCache<Source>`，找不到即契约/实现变更，须响亮失败要求复核 |
+
+复审对"接线与零副作用"的判断（位置、只查 miss、按 TargetDir 分组、静态页误报、
+产物/Manifest/缓存三项断言）与本卡一致，未要求改动。
+
+**复审提出的正确提醒（已接受）**：预检自身只读 ≠ 整个失败路径零副作用，
+必须放回 CLI 真实调用链验证。C4 的 `TestNamingConflictNoWrites`（产物+mtime、
+Manifest 字节、缓存目录集合与内容、stdout 无「已生成」）与
+`TestNamingConflictDoesNotCreateOutDir`（不得创建输出目录）正是这条的落地，
+但**完整失败矩阵（S1–S5 全项）仍属 C5**，本卡不宣称已完成。
+
+#### 10.7.9 复审修复的变异取证（2026-10-22）
+
+| # | 变异 | 结果 |
+|---|---|---|
+| 6 | 预检诊断输出改回手拼三元组 | **3 红**（NoWrites / SameBatchRejected / StaticPageOverreport，均锁精确格式） |
+| 7 | `isOwnArtifact` 去掉**左侧**归一化 | **1 红**（`TestNamingOwnArtifactNormalizesHeaderSide`） |
+| 8 | `isOwnArtifact` 去掉**右侧**归一化 | **2 红**（`UsesNormalizedSourcePath` / `DiagnosticCodesF06`） |
+| 9 | 排序去掉 `Source` 键 | **1 红**（`TestNamingConflictOrderIsFullyDetermined`，报 4 条同组逆序） |
+
+每组 `go build` 退出码均为 0（变异本身可编译），恢复后 SHA-256 与变异前一致。
 
 ## 11. 纪律
 

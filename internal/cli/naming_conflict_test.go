@@ -100,8 +100,9 @@ func packageTypeNames(t *testing.T, src []byte) []string {
 
 // textCacheTypeName 从产物里挑出 text cache 类型名。
 //
-// 名字由**产物**派生，不写死字面量：命名形态一旦演进，这里要么找到新名字，
-// 要么 t.Skip 并说明——不会悄悄用一个不存在的符号把测试变成空转。
+// 名字由**产物**派生，不写死字面量；但**不用 t.Skip 兜底**（复审意见）：
+// 绑定页产物按卡 §10.7.4 的三类页面表**必须**声明 `goxmlTextCache<Source>`，
+// 找不到就说明契约或实现变了，测试要**响亮失败**要求复核，而不是静默跳过。
 func textCacheTypeName(t *testing.T, src []byte) string {
 	t.Helper()
 	for _, n := range packageTypeNames(t, src) {
@@ -109,7 +110,8 @@ func textCacheTypeName(t *testing.T, src []byte) string {
 			return n
 		}
 	}
-	t.Skip("产物里没有形如 *TextCache* 的类型名；命名形态可能已变，本条需复核")
+	t.Fatalf("绑定页产物里没有形如 *TextCache* 的类型名（卡 §10.7.4 要求它存在）：\n%s",
+		headOfStatic(string(src), 40))
 	return ""
 }
 
@@ -240,8 +242,8 @@ func TestNamingConflictNoWrites(t *testing.T) {
 	if code != ExitFailure {
 		t.Fatalf("冲突时应失败，退出码 = %d；stdout:\n%s", code, out.String())
 	}
-	if !strings.Contains(errb.String(), "CODEGEN-NAME-") {
-		t.Errorf("stderr 应给出命名诊断码:\n%s", errb.String())
+	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-001:") {
+		t.Errorf("stderr 应输出冻结格式 `file:0:0: CODEGEN-NAME-001: message`:\n%s", errb.String())
 	}
 	if !strings.Contains(errb.String(), names[0]) {
 		t.Errorf("诊断应点名冲突符号 %q:\n%s", names[0], errb.String())
@@ -290,8 +292,9 @@ func TestNamingConflictSameBatchRejected(t *testing.T) {
 	if code != ExitFailure {
 		t.Fatalf("同包塌缩应失败，退出码 = %d；stdout:\n%s", code, out.String())
 	}
-	if !strings.Contains(errb.String(), "CODEGEN-NAME-") {
-		t.Errorf("stderr 应给出命名诊断码:\n%s", errb.String())
+	// 塌缩是**批内冲突**，码必须是 002，且格式必须是 `file:0:0: CODE: message`。
+	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-002:") {
+		t.Errorf("stderr 应输出冻结格式 `file:0:0: CODEGEN-NAME-002: message`:\n%s", errb.String())
 	}
 	if strings.Contains(out.String(), "已生成") {
 		t.Errorf("失败时 stdout 不得出现「已生成」:\n%s", out.String())
@@ -381,8 +384,8 @@ func TestNamingStaticPageTextCacheOverreport(t *testing.T) {
 	if code != ExitFailure {
 		t.Fatalf("当前实现下应被预检拦下（误报），退出码 = %d；stdout:\n%s", code, out.String())
 	}
-	if !strings.Contains(errb.String(), "CODEGEN-NAME-") || !strings.Contains(errb.String(), cacheType) {
-		t.Errorf("诊断应点名 %q 并给出命名码:\n%s", cacheType, errb.String())
+	if !strings.Contains(errb.String(), ":0:0: CODEGEN-NAME-001:") || !strings.Contains(errb.String(), cacheType) {
+		t.Errorf("诊断应点名 %q 并按冻结格式给出 CODEGEN-NAME-001:\n%s", cacheType, errb.String())
 	}
 }
 

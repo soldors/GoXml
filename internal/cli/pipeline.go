@@ -163,7 +163,10 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		}, pipelineHooks)
 
 		for _, dg := range res.Diags {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", dg.File, dg.Code, dg.Message)
+			// 统一诊断格式：contracts.CompilerError.Error() 给出
+			// `file:line:col: CODE: message`（契约 §13）。不要在这里手拼
+			// 三元组——那样会丢掉行列，用户可见输出就与目录/规范不一致。
+			fmt.Fprintln(stderr, dg.Error())
 		}
 		if !res.OK() {
 			// 阶段一失败：尚未触碰任何磁盘文件（G4：全或无）。
@@ -289,7 +292,9 @@ func precheckPackageSymbols(rs []*resolvedInput, stderr io.Writer) error {
 		return nil
 	}
 	for _, dg := range diags {
-		fmt.Fprintf(stderr, "%s: %s: %s\n", dg.File, dg.Code, dg.Message)
+		// 走统一格式化入口：命名冲突的 span 是零值，输出 `file:0:0: CODE: message`
+		// ——正是卡 §10.7.3 冻结的形态。手拼 "%s: %s: %s" 会丢掉 `:0:0:`。
+		fmt.Fprintln(stderr, dg.Error())
 	}
 	return fmt.Errorf("包级符号冲突（%d 条）——批次全部放弃，磁盘无任何变更", len(diags))
 }
