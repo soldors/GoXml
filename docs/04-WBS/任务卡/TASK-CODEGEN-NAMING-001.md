@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**已裁决（D-1~D-5）；C1 完成（预检）；C2 完成（类型名按源唯一，产物层缺陷已修）；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成
+- 状态：**已裁决（D-1~D-5）；C1 完成（预检）；C2 实现完成 + 验收补丁已补（见 §10.2），最终验收待独立复审——维护者已明确"暂不标记最终验收通过"；C3–C5 未开始**。CLI 报错路径仍归 C4，诊断码归 C3，均未完成
 - 前置：`TASK-CODEGEN-001` ✅；缺陷首次登记于 [TASK-GENERATE-CACHE-001 §13](TASK-GENERATE-CACHE-001.md)
 - 契约依据：[代码生成输出契约](../../03-架构/代码生成输出契约.md)
   §5（`Goxml` 前缀 + 冲突即失败）、§16.5.1（`renderKey` 每文件私有）、§13 第 1/14 条
@@ -204,7 +204,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 | 切片 | 内容 | 验收 |
 |---|---|---|
 | C1 | 符号枚举 + 预检式冲突检测（纯读，`go/ast`），先只报错不改名 | ✅ **完成（2026-10-21）**：`naming.go`（`generatedPackageSymbols`/`detectNamingConflicts`/`isOwnArtifact`）+ `naming_test.go` 8 用例；`go test -count=1 -run '^TestNaming' ./internal/compiler/codegen/` → PASS=8；4 条变异全部能红（dev-log §95） |
-| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **完成（2026-10-22）**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
+| C2 | 命名唯一化（N1），含 pascal 塌缩检测 | ✅ **实现完成（2026-10-22），验收补丁见 §10.2**：`sourceSymbolSuffix`/`generatedTypeNames`；类型名 `goxmlRenderKey<Source>` / `goxmlTextCache<Source>`；契约 §16.5.1 同步；红灯由「变异回固定名」取证（dev-log §97.1）；`go test -count=1 ./internal/compiler/codegen/` ok（124s）、全量 `go test ./...` exit 0。**+ 复核轮（dev-log §97.7/§97.8）**：补 `sourceSymbolSuffix` 直接断言与三形态/稳定性断言（两项此前无覆盖）；两次变异取证（退回固定名、破坏分隔符规则）；`cacheFieldLines` 单点变异复现两个基准失败并证伪"夹具问题"说 |
 | C3 | 诊断码定义 + 目录登记 + diagdoc 门禁同步 | `go test ./internal/docgate/ ./internal/compiler/diagdoc/` |
 | C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
@@ -223,6 +223,30 @@ P0 决定了方案走向，**必须由裁决给出**：
 其记录随 `27aa03a`/`827ab41` 在 master 线的 `2026-10-21.md` §38，本分支不含。
 已在 dev-log §97.7 登记该 SHA 的去向（不复制正文，避免后续合并冲突），
 登记后 `TestDevLogCoversRecentCommits` 转绿。
+
+### 10.2 C2 验收补丁（2026-10-22，dev-log `2026-10-22.md` §1）
+
+维护者在 GitHub 上直接审查分支 `feat/codegen-naming-c2`（HEAD `2dd83b0`）后给出的结论是
+**核心实现合理，但暂不标记最终验收通过**：1 个阻塞项 + 1 个待处理项。
+本节记录该补丁对本卡的改动，不含 C3/C4/C5 内容。
+
+| 项 | 审查结论 | 本轮处理 | 结论 |
+|---|---|---|---|
+| 阻塞项 | 缺少「双文件真实编译」回归测试——`TestGeneratedCompiles` 只编译单个生成文件，不能独立证明两个不同 `.gxml` 的产物放进同一 Go 包后可一起编译 | 新增 `naming_samepkg_test.go`：静态+静态、静态+含绑定（混合组合）、含绑定+含绑定 三组**真实 `go build`**，加一组纯逻辑类型名唯一性断言；退回固定名的变异下三组均在 `go build` 层报 `redeclared` | **已关闭** |
+| 待处理项 | `generatedPackageSymbols` 无条件纳入 `goxmlTextCache<Source>`，纯静态页可能被过度报告冲突 | 新增 `naming_textcache_boundary_test.go`，实测确认"静态页产物不声明该类型、预检却计入、真实 build 仍通过"→ 误报可复现；反向对照证明含绑定页里该预检是**必要**的 | **已定性，不在 C2 修**：归属 C4/C5，理由见 dev-log §1.3 |
+
+验收状态：**C2 实现完成，验收补丁已补；最终验收待独立 Reviewer 复审后由维护者裁决。**
+本卡不再自行标"最终验收通过"。
+
+重新执行的门禁（本轮实测，非沿用旧记录）：
+
+| 命令 | 结果 |
+|---|---|
+| `gofmt -l` / `go vet ./internal/compiler/codegen/` / `go build ./...` | 空 / 0 / 0 |
+| 新增 8 用例定向跑 | PASS=8 |
+| `go test -timeout 30m ./internal/compiler/codegen/` | ok 525.4s |
+| 其余 17 个包（排除 codegen） | 全 `ok`（3 个无测试文件），无 FAIL |
+| `go test -timeout 20m -v ./internal/docgate/` | 14/14 PASS |
 
 ## 11. 纪律
 
