@@ -59,7 +59,9 @@ func TestTextCacheIsDeclaredOnlyForBindingPages(t *testing.T) {
 	bindingSrc := string(mustGen(t, `<Column><Text Value="Static"/><Text Value="{Title}"/></Column>`,
 		Options{PackageName: "demo", ModulePath: "github.com/goxml/goxml", SourcePath: "home.gxml"}))
 
-	// 静态页（无绑定槽位）不声明该类型：bindSlots == 0 → bindCacheDecl 返回空。
+	// 静态页不声明该类型，其实是**两道闸门**的第一道：静态分支根本不走
+	// bindCacheDecl（codegen.go 的 `if g.usesVM`），纯事件页才靠第二道
+	// `slots == 0 → return ""`。
 	if strings.Contains(staticSrc, "type "+cacheStatic+" struct") {
 		t.Errorf("静态页产物意外声明了 %q:\n%s", cacheStatic, headOf(staticSrc, 40))
 	}

@@ -243,8 +243,8 @@ P0 决定了方案走向，**必须由裁决给出**：
 | 命令 | 结果 |
 |---|---|
 | `gofmt -l` / `go vet ./internal/compiler/codegen/` / `go build ./...` | 空 / 0 / 0 |
-| 新增 8 用例定向跑 | PASS=8 |
-| `go test -timeout 30m ./internal/compiler/codegen/` | ok 525.4s（复审实测 523.1s） |
+| 新增用例定向跑 | **9 个 PASS**（首轮 8 个 17.7s；复审后补纯事件页用例，共 9 个） |
+| `go test -timeout 30m ./internal/compiler/codegen/` | 首轮 ok 525.4s；独立复审实测 523.1s；**订正后重跑 ok 568.991s**（三次同量级，波动来自子进程编译） |
 | 其余 17 个包（排除 codegen） | 13 个 `ok` + 4 个 `[no test files]`，无 FAIL |
 | `go test -timeout 20m ./internal/docgate/` | 13/13 PASS |
 
