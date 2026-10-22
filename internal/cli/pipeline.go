@@ -120,6 +120,20 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		decisions = append(decisions, decision{r: r, key: key, hit: hit, reason: reason})
 	}
 
+	// ---------- 阶段零 C：包级符号预检（TASK-CODEGEN-NAMING-001 卡 §6.1）----------
+	// 两阶段流程的"门"：预检通过才进阶段一。此处之前只有解析与缓存判定
+	// （都是读），阶段一才会 MkdirAll / 生成 / 暂存，所以在这里返回即
+	// 「磁盘无任何变更」（§6.2）；放到阶段一之后就保不住这条。
+	missResolved := make([]*resolvedInput, 0, len(decisions))
+	for _, d := range decisions {
+		if !d.hit {
+			missResolved = append(missResolved, d.r)
+		}
+	}
+	if err := precheckPackageSymbols(missResolved, stderr); err != nil {
+		return err
+	}
+
 	// ---------- 阶段一：只生成未命中的，并全部暂存（已有文件不被触碰）----------
 	type prepared struct {
 		r        *resolvedInput
@@ -242,6 +256,42 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "清理完成：删除 %d，跳过 %d\n", len(deleted), len(skipped))
 	}
 	return nil
+}
+
+// precheckPackageSymbols 对本次**将要写入**的输入做包级符号预检。
+//
+// 只取未命中（miss）的输入，理由有两条：
+//   - 命中的产物本次不会被重写；把它算进批次会让「全部命中、磁盘毫无变化」
+//     的运行因既有状态而失败——那不是本次生成引入的问题，不该由 CLI 拦下；
+//   - 命中的产物仍在磁盘上，会被 existingPackageSymbols 扫到，因此
+//     「命中产物 × 未命中输入」的撞名照样报得出来，只是归类为 existing
+//     而不是 same-batch（语义仍然成立：那个符号确实已被包内文件占用）。
+//
+// 有诊断即返回 error：调用方（runPipeline）在阶段一之前调用，故磁盘零变更。
+func precheckPackageSymbols(rs []*resolvedInput, stderr io.Writer) error {
+	if len(rs) == 0 {
+		return nil
+	}
+	targets := make([]codegen.NamingTarget, 0, len(rs))
+	for _, r := range rs {
+		targets = append(targets, codegen.NamingTarget{
+			SourceAbs:  r.in.abs,
+			SourcePath: r.sourcePath,
+			TargetDir:  r.targetDir,
+			OutputPath: r.target,
+		})
+	}
+	diags, err := codegen.CheckNamingConflicts(targets)
+	if err != nil {
+		return fmt.Errorf("包级符号预检失败: %w", err)
+	}
+	if len(diags) == 0 {
+		return nil
+	}
+	for _, dg := range diags {
+		fmt.Fprintf(stderr, "%s: %s: %s\n", dg.File, dg.Code, dg.Message)
+	}
+	return fmt.Errorf("包级符号冲突（%d 条）——批次全部放弃，磁盘无任何变更", len(diags))
 }
 
 // findModuleRoot 从 start 向上找 go.mod。

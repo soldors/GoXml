@@ -43,7 +43,7 @@ func TestNamingDiagnosticsExistingSymbol(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	diags, err := namingDiagnostics(namingTargets(dir, "home.gxml"))
+	diags, err := CheckNamingConflicts(namingTargets(dir, "home.gxml"))
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestNamingDiagnosticsExistingSymbol(t *testing.T) {
 func TestNamingDiagnosticsSameBatch(t *testing.T) {
 	dir := t.TempDir()
 
-	diags, err := namingDiagnostics(namingTargets(dir, "a-b.gxml", "a_b.gxml"))
+	diags, err := CheckNamingConflicts(namingTargets(dir, "a-b.gxml", "a_b.gxml"))
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestNamingDiagnosticsSameBatch(t *testing.T) {
 func TestNamingDiagnosticsNoConflict(t *testing.T) {
 	dir := t.TempDir()
 
-	diags, err := namingDiagnostics(namingTargets(dir, "home.gxml", "detail.gxml"))
+	diags, err := CheckNamingConflicts(namingTargets(dir, "home.gxml", "detail.gxml"))
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestNamingDiagnosticErrorString(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	diags, err := namingDiagnostics(namingTargets(dir, "home.gxml"))
+	diags, err := CheckNamingConflicts(namingTargets(dir, "home.gxml"))
 	if err != nil {
 		t.Fatalf("预检报错: %v", err)
 	}

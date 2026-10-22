@@ -209,7 +209,7 @@ P0 决定了方案走向，**必须由裁决给出**：
 
 > C3 只做「定义 + 发射 + 登记 + 门禁」，**不接 CLI**（归 C4）、**不修 F-06**
 > （归 C4-PRE-1）、**不把 C1 预检标记为已验收**（判定规则仍待 C4-PRE-2）。
-| C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | `go test -run TestNamingConflictNoWrites ./internal/cli/` |
+| C4 | 零副作用接线：预检失败 → 不写盘/不改 Manifest/不写缓存（§8.2） | ✅ **实现完成（2026-10-22，见 §10.7）**：`precheckPackageSymbols` 挂在阶段零 C（缓存判定之后、阶段一 `MkdirAll` 之前），只对未命中输入；`codegen.CheckNamingConflicts` 为唯一入口；三项前置 C4-PRE-1/2/3 均已完成；接线暴露并修复「批内冲突未按目标包分组」（§10.7.5）；4 组变异取证（§10.7.6）。**待独立复审** |
 | C5 | §8 全矩阵 + 契约 §5/§16.5.1 与规范同步 | `go test -count=1 ./internal/compiler/codegen/ ./internal/cli/` |
 
 ### 10.1 C2 复核轮补记（2026-10-22，dev-log §97.7/§97.8）
@@ -396,8 +396,98 @@ C3（诊断码）→ C4（接线，**含 §10.4.3 三项前置**）→ C5（冲�
 用 `HasPrefix(name,"Code")` 与包名 `Codegen` 天然冲突；`TestEveryConstantIsEmitted`
 不查生产链路可达性。
 
-**C3 结束时的边界**：两码**生产链路不可达**（`namingDiagnostics` 无生产调用方），
-要等 C4 接线后用户才看得到——目录与 dev-log 均已如实写明，未伪装成"已接线"。
+**C3 结束时的边界**：两码**生产链路不可达**（C3 时的名字 `namingDiagnostics`
+无生产调用方），要等 C4 接线后用户才看得到——目录与 dev-log 均已如实写明，
+未伪装成"已接线"。C4 已把它导出为 `CheckNamingConflicts` 并完成接线（§10.7）。
+
+### 10.7 C4 开工与实现：预检接线 + 零副作用（2026-10-22，dev-log `2026-10-22.md` §5）
+
+#### 10.7.1 开工时的分支真实状态（非裁决/C3 快照）
+
+| 项 | 值 |
+|---|---|
+| 分支 | `feat/codegen-naming-c2` |
+| 开工 HEAD | **`cb6d47f`** |
+| 相对 `master` | **领先 14 笔 / 落后 1 笔**（落后的仍是 `27aa03a`） |
+| merge base | `d9cf0b9` |
+
+#### 10.7.2 三项前置的处理结果
+
+| 编号 | 前置项 | 处理 |
+|---|---|---|
+| C4-PRE-1 | F-06 路径归一化 | **已修**：`isOwnArtifact` 的 `// Source:` 比对两侧都过 `normalizeSourcePath()`；新增 `naming_ownartifact_test.go`（3 用例，含反向对照）。变异：去掉归一化 → 2 红（build 退出 0，非编译错误） |
+| C4-PRE-2 | 三类页面判定规则 | **已明确并可执行化**：规则表见 §10.7.4，钉在 `naming_pagekinds_test.go`（产物实际声明 × 预检集合对照） |
+| C4-PRE-3 | 诊断码就绪 | C3 已完成（`CODEGEN-NAME-001/002` 已登记、已进 diagdoc 校验） |
+
+#### 10.7.3 接线设计（冻结）
+
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| 位置 | **阶段零 C**：缓存判定之后、阶段一（`MkdirAll`+生成+暂存）之前 | 卡 §6.1「预检必须先于任何写入」。阶段一里已经有 `MkdirAll`，放到之后就保不住"磁盘零变更" |
+| 覆盖范围 | **只对未命中（miss）的输入** | 命中的产物本次不被重写；把它们算进来会让「全部命中、磁盘毫无变化」的运行因既有状态而失败。命中产物仍在磁盘上，会被扫进 existing 集合，撞名照样报得出（归类为 `001` 而非 `002`） |
+| 失败表现 | 逐条诊断打到 stderr（`file:0:0: CODE: message`），返回 error → 退出码 2 | 卡 §6.2 与 §8.2 的 S4：stdout 不得出现「已生成」 |
+| 导出形态 | `codegen.CheckNamingConflicts([]codegen.NamingTarget)`；`NamingTarget` 由 `namingTarget` 导出而来 | C3 把"导出形态留给 C4 决定"，此处定案：单一入口，字段不变 |
+
+#### 10.7.4 C4-PRE-2：三类页面的判定规则（冻结）
+
+生成器事实（读 `codegen.go` / `binding.go` 得出，已由 `naming_pagekinds_test.go` 钉住）：
+
+- `renderKeyDecl` **无条件**发射（两条返回路径都写它）；
+- `bindCacheDecl` 的调用点在 `if g.usesVM` 之内，且函数首行 `if slots == 0 { return "" }`。
+
+| 页面形态 | `Goxml<S>View` + `New…` | `goxmlRenderKey<S>` | `goxmlTextCache<S>` |
+|---|:---:|:---:|:---:|
+| 静态页（无 VM、无绑定、无事件） | ✓ | ✓ | ✗ |
+| 纯事件页（有 VM、有 Click、无绑定） | ✓ | ✓ | ✗ |
+| 绑定页（有 `{...}` 绑定） | ✓ | ✓ | ✓ |
+
+预检集合 `generatedPackageSymbols` **只看路径**，对三类页面一律四项全含 →
+
+- 对 `RenderKey` 是**恰好**（三类都声明，不算保守）；
+- 对 `TextCache` 是**保守上界**：静态页与纯事件页不声明它，若包内恰好有同名
+  用户符号会被误报。代价已由 CLI 侧 `TestNamingStaticPageTextCacheOverreport`
+  钉住；**收窄判据是 `bindSlots > 0`（不是 `usesVM`），归 C5**。
+
+#### 10.7.5 接线暴露的既有缺陷：批内冲突没有按目标包分组
+
+接线后第一批红灯不是新代码写错，而是**既有实现的一个真缺陷**：
+
+- 现象：`alpha/row.gxml` 与 `beta/row.gxml`（**不同目录、不同包**）被判
+  `CODEGEN-NAME-002`，批次全部放弃；
+- 根因：`detectNamingConflicts` 第 1 段用**全局** `firstOwner` 比较符号，
+  没有按 `TargetDir` 分组。C1/C2 阶段预检零接线，缺陷不显形；
+- 这正是验收矩阵 **A3**（不同目录同名源互不影响）要防的误报；
+- 修复：第 1 段改为按 `filepath.Clean(TargetDir)` 分组后再比较；
+- 证据：既有 CLI 用例（`TestGenerateNestedDirsRun` 等）从红转绿，
+  并补 `naming_batch_group_test.go`（3 用例）。变异（退回全局比较，
+  build 退出 0）→ 2 红。
+
+#### 10.7.6 测试与变异取证（本轮实测）
+
+| 项 | 结果 |
+|---|---|
+| `go test -v -run '^TestNaming' ./internal/compiler/codegen/` | **26 PASS**（C3 结束时 18 → 本轮 +8） |
+| `go test -v -run '^TestNaming' ./internal/cli/` | **6 PASS**（本轮新增，CLI 侧此前 0） |
+| `go test ./internal/cli/` | ok 115.443s |
+| `go test ./internal/compiler/codegen/`（全包） | 见 dev-log §5.5 |
+| 变异 1：删掉 `precheckPackageSymbols` 调用 | 3 个冲突用例红（build 0） |
+| 变异 2：把预检挪到阶段一之后 | `TestNamingConflictNoWrites` 与 `…DoesNotCreateOutDir` 红 |
+| 变异 3：F-06 去掉归一化 | 2 红 |
+| 变异 4：批内退回全局比较 | 2 红 |
+
+变异 2 的失败详情记录一条**有用的事实**：冲突来自"包内既有声明"时，
+Analyzer 也会报 `GXML-ROOT-002`（它加载目标包时看到 `redeclared`），但要等
+阶段一跑完才出现。预检的不可替代之处是**批内冲突**——两个产物都还没写盘，
+磁盘上没有冲突可加载，Analyzer 不会报错。
+
+#### 10.7.7 范围边界与遗留
+
+- 只做 C4：**接线 + 零副作用 + 三项前置**；
+- **不合并 `master`**、不改写已推送历史（仍落后 1 笔 `27aa03a`）；
+- **不收窄** text cache 的保守上界（归 C5）；
+- 遗留（登记未处理）：预检不校验"目标包能否成功加载"，因此
+  `001` 与 Analyzer 的 `GXML-ROOT-002` 在"包内既有声明"场景会重叠——
+  当前以预检为准（更早、码更明确），C5 决定是否去重。
 
 ## 11. 纪律
 

@@ -71,11 +71,11 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // namingTargets 为一批源文件构造 targets（源文件不必真实存在，C1 不读 .gxml）。
-func namingTargets(dir string, sources ...string) []namingTarget {
-	out := make([]namingTarget, 0, len(sources))
+func namingTargets(dir string, sources ...string) []NamingTarget {
+	out := make([]NamingTarget, 0, len(sources))
 	for _, s := range sources {
 		base := strings.TrimSuffix(filepath.Base(s), ".gxml")
-		out = append(out, namingTarget{
+		out = append(out, NamingTarget{
 			SourceAbs:  filepath.Join(dir, s),
 			SourcePath: s,
 			TargetDir:  dir,
