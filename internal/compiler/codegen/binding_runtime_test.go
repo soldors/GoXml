@@ -65,7 +65,8 @@ func rtProbe(t *testing.T, gxmlBody, probeBody string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "test", "-v", "-run", "TestProbe", "./"+filepath.ToSlash(rel)+"/...")
+	// 同 binding_compile_test.go：显式路径而非 `./rel/...` 通配，避免空转假绿（PIT-012）。
+	cmd := exec.Command("go", "test", "-v", "-run", "TestProbe", "./"+filepath.ToSlash(rel))
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOPROXY=off")
 	bout, err := cmd.CombinedOutput()

@@ -48,7 +48,9 @@ func TestBindingGeneratedCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "./"+filepath.ToSlash(rel)+"/...")
+	// 无通配的显式路径：`./rel/...` 在匹配不到包时只打印 warning 却 exit 0，
+	// 会让"编译通过"变成假绿（见 PIT-012）。显式路径下匹配不到就是错误。
+	cmd := exec.Command("go", "build", "./"+filepath.ToSlash(rel))
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOPROXY=off")
 	bout, err := cmd.CombinedOutput()

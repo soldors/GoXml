@@ -136,8 +136,8 @@ func TestNamingDetectsSameBatchConflict(t *testing.T) {
 	}
 
 	// 片段层面确实重复（缺陷证据）
-	namesA := declaredPackageNames(t, renderKeyDecl(va, ka, ca)+bindCacheDecl(va, 2, ka, ca))
-	namesB := declaredPackageNames(t, renderKeyDecl(vb, kb, cb)+bindCacheDecl(vb, 2, kb, cb))
+	namesA := declaredPackageNames(t, renderKeyDecl(va, ka)+bindCacheDecl(va, 2, ka, ca))
+	namesB := declaredPackageNames(t, renderKeyDecl(vb, kb)+bindCacheDecl(vb, 2, kb, cb))
 	if !namesA[ka] || !namesB[kb] {
 		t.Fatal("测试构造错误：片段里找不到派生类型名")
 	}
@@ -328,8 +328,8 @@ func TestNamingUniqueSymbolsAcrossSources(t *testing.T) {
 	}
 
 	// 片段层面必须互不相交（C1 红灯证据的正面断言）
-	namesA := declaredPackageNames(t, renderKeyDecl(viewA, keyA, cacheA)+bindCacheDecl(viewA, 2, keyA, cacheA))
-	namesB := declaredPackageNames(t, renderKeyDecl(viewB, keyB, cacheB)+bindCacheDecl(viewB, 2, keyB, cacheB))
+	namesA := declaredPackageNames(t, renderKeyDecl(viewA, keyA)+bindCacheDecl(viewA, 2, keyA, cacheA))
+	namesB := declaredPackageNames(t, renderKeyDecl(viewB, keyB)+bindCacheDecl(viewB, 2, keyB, cacheB))
 	var dup []string
 	for n := range namesA {
 		if namesB[n] {

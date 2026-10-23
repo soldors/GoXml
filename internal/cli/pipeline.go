@@ -8,6 +8,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -137,7 +138,9 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	// ---------- 阶段一：只生成未命中的，并全部暂存（已有文件不被触碰）----------
+	// ---------- 阶段一：只为未命中的输入生成产物（全部在内存中）----------
+	// 本阶段必须保持**只读**：不建目录、不写文件、不碰磁盘现状。
+	// 这样阶段一失败时，下面的「磁盘无任何变更」才是真话。
 	type prepared struct {
 		r        *resolvedInput
 		key      string
@@ -152,10 +155,6 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			hits++
 			fmt.Fprintf(stdout, "跳过 %s（缓存命中）\n", d.r.outputRel)
 			continue
-		}
-		// 输出目录只为真正要写的文件创建：命中的文件不改动磁盘（连目录都不建）。
-		if err := os.MkdirAll(d.r.targetDir, 0o755); err != nil {
-			return fmt.Errorf("创建输出目录 %s: %w", d.r.targetDir, err)
 		}
 
 		// 复用阶段零 C 已算好的前端结果；缺失时（理论上不该发生）现算，
@@ -191,6 +190,18 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 
 	// ---------- 阶段二：有未命中才写盘（全或无）；命中不碰任何文件 ----------
 	if len(preparedFiles) > 0 {
+		// 输出目录**集中在此**创建，不准前移到阶段一的循环里。
+		//
+		// 反例（本文件曾经的真实形态）：MkdirAll 放在阶段一每个未命中输入之前，
+		// 于是「阶段一生成失败」时目标目录已经被建出来，而错误信息却写着
+		// 「磁盘无任何变更」——声称与事实不符。把写副作用全部收拢到阶段二开头，
+		// 阶段一就真的是纯内存阶段，那条错误信息才站得住。
+		// stageBatch 要求目标目录已存在，因此这一步必须排在它之前。
+		for _, p := range preparedFiles {
+			if err := os.MkdirAll(p.r.targetDir, 0o755); err != nil {
+				return fmt.Errorf("创建输出目录 %s: %w", p.r.targetDir, err)
+			}
+		}
 		sorted := sortTargets(missTargets)
 		byTarget := make(map[string]prepared, len(preparedFiles))
 		for _, p := range preparedFiles {
@@ -381,21 +392,46 @@ func packageDirName(dir string) (string, error) {
 	return "", fmt.Errorf("目录 %s 中没有 Go 源文件，无法确定包名", dir)
 }
 
-// parsePackageName 从 Go 源码提取 package 子句（极简实现，够用即可）。
+// parsePackageName 从 Go 源码提取 package 子句的名字。
+//
+// 这里有三处不能省，每一处都对应一个真实故障形态：
+//
+//  1. TrimSpace 必须裁**两端**，且要处理 `\r`：只裁前导空格的做法让
+//     CRLF 存盘的文件得到 `mypkg\r` 这样的包名，生成产物的 package 子句
+//     因此非法。Windows 上手写 .go 文件默认是 CRLF，这不是边缘场景。
+//  2. 必须按空白取**第一个** token：`package main // 说明` 这种带行注释的
+//     包声明，会把整条注释当成包名的一部分一起返回。
+//  3. 名字必须是合法标识符：非法的包名不会在这里报错，而是一路流到 Codegen
+//     才暴露，届时报错点离真正的成因很远，排查成本高得多。
+//
+// 轻量原则仍然成立——只引 go/token 做判定，不为三行解析引入 go/ast。
 func parsePackageName(src []byte) (string, bool) {
-	for _, line := range errors_(src) {
-		line = trimSpace(line)
-		if rest, ok := cutPrefix(line, "package "); ok && rest != "" {
-			return rest, true
+	for _, line := range sourceLines(src) {
+		line = strings.TrimSpace(line)
+		rest, ok := cutPrefix(line, "package ")
+		if !ok {
+			continue
 		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if !token.IsIdentifier(name) {
+			continue
+		}
+		return name, true
 	}
 	return "", false
 }
 
 // ---- 轻量文本辅助（避免为三行解析引入 go/ast）----
 
-// errors_ 把源码按行切出（名字带下划线避免与 errors 包冲突的阅读负担）。
-func errors_(src []byte) []string {
+// sourceLines 把源码按换行切出。
+//
+// 原名 `errors_` 是为避开 errors 包而造的怪名，读起来像错误集合；
+// 这里改成表意的名字，行为不变（保留最后一段未以换行结尾的内容）。
+func sourceLines(src []byte) []string {
 	return splitLines(string(src))
 }
 
@@ -412,13 +448,8 @@ func splitLines(s string) []string {
 	return out
 }
 
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	return s
-}
-
+// cutPrefix 返回去掉前缀后的剩余部分（自实现只为避开 Go 版本差异，
+// 语义与 strings.CutPrefix 一致）。
 func cutPrefix(s, prefix string) (string, bool) {
 	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
 		return s[len(prefix):], true

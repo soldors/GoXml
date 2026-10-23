@@ -177,11 +177,15 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 	}
 
 	// ---- 2. 与包内既有声明冲突 ----
-	// 按目标包目录分组，避免同一目录被重复扫描。
+	// 按目标包目录分组，避免同一目录被重复扫描；组内保存的是 targets 的下标。
+	// 用下标而不是存 NamingTarget 值再反查：值反查要逐元素做结构体比较，
+	// 且一旦有两个字段完全相同的输入，反查会稳定命中**第一个**下标，
+	// 于是第二个输入用错符号集合；查不到时还会得到 -1 并越界 panic。
 	// key 与批内那段的 Clean 口径保持一致（`dir` 与 `dir/` 指同一个包）。
-	byDir := make(map[string][]NamingTarget)
-	for _, t := range targets {
-		byDir[filepath.Clean(t.TargetDir)] = append(byDir[filepath.Clean(t.TargetDir)], t)
+	byDir := make(map[string][]int, len(targets))
+	for i, t := range targets {
+		d := filepath.Clean(t.TargetDir)
+		byDir[d] = append(byDir[d], i)
 	}
 	dirs := make([]string, 0, len(byDir))
 	for d := range byDir {
@@ -190,12 +194,17 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 	sort.Strings(dirs)
 
 	for _, dir := range dirs {
-		existing, err := existingPackageSymbols(dir, byDir[dir])
+		idxs := byDir[dir]
+		group := make([]NamingTarget, 0, len(idxs))
+		for _, i := range idxs {
+			group = append(group, targets[i])
+		}
+		existing, err := existingPackageSymbols(dir, group)
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range byDir[dir] {
-			for _, sym := range symbolsByTarget[indexOfTarget(targets, t)] {
+		for _, i := range idxs {
+			for _, sym := range symbolsByTarget[i] {
 				owner, taken := existing[sym]
 				if !taken {
 					continue
@@ -206,7 +215,7 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 					Owner:  owner,
 					// Source 补上触发方：C3 的诊断消息需要它作为第一个实参。
 					// 此前该字段为空（只有批内冲突才填），补信息不改变判定结果。
-					Source: t.SourceAbs,
+					Source: targets[i].SourceAbs,
 				})
 			}
 		}
@@ -272,16 +281,6 @@ func conflictDiagnostic(c namingConflict) contracts.CompilerError {
 	return contracts.NewError(c.Source, contracts.SourceSpan{}, CodeNamingSameBatch,
 		"sources %q and %q both generate symbol %q",
 		c.Owner, c.Source, c.Symbol)
-}
-
-// indexOfTarget 返回 target 在切片中的下标（值比较，targets 数量很小）。
-func indexOfTarget(targets []NamingTarget, t NamingTarget) int {
-	for i := range targets {
-		if targets[i] == t {
-			return i
-		}
-	}
-	return -1
 }
 
 // existingPackageSymbols 收集目标包内已有的包级符号（符号 → 文件绝对路径）。

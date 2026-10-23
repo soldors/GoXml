@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**Open**（未修）
+- 状态：**Partially Fixed**（2026-10-23，已补最小健全性断言；**性能阈值仍待定**）
 - 发现日期：2026-10-23
 - 发现方式：为补写踩坑 / Bug 文档，逐项检查"测试里到底有没有断言"
 - 影响范围：`internal/compiler/codegen/a54_bench_test.go`
@@ -41,7 +41,31 @@ for _, line := range strings.Split(out, "\n") {
 
 按项目既有结论，这条**不算覆盖**。
 
-## 修复
+## 修复（已做的一半）
+
+已经落地的是**最小健全性断言**：每个形态必须真实产出 `Benchmark` 行，否则 `Fatalf`。
+
+```go
+benchLines := 0
+for _, line := range strings.Split(out, "\n") {
+	if strings.HasPrefix(line, "Benchmark") {
+		t.Logf("[%s] %s", c.label, strings.TrimSpace(line))
+		benchLines++
+	}
+}
+if benchLines == 0 {
+	t.Fatalf("[%s] 基准未产出任何 Benchmark 行——探针可能根本没跑起来"+
+		"（空转会假绿，这是本条测试曾经的实际状态）:\n%s", c.label, out)
+}
+```
+
+它把"空转"从 PASS 变成 FAIL——这正是本条 Bug 的核心形态。
+
+**没做的另一半**（仍待所有者裁决）：性能阈值。原因写在代码注释里：
+本机墙上时间的数值不能直接写成跨平台阈值（见 `PIT-013`）。
+要设阈值，需要先在各目标平台各测一轮基线。
+
+## 修复方案（完整，供后续参考）
 
 二选一（需所有者裁决）：
 

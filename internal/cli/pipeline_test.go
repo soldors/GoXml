@@ -204,3 +204,45 @@ func TestGenerateOutDirMapping(t *testing.T) {
 		t.Errorf("保护头不符合契约:\n%.120s", got)
 	}
 }
+
+// TestGenerateFailureDoesNotCreateOutDir：阶段一失败时**连目录都不许建**。
+//
+// 锁住的是错误信息背后的承诺：失败路径写的是「批次全部放弃，磁盘无任何变更」。
+// 曾经 MkdirAll 放在阶段一每个未命中输入之前，于是这条信息与事实不符——
+// 目录已经被建出来了。修法是把写副作用收拢到阶段二开头（stageBatch 之前）。
+// 本用例故意让 --out-dir 指向一个**尚不存在**的多层目录，这样"建了目录"
+// 与"没建"是可观测的：修法回退时它必须变红。
+func TestGenerateFailureDoesNotCreateOutDir(t *testing.T) {
+	root := b3Project(t)
+	bad := filepath.Join(root, "bad.gxml")
+	if err := os.WriteFile(bad, []byte("<Goxml><Page></Goxml>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outRoot := filepath.Join(root, "gen", "nested", "deep")
+
+	code, _, errs := b3Run(t, bad, "--out-dir", outRoot)
+	if code == ExitOK {
+		t.Fatalf("非法输入不应成功；stderr=%s", errs)
+	}
+	if _, err := os.Stat(outRoot); !os.IsNotExist(err) {
+		t.Fatalf("阶段一失败时不得创建输出目录 %s（错误信息声称「磁盘无任何变更」）: %v",
+			outRoot, err)
+	}
+}
+
+// TestGenerateCreatesOutDirOnSuccess：成功路径仍然要建目录（上一条的反向护栏）。
+//
+// 只测"失败不建"是不够的——把 MkdirAll 直接删掉也能让它绿。这里守住
+// 成功时目录确实被创建，防止有人用"干脆不建"来通过上一条。
+func TestGenerateCreatesOutDirOnSuccess(t *testing.T) {
+	root := b3Project(t)
+	outRoot := filepath.Join(root, "out", "nested")
+
+	code, _, errs := b3Run(t, filepath.Join(root, "home.gxml"), "--out-dir", outRoot)
+	if code != ExitOK {
+		t.Fatalf("生成失败: %s\n%s", errs, outRoot)
+	}
+	if _, err := os.Stat(filepath.Join(outRoot, "home_gen.go")); err != nil {
+		t.Fatalf("成功时输出目录与产物都应存在: %v", err)
+	}
+}

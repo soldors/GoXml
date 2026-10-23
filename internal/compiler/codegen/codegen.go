@@ -946,7 +946,7 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 `, pi, pi, kt, pi, pi, kt, pi, pi))
 		}
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
-		b.WriteString(renderKeyDecl(g.view, g.keyType, g.cacheType))
+		b.WriteString(renderKeyDecl(g.view, g.keyType))
 		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
 		return b.String(), nil
 	}
@@ -970,7 +970,7 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 	b.WriteString("\tv.cacheCall.Add(gtx.Ops)\n")
 	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
-	b.WriteString(renderKeyDecl(g.view, g.keyType, g.cacheType))
+	b.WriteString(renderKeyDecl(g.view, g.keyType))
 	if g.usesVM {
 		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
 	}
@@ -1001,7 +1001,12 @@ func (g *generator) vmTypeExpr() (string, error) {
 // renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。
 //
 // 注意：这是**生成产物**，不要手改。字段变更必须先改契约 §16.5 再重新生成。
-func renderKeyDecl(view, keyType, cacheType string) string {
+// renderKeyDecl 生成 renderKey 类型与其方法。
+//
+// 只依赖 view 与 keyType：cacheType 曾在这里出现但从未被使用（BUG-007），
+// 保留它会让人误以为 renderKey 声明与 textCache 类型存在耦合，
+// 从而在改命名规则时误判影响面。需要缓存类型的声明走 bindCacheDecl。
+func renderKeyDecl(view, keyType string) string {
 	return `
 // ` + keyType + ` 复制自 代码生成输出契约 §16.5。
 //

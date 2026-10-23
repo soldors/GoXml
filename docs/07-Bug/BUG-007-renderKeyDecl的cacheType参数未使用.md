@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**Open**（C4 遗留，未修）
+- 状态：**Fixed**（2026-10-23，删除参数）
 - 发现日期：2026-10-23
 - 发现方式：按行阅读 `internal/compiler/codegen/codegen.go` 时核对参数使用情况
 - 影响范围：`internal/compiler/codegen/codegen.go`
@@ -50,12 +50,25 @@ internal/compiler/codegen/codegen.go:973:  b.WriteString(renderKeyDecl(g.view, g
 
 ## 修复
 
-二选一，需要所有者确认：
+采用方案 1（删除参数）：
 
-1. **删除参数**：`func renderKeyDecl(view, keyType string) string`，同步改两处调用点；
-   最干净，但要确认没有外部调用者（当前仅本包 + 本包测试）。
-2. **保留并注释说明**：若确有计划在 renderKey 中加入 cache 相关字段，就写明原因，
-   避免下一个人再来做同样的调查。
+```go
+// renderKeyDecl 生成 renderKey 类型与其方法。
+//
+// 只依赖 view 与 keyType：cacheType 曾在这里出现但从未被使用（BUG-007），
+// 保留它会让人误以为 renderKey 声明与 textCache 类型存在耦合，
+// 从而在改命名规则时误判影响面。需要缓存类型的声明走 bindCacheDecl。
+func renderKeyDecl(view, keyType string) string {
+```
+
+- 定义：`internal/compiler/codegen/codegen.go`（原签名 `renderKeyDecl(view, keyType, cacheType string)`）；
+- 调用点：同文件两处 `renderKeyDecl(g.view, g.keyType)`；
+- 测试调用点：`naming_test.go` 四处同步去掉第三个实参（`cacheType` 仍由
+  `bindCacheDecl` 使用，未被牵连）。
+
+**为什么选删除而不是"保留并注释"**：没有任何计划把 cache 字段加进 renderKey ——
+renderKey 是帧上下文指纹（constraints / metric / theme / locale），
+与显示缓存槽位无关；留一个只为"将来可能用到"的参数，等于长期支付误解成本。
 
 ## 回归测试
 

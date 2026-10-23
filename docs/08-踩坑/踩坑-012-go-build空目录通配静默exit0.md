@@ -40,8 +40,10 @@ cmd := exec.Command("go", "build", "./rel")
 ## 预防
 
 - 涉及子进程编译的测试，禁止使用 `...` 通配作为被测路径。
-- 现有遗留（未修，登记在此）：`internal/compiler/codegen/binding_compile_test.go`、
-  `binding_runtime_test.go` 的 build 路径仍带通配——它们"绿"不等于被测产物真的编译过。
+- **遗留已于 2026-10-23 修复**：`internal/compiler/codegen/binding_compile_test.go`、
+  `binding_runtime_test.go` 原先是 `"./"+filepath.ToSlash(rel)+"/..."`，
+  现改为 `"./"+filepath.ToSlash(rel)`（无通配），与 `naming_samepkg_test.go` 的既有写法对齐。
+  在这之前它们"绿"不等于被测产物真的编译过。
 - `testdata/` 下的探针要单独 build/vet，不能指望 `./...` 覆盖。
 
 ## 数据来源
