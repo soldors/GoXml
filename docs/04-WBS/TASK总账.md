@@ -44,34 +44,35 @@
 | 23 | `TASK-DOC-BASELINE-001` | docs | 批次 0 文档冻结与基线建立 | 范围与退出门槛确认（已完成） | `0A 完成；0B 进行中，0D 门禁校准已推进；见任务卡及 B0 清单` | **进行中（0A 已完成，0B 审计进行中）** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 24 | `TASK-B0-ADR-CONFLICT-001` | docs/architecture | 校准 AOT Diff 设计储备的追踪链 | - | `决策已由 `f5c45bd` 固化；待全仓表述复核，见任务卡与 B0-F01` | **决策已记录；追踪校准进行中** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 25 | `TASK-AUDIT-001` | docs/audit | 全项目 TASK 总账审计：基线锁定、任务全集、逐项核证与总账发布（**… | - | `见任务卡；产物：`docs/04-WBS/TASK总账.md`、`docs/04-WBS/审…` | **阶段 0–1 已执行（规则冻结 + 任务全集建立）；阶段 2 逐项核证未开始** | 部分实现 | 未执行 | 完整 | 待审计 | Windows |  |
-| 26 | `TASK-INPUT-001-DEMO` | examples/demo | Input 交互样板（手动验收入口，非功能开发） | TASK-INPUT-001-D4-C | `go build ./examples/demo/` | **Done（2026-10-20）** ／ 证据：`examples/demo` 生成代码含全部 Input 接线，冒烟存活 10 秒 | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 27 | `TASK-EXPANDER-001` | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | `go test -v ./internal/compiler/expander/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 28 | `TASK-STYLE-001` | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` … | TASK-CODEGEN-001 | `go test ./internal/compiler/expander/ ./intern…` | **部分完成**（`<Def>`/`<Slot>` 已实现于 `internal/compiler/expander`； | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 29 | `TASK-PARSER-001` | parser | 实现带行列号的 GXML 语法分析与控制流解析 | TASK-CONTRACT-001 | `go test -v ./internal/compiler/parser/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 30 | `TASK-PARSER-002` | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding… | TASK-PARSER-001 | `go test -v ./internal/compiler/parser/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 31 | `TASK-ORCH-001` | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 … | TASK-CODEGEN-001 | `go test -v ./internal/compiler/pipeline/` | **Done**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 32 | `TASK-OS-001` | platform | 实现 Windows Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | `Windows: CGO_ENABLED=0 go test -v ./pkg/platfo…` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 33 | `TASK-OS-002` | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macO… | TASK-OS-001 | `make build-windows && make build-linux` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 34 | `TASK-LIFE-001` | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | `go test -v -race ./pkg/runtime/lifecycle/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 35 | `TASK-ROUTER-001` | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | `go test -v ./pkg/runtime/router/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 36 | `TASK-DEMO-001` | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | `go test -v ./pkg/runtime/app/` | **Done**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 37 | `TASK-THEME-SEAM-001` | theme/contract | 冻结主题/字体接缝（路线 B）：`FontProvider` 契约、`p… | TASK-CODEGEN-001、ADR-0012 | `go test ./contracts/... ./pkg/runtime/... ./in…` | **已完成**（6/6 子任务）｜优先级：P0 ｜ 预计：3h | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 38 | `TASK-FONT-001` | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/… | TASK-THEME-SEAM-001 | `go test ./pkg/runtime/theme/...` | **进行中（A、B、C 已实现；D 设计已冻结且 IMPL-1 已实现，IMPL-2/3 与 D-ACCEPT 未开工）** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 39 | `TASK-FONT-001-A` | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断… | TASK-THEME-SEAM-001 | `go test -run TestFontProbe ./pkg/runtime/theme…` | **实现已落地（2026-10-20）**，门禁复跑中；B/C/D 仍未开始 | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 40 | `TASK-FONT-001-B` | theme/font | 嵌入字体兜底：OFL 字体选型 + 构建期子集化 + `//go:emb… | TASK-FONT-001-A | `go test -run TestEmbeddedFallback ./pkg/runtim…` | **B3–B6 已实现并通过验收（2026-10-21）**；两个开工阻塞项均已解除（§7） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 41 | `TASK-FONT-001-C` | theme/font | 按字形覆盖的 fallback 链：GlyphID 反解与 notdef… | TASK-FONT-001-A、TASK-FONT-001-… | `go test -run TestFontFallbackChain ./pkg/runti…` | **已实现并通过验收**（2026-10-21；边界同日冻结） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 42 | `TASK-FONT-001-D` | theme/font | 懒加载与不阻塞首帧：冷启动基线测量、加载状态机、首帧不等待探测、帧内换 … | TASK-FONT-001-A、TASK-FONT-001-… | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **设计已冻结（2026-10-21）；实现部分完成——IMPL-1 已实现（`948c406`）， | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 43 | `TASK-FONT-001-D-ACCEPT` | theme/font | D 整体验收与回归：D6 十项映射到具体用例、四指标分行实测、十一项回归… | TASK-FONT-001-D-IMPL-1、TASK-FO… | `go test ./pkg/runtime/theme/ ./pkg/runtime/app…` | **验收矩阵已冻结（第 3 版，按评审意见同步 `CompletedAt` 与 `NotifyLateBound` 口径），执行未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 44 | `TASK-FONT-001-D-IMPL-1` | theme/font | 异步加载器与状态机：`theme.Lazy`（Unloaded/Load… | TASK-FONT-001-D | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **已实现**（按第 3 版接口，17 个用例全 PASS，结构门禁反向验证通过） | 已实现 | 部分通过 | 完整 | 待审计 | Windows |  |
-| 45 | `TASK-FONT-001-D-IMPL-2` | theme/font | 帧内切换与布局一致性：`NewLazyApp` 接线、只在 `Frame… | TASK-FONT-001-D-IMPL-1 | `go test -run TestFontLazyLoad ./pkg/runtime/ap…` | **接口与切换时机已冻结（第 3 版，按评审意见收回 `NotifyLateBound` 写入责任），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 46 | `TASK-FONT-001-D-IMPL-3` | theme/font | 诊断、失败终态与严格语义：`Report` 完整字段、`Config.S… | TASK-FONT-001-D-IMPL-1、TASK-FO… | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **接口与失败语义已冻结（第 3 版，按评审意见同步 `CompletedAt` 失败路径口径），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 47 | `TASK-FONT-001-D-PROBE` | theme/font | 真实窗口异步唤醒验证（D 卡 §10 第 2b 步的唯一执行载体）：首帧… | TASK-FONT-001-D | `go run ./pkg/runtime/app/testdata/windowprobe` | **已执行（2026-10-21），PROBE-1..6 全部 PASS，4/4 次运行稳定** | 已实现 | 通过 | 完整 | 待审计 | Windows |  |
-| 48 | `TASK-WIDGET-001` | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | `go test -v ./pkg/widgets/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 49 | `TASK-SEC-001` | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | `见任务卡` | **有条件通过**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 26 | `TASK-AUDIT-002` | docs/audit | A1 深化成果的独立复核（A2）：五组问题逐项挑战，允许确认/降级/升级… | TASK-AUDIT-001 | `见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md`` | **未启动** | 未开始 | 未执行 | 无法获取 | 待审计 | 未测 |  |
+| 27 | `TASK-INPUT-001-DEMO` | examples/demo | Input 交互样板（手动验收入口，非功能开发） | TASK-INPUT-001-D4-C | `go build ./examples/demo/` | **Done（2026-10-20）** ／ 证据：`examples/demo` 生成代码含全部 Input 接线，冒烟存活 10 秒 | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 28 | `TASK-EXPANDER-001` | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | `go test -v ./internal/compiler/expander/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 29 | `TASK-STYLE-001` | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` … | TASK-CODEGEN-001 | `go test ./internal/compiler/expander/ ./intern…` | **部分完成**（`<Def>`/`<Slot>` 已实现于 `internal/compiler/expander`； | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 30 | `TASK-PARSER-001` | parser | 实现带行列号的 GXML 语法分析与控制流解析 | TASK-CONTRACT-001 | `go test -v ./internal/compiler/parser/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 31 | `TASK-PARSER-002` | parser | 实现强类型属性解析器 (EdgeInsets/Color/Binding… | TASK-PARSER-001 | `go test -v ./internal/compiler/parser/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 32 | `TASK-ORCH-001` | pipeline | 实现编译编排层与失败门禁（关闭 Codegen 契约 §13 第 20 … | TASK-CODEGEN-001 | `go test -v ./internal/compiler/pipeline/` | **Done**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 33 | `TASK-OS-001` | platform | 实现 Windows Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | `Windows: CGO_ENABLED=0 go test -v ./pkg/platfo…` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 34 | `TASK-OS-002` | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macO… | TASK-OS-001 | `make build-windows && make build-linux` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 35 | `TASK-LIFE-001` | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | `go test -v -race ./pkg/runtime/lifecycle/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 36 | `TASK-ROUTER-001` | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | `go test -v ./pkg/runtime/router/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 37 | `TASK-DEMO-001` | runtime/app | 最小可运行窗口：管线产物接入 Gio 主循环 | TASK-ORCH-001 | `go test -v ./pkg/runtime/app/` | **Done**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 38 | `TASK-THEME-SEAM-001` | theme/contract | 冻结主题/字体接缝（路线 B）：`FontProvider` 契约、`p… | TASK-CODEGEN-001、ADR-0012 | `go test ./contracts/... ./pkg/runtime/... ./in…` | **已完成**（6/6 子任务）｜优先级：P0 ｜ 预计：3h | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 39 | `TASK-FONT-001` | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/… | TASK-THEME-SEAM-001 | `go test ./pkg/runtime/theme/...` | **进行中（A、B、C 已实现；D 设计已冻结且 IMPL-1 已实现，IMPL-2/3 与 D-ACCEPT 未开工）** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 40 | `TASK-FONT-001-A` | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断… | TASK-THEME-SEAM-001 | `go test -run TestFontProbe ./pkg/runtime/theme…` | **实现已落地（2026-10-20）**，门禁复跑中；B/C/D 仍未开始 | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 41 | `TASK-FONT-001-B` | theme/font | 嵌入字体兜底：OFL 字体选型 + 构建期子集化 + `//go:emb… | TASK-FONT-001-A | `go test -run TestEmbeddedFallback ./pkg/runtim…` | **B3–B6 已实现并通过验收（2026-10-21）**；两个开工阻塞项均已解除（§7） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 42 | `TASK-FONT-001-C` | theme/font | 按字形覆盖的 fallback 链：GlyphID 反解与 notdef… | TASK-FONT-001-A、TASK-FONT-001-… | `go test -run TestFontFallbackChain ./pkg/runti…` | **已实现并通过验收**（2026-10-21；边界同日冻结） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 43 | `TASK-FONT-001-D` | theme/font | 懒加载与不阻塞首帧：冷启动基线测量、加载状态机、首帧不等待探测、帧内换 … | TASK-FONT-001-A、TASK-FONT-001-… | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **设计已冻结（2026-10-21）；实现部分完成——IMPL-1 已实现（`948c406`）， | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 44 | `TASK-FONT-001-D-ACCEPT` | theme/font | D 整体验收与回归：D6 十项映射到具体用例、四指标分行实测、十一项回归… | TASK-FONT-001-D-IMPL-1、TASK-FO… | `go test ./pkg/runtime/theme/ ./pkg/runtime/app…` | **验收矩阵已冻结（第 3 版，按评审意见同步 `CompletedAt` 与 `NotifyLateBound` 口径），执行未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 45 | `TASK-FONT-001-D-IMPL-1` | theme/font | 异步加载器与状态机：`theme.Lazy`（Unloaded/Load… | TASK-FONT-001-D | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **已实现**（按第 3 版接口，17 个用例全 PASS，结构门禁反向验证通过） | 已实现 | 部分通过 | 完整 | 待审计 | Windows |  |
+| 46 | `TASK-FONT-001-D-IMPL-2` | theme/font | 帧内切换与布局一致性：`NewLazyApp` 接线、只在 `Frame… | TASK-FONT-001-D-IMPL-1 | `go test -run TestFontLazyLoad ./pkg/runtime/ap…` | **接口与切换时机已冻结（第 3 版，按评审意见收回 `NotifyLateBound` 写入责任），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 47 | `TASK-FONT-001-D-IMPL-3` | theme/font | 诊断、失败终态与严格语义：`Report` 完整字段、`Config.S… | TASK-FONT-001-D-IMPL-1、TASK-FO… | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **接口与失败语义已冻结（第 3 版，按评审意见同步 `CompletedAt` 失败路径口径），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 48 | `TASK-FONT-001-D-PROBE` | theme/font | 真实窗口异步唤醒验证（D 卡 §10 第 2b 步的唯一执行载体）：首帧… | TASK-FONT-001-D | `go run ./pkg/runtime/app/testdata/windowprobe` | **已执行（2026-10-21），PROBE-1..6 全部 PASS，4/4 次运行稳定** | 已实现 | 通过 | 完整 | 待审计 | Windows |  |
+| 49 | `TASK-WIDGET-001` | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | `go test -v ./pkg/widgets/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 50 | `TASK-SEC-001` | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | `见任务卡` | **有条件通过**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 
 ## 3. 本轮已取证项
 
-已取证 **4** 项，待审计 **45** 项（合计 49 项）。
+已取证 **3** 项，待审计 **47** 项（合计 50 项）。
 
 | TASK ID | 本轮取证 | 实现 | 验收 | 证据 | 平台 |
 |---|---|---|---|---|---|
@@ -79,8 +80,9 @@
 | `TASK-FONT-001-D-PROBE` | windowprobe 5/5 PASS，`mode=real-window`，帧数=5（T15） | 已实现 | 通过 | 完整 | Windows |
 | `TASK-CODEGEN-NAMING-001` | codegen 42 + cli 12 = 54 用例 PASS / 0 SKIP（T8/T9） | 已实现 | 通过 | 完整 | Windows |
 
-> 口径说明：上表合计 49 项 = 原有 48 个功能任务 + 本次新增的 `TASK-AUDIT-001`
-> （审计任务自身，为通过 docgate「有卡必须在 WBS 登记」门禁而登记）。
+> 口径说明：上表合计 50 项 = 原有 48 个功能任务 + 审计任务自身 2 项
+> （`TASK-AUDIT-001`、`TASK-AUDIT-002`，为通过 docgate「有卡必须在 WBS 登记」门禁而登记）。
+> 审计任务自身**不计入**上表「已取证」数——它们不是被审对象。
 > 被审的**功能任务**为 48 项，其中已取证 3 项、待审计 45 项。
 
 ## 4. 生成方式（可复现）
