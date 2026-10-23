@@ -50,6 +50,7 @@
 | TASK-OS-002 | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macOS 允许 CGO） | TASK-OS-001 | make build-windows && make build-linux |
 | TASK-WIDGET-001 | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | go test -v ./pkg/widgets/... |
 | TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | go test -bench . -benchmem ./benchmarks/... |
+| TASK-AUDIT-001 | docs/audit | 全项目 TASK 总账审计：基线锁定、任务全集、逐项核证与总账发布（**只读审计**，不顺手修代码；发现/处置/整改/验收四阶段分离） | - | 见任务卡；产物：`docs/04-WBS/TASK总账.md`、`docs/04-WBS/审计发现清单.md` |
 
 ## 开发流程与契约治理
 
