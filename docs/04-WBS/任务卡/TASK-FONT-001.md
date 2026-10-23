@@ -1,8 +1,11 @@
 # TASK-FONT-001：实现 CJK 字体探测、嵌入兜底、fallback 链与 IME 验收
 
 ## 元信息
-- 状态：**进行中（A、B、C 已完成；D 未开始）** | 优先级：P0 | 预计：8h
-- 子卡进度（2026-10-21 实测，见 §3）：A ✅ / B ✅ / C ✅ / D ⬜ —— 本卡**尚未完成**（D 与跨平台验证仍缺）
+- 状态：**进行中（A、B、C 已实现；D 设计已冻结且 IMPL-1 已实现，IMPL-2/3 与 D-ACCEPT 未开工）** | 优先级：P0 | 预计：8h
+- 子卡进度（2026-10-23 更新，原 2026-10-21 实测见 §3）：A ✅ / B ✅ / C ✅ / D **部分完成**
+  —— D 的设计与接口已冻结，`IMPL-1` 已实现（`948c406`，交付 `pkg/runtime/theme/lazy.go`，
+  2026-10-23 在 `b33ce6d` 复跑 `-run TestFontLazyLoad` 得 17 PASS / 0 SKIP）；
+  `IMPL-2` / `IMPL-3` / `D-ACCEPT` 未开工。本卡**尚未完成**（D 剩余实现与跨平台验证仍缺）
 - 分支：feature/TASK-FONT-001
 - 依赖：`TASK-THEME-SEAM-001`（接口与包边界）✅ **已完成**｜**不再是 `TASK-STYLE-001`**
   - 审计结论（`docs/05-开发/STYLE-FONT依赖审计.md`）：`<Def>/<Slot>` 宏展开与字体无代码耦合，

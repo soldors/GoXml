@@ -1,10 +1,12 @@
-# TASK-FONT-001-D：懒加载与不阻塞首帧（设计已冻结，实现未开始）
+# TASK-FONT-001-D：懒加载与不阻塞首帧（设计已冻结；IMPL-1 已实现，IMPL-2/3 与整体验收未开工）
 
 ## 元信息
-- 状态：**设计已冻结，实现未开始**（2026-10-21 冻结）
+- 状态：**设计已冻结（2026-10-21）；实现部分完成——IMPL-1 已实现（`948c406`），
+  IMPL-2 / IMPL-3 / D-ACCEPT 未开工**（2026-10-23 更新）
 - 验收命令：`go test -run TestFontLazyLoad ./pkg/runtime/theme/...`
   （前缀不得改名，否则 `internal/docgate` 的
-  `TestFont001AcceptanceCommandsAreNotVacuous` 报红；当前仍是 `t.Skip` 占位）
+  `TestFont001AcceptanceCommandsAreNotVacuous` 报红。**占位 `t.Skip` 已于 `948c406` 移除**，
+  落地为 17 个真实用例；2026-10-23 在 `b33ce6d` 复跑 `-v` 得 17 PASS / **0 SKIP** / 0 FAIL）
 - 前置：A `c4ec28b` / B `9b81748` / C `5aea209` **均已满足**
 - 依赖文档：`docs/03-架构/字体与文本渲染策略.md`（§3.2 20ms 预算、§3.3 禁止 init 同步加载）
 
@@ -365,19 +367,24 @@ Windows / D3D11 / Gio v0.10.3 / `CGO_ENABLED=0`，**非 BLOCKED**）。
   → `093026f`（维护者修正 §3/§8 内部矛盾）→ `d7268e5`（2a 验证）
   → `88582f3`（撤回 2a/2b 整体 ✅）→ `11c85bb`（2b 设计冻结卡）
   → 本轮 2b 执行提交（登记见 dev-log §33） |
-| 本卡状态 | **设计已冻结**；**实现未开始**；占位用例仍是 `t.Skip`。
+| 本卡状态 | **设计已冻结**；**IMPL-1 已实现**（`948c406`，交付 `lazy.go` /
+  `theme_build.go` / `lazy_test.go`，17 用例 PASS、0 SKIP，2026-10-23 复跑复核）；
+  **IMPL-2 / IMPL-3 / D-ACCEPT 仍未开工**——2026-10-23 grep 复核：产物代码中 `NewLazyApp`
+  仅有一处**注释**提及（`lazy.go:233`）、`StrictFontFailure` **零命中**，故两卡"未开工"属实。
   §3 的两处待选项已于 2026-10-21 冻结（重复请求立即返回临时字体 /
   失败后不自动重试，只由显式请求触发）。
   **§10 第 2 步（2a + 2b）已全部完成**：2a 见 §4.3，2b 见 §4.3.5。
   **§12 已把第 4 步拆为 IMPL-1/2/3 + ACCEPT，接口与验收矩阵全部冻结**；
-  实现本身仍未开工 |
+  **IMPL-1 已落地**（`948c406`；该提交是混合提交，同时承载了 C1 命名预检的
+  `naming.go`/`naming_test.go`，登记见 `aeb4fd3` / `cc177ad`）；IMPL-2/3 与 ACCEPT 仍未开工 |
 | 三条已确认结论（评审 2026-10-21） | ① C 已完成子任务验收，但跨平台待验证；
   **位布局依赖保留为 Gio 升级门禁**；**Windows 零增量不得外推**。
   ② D 的性能基线已建立，但**真实首帧未测量**——探测 97–109 ms、
   首次 shaping 41–54 ms 说明需要懒加载，**不能直接充当首帧验收结果**。
   ③ ~~下一步只做 Gio 生命周期独立验证~~ → **已完成**（2a `d7268e5`、2b 见 §4.3.5） |
-| 本轮未做的事 | 未重复 D1 测量；**未实现 D**（2b 只是门禁，不是实现）；
-  未启动其他字体功能；未测窗口最小化状态下的唤醒 |
+| 本轮未做的事（截至 2026-10-23） | 未重复 D1 测量；**D 未整体实现**——已实现的只有 IMPL-1，
+  即 IMPL-2（帧内切换接线）/ IMPL-3（严格失败语义、四指标）/ D-ACCEPT **尚未开工**（2b 只是门禁，
+  不是实现）；未启动其他字体功能；未测窗口最小化状态下的唤醒；**真实首帧仍未测量** |
 | 取证产物 | `pkg/runtime/theme/testdata/coldstartprobe`（冷启动分阶段计时 + 首帧 shaper 对照）；
   `pkg/runtime/app/testdata/lifecycleprobe`（帧间替换语义，A–D 四场景）；
   `pkg/runtime/app/testdata/concurrencyprobe`（跨 goroutine 破坏性，**预期崩溃**）；

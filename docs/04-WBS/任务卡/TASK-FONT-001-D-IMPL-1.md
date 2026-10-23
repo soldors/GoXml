@@ -3,7 +3,12 @@
 ## 元信息
 
 - 状态：**已实现**（按第 3 版接口，17 个用例全 PASS，结构门禁反向验证通过）
-- 实现提交：见 §11（提交后补记 SHA）
+- 实现提交：**`948c406`**（2026-10-23 补记，补记前此处为「见 §11（提交后补记 SHA）」）
+  - 该提交是**混合提交**：同批还含 C1 命名预检的 `internal/compiler/codegen/naming.go`
+    与 `naming_test.go`；字体交付物（`lazy.go` / `theme_build.go` / `lazy_test.go`）同在其内
+  - 归属登记：`aeb4fd3`（登记 IMPL-1 落在 `948c406`）与 `cc177ad`（dev-log 登记 IMPL-1 提交链）
+  - 2026-10-23 复核（基线 `b33ce6d`）：`-run TestFontLazyLoad` 17 PASS / 0 SKIP；
+    theme 全包 44 PASS / 0 SKIP（12.265s）
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
 - 前置：`TASK-FONT-001-D` §10 第 2 步（2a `d7268e5` + 2b `2fc61a7`）**均已完成**
 - 交付物：`pkg/runtime/theme/lazy.go` + 同包测试 + `internal/docgate` 一条结构门禁
