@@ -44,7 +44,7 @@
 | 23 | `TASK-DOC-BASELINE-001` | docs | 批次 0 文档冻结与基线建立 | 范围与退出门槛确认（已完成） | `0A 完成；0B 进行中，0D 门禁校准已推进；见任务卡及 B0 清单` | **进行中（0A 已完成，0B 审计进行中）** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 24 | `TASK-B0-ADR-CONFLICT-001` | docs/architecture | 校准 AOT Diff 设计储备的追踪链 | - | `决策已由 `f5c45bd` 固化；待全仓表述复核，见任务卡与 B0-F01` | **决策已记录；追踪校准进行中** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 25 | `TASK-AUDIT-001` | docs/audit | 全项目 TASK 总账审计：基线锁定、任务全集、逐项核证与总账发布（**… | - | `见任务卡；产物：`docs/04-WBS/TASK总账.md`、`docs/04-WBS/审…` | **阶段 0–1 已执行（规则冻结 + 任务全集建立）；阶段 2 逐项核证未开始** | 部分实现 | 未执行 | 完整 | 待审计 | Windows |  |
-| 26 | `TASK-AUDIT-002` | docs/audit | A1 深化成果的独立复核（A2）：五组问题逐项挑战，允许确认/降级/升级… | TASK-AUDIT-001 | `见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md`` | **未启动** | 未开始 | 未执行 | 无法获取 | 待审计 | 未测 |  |
+| 26 | `TASK-AUDIT-002` | docs/audit | A1 深化成果的独立复核（A2）：**A2-0 提交链与远端状态独立核验… | TASK-AUDIT-001 | `见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md`` | **未启动** | 未开始 | 未执行 | 无法获取 | 待审计 | 未测 |  |
 | 27 | `TASK-INPUT-001-DEMO` | examples/demo | Input 交互样板（手动验收入口，非功能开发） | TASK-INPUT-001-D4-C | `go build ./examples/demo/` | **Done（2026-10-20）** ／ 证据：`examples/demo` 生成代码含全部 Input 接线，冒烟存活 10 秒 | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 28 | `TASK-EXPANDER-001` | expander | 实现组件 Schema 分类、属性事件区分与 Def/Slot 展开 | TASK-PARSER-002 | `go test -v ./internal/compiler/expander/...` | **Done**（2026-10-18） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 29 | `TASK-STYLE-001` | macro/theme | 实现强类型 Theme 与组件宏展开（`<Def>`/`<Slot>` … | TASK-CODEGEN-001 | `go test ./internal/compiler/expander/ ./intern…` | **部分完成**（`<Def>`/`<Slot>` 已实现于 `internal/compiler/expander`； | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |

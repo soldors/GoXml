@@ -51,7 +51,7 @@
 | TASK-WIDGET-001 | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | go test -v ./pkg/widgets/... |
 | TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | go test -bench . -benchmem ./benchmarks/... |
 | TASK-AUDIT-001 | docs/audit | 全项目 TASK 总账审计：基线锁定、任务全集、逐项核证与总账发布（**只读审计**，不顺手修代码；发现/处置/整改/验收四阶段分离） | - | 见任务卡；产物：`docs/04-WBS/TASK总账.md`、`docs/04-WBS/审计发现清单.md` |
-| TASK-AUDIT-002 | docs/audit | A1 深化成果的独立复核（A2）：五组问题逐项挑战，允许确认/降级/升级/撤销；只接收固定版本材料（基线 `e92e696` + 交付 `813b201` + 登记 `11dc6b4`），**不得直接修复** | TASK-AUDIT-001 | 见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md` |
+| TASK-AUDIT-002 | docs/audit | A1 深化成果的独立复核（A2）：**A2-0 提交链与远端状态独立核验为前置门槛**（五个 SHA、父子关系、远端引用、审计工作树状态），通过后进入原五组问题；允许确认/降级/升级/撤销；只接收固定版本材料，**不得直接修复** | TASK-AUDIT-001 | 见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md` |
 
 ## 开发流程与契约治理
 
