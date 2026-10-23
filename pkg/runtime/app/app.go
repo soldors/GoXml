@@ -10,6 +10,8 @@ package app
 
 import (
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"gioui.org/app"
 	"gioui.org/io/system"
@@ -141,10 +143,53 @@ func Run(view View, cfg Config) error {
 //	    }
 //	}()
 //	a.Run()                           // 主线程阻塞
+//
+// # 懒加载形态
+//
+// 由 `NewLazyApp` 构造的 App 额外持有 `*theme.Lazy`（字段 `lz`）。事件循环
+// 与上面完全一致，只多一步"帧内取走待应用主题"（见 `frame` 的顺序注释）。
+// `lz == nil` 时（NewApp / RunWith / RunWindow*），懒加载的每一步都被跳过，
+// 因此既有入口的行为**逐字不变**（TASK-FONT-001-D-IMPL-2 §7-3）。
 type App struct {
 	w    *app.Window
 	view View
 	th   *material.Theme
+
+	// lz 是懒加载句柄；nil 表示不走懒加载。只有 NewLazyApp 会填它。
+	lz *theme.Lazy
+
+	// inFrame 标记"当前是否处于 FrameEvent 的处理区间内"。
+	//
+	// 存在的理由（规则 R2）：主题替换**只能**发生在帧内、渲染线程。
+	// 跨 goroutine 共用 shaper 的后果是 Go 运行时 fatal error
+	// （recover 无效，D 卡 §4.3.2 实测 6/6 必现），靠"这次没崩"证明不了
+	// 正确性。把它做成字段后，`swapPending` 在帧外**直接返回 false**——
+	// 帧外替换从"靠测试抓的 bug"变成"类型层面不可达的分支"。
+	//
+	// 只由事件循环 goroutine 写入，但 notify 回调可能在另一 goroutine
+	// 间接触发 `swapPending` 的读取，因此用 atomic 而非裸 bool。
+	inFrame atomic.Bool
+
+	// firstLayoutDone：切换后首次排版耗时是否已记录。
+	//
+	// 与 `Lazy.MarkFirstLayout` 内部的幂等互为双保险——方法保证"写不进去"，
+	// 本字段保证"根本不调用"。只由事件循环 goroutine 读写，无需同步。
+	firstLayoutDone bool
+}
+
+// newWindow 按配置创建窗口句柄（不显示）。
+//
+// 平台窗口在首次 w.Event() 时才真正创建（S0 源码证据），因此本函数
+// 不涉及显示服务器。抽出来的唯一理由：NewApp 与 NewLazyApp 必须用同一份
+// 窗口装配口径，否则两条入口的窗口选项会各自漂移。
+func newWindow(cfg Config) *app.Window {
+	cfg = cfg.withDefaults()
+	w := new(app.Window)
+	w.Option(
+		app.Title(cfg.Title),
+		app.Size(cfg.Width, cfg.Height),
+	)
+	return w
 }
 
 // NewApp 校验参数并创建运行句柄。
@@ -158,14 +203,56 @@ func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 	if th == nil {
 		return nil, fmt.Errorf("app: nil theme")
 	}
-	cfg = cfg.withDefaults()
+	return &App{w: newWindow(cfg), view: view, th: th}, nil
+}
 
-	w := new(app.Window)
-	w.Option(
-		app.Title(cfg.Title),
-		app.Size(cfg.Width, cfg.Height),
-	)
-	return &App{w: w, view: view, th: th}, nil
+// NewLazyApp 用**异步加载**的主题构造运行句柄（TASK-FONT-001-D-IMPL-2 §1.1）。
+//
+// 与 NewApp 的关系：NewApp 拿现成的 `*material.Theme`；本函数拿 `*theme.Lazy`
+// （TASK-FONT-001-D-IMPL-1 的产出）。两条路径的不变量：
+//
+//   - **不接管** `theme.NewTheme()` 的默认构建路径（路线 B 的边界不变）——
+//     `Run` 仍然走同步默认主题，本函数只服务于显式选择懒加载的调用方；
+//   - 内部**先 `lz.SetNotify(...)` 再 `lz.Request()`**：顺序反了就没有
+//     "通知哪个窗口"的答案（IMPL-1 §2），且 SetNotify 只接受 Request 之前
+//     的首次绑定；
+//   - **不等待**加载完成：首帧用临时主题渲染，真主题在后续帧内换上。
+//
+// # SetNotify 失败的处理（第 3 版：写入责任已收回 IMPL-1）
+//
+// `SetNotify` 返回 false（重复绑定 / 晚绑定 / nil）时，本函数**只**补一次
+// `a.Invalidate()`，把下一次帧的机会补回来。`Report().NotifyLateBound`
+// 由 `Lazy.SetNotify` 内部置位——本包对该字段**零命中**（`grep NotifyLateBound
+// pkg/runtime/app/` 必须无结果），这是 IMPL-1 §9-4 的验收项之一。
+func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
+	if view == nil {
+		return nil, fmt.Errorf("app: nil view")
+	}
+	if lz == nil {
+		return nil, fmt.Errorf("app: nil lazy")
+	}
+
+	// 先建壳、后填主题：通知回调需要 `*App` 才能 Invalidate，而回调可能在
+	// `Request()` 之后的任意时刻（后台 goroutine）触发。若等到 `th` 就绪才
+	// 构造 App，回调闭包就会读到尚未赋值的变量——那是数据竞争，不是时序问题。
+	a := &App{w: newWindow(cfg), view: view, lz: lz}
+
+	// 回调里**只允许请求重绘**（规则 R2）：绝不在这里替换 shaper。
+	bound := lz.SetNotify(func() { a.Invalidate() })
+
+	// Request 返回后临时主题一定可用（IMPL-1 §1.1：首次调用内同步构造）。
+	lz.Request()
+	a.th = lz.Theme()
+	if a.th == nil {
+		return nil, fmt.Errorf("app: 懒加载未提供可用主题（Lazy.Theme() 为 nil）")
+	}
+
+	if !bound {
+		// 通知通道不可靠：补一次失效，把"取真主题"的机会交给下一帧。
+		// 这里是**唯一**的补偿点；NotifyLateBound 的诊断由 Lazy 自己写。
+		a.Invalidate()
+	}
+	return a, nil
 }
 
 // Invalidate 请求窗口产生下一帧（状态更新契约 §2）。
@@ -187,7 +274,7 @@ func (a *App) Invalidate() {
 // 必须在主系统线程调用（内部走 app.Main()，契约 §4）。
 // 后台 goroutine 应在本调用之前启动，并使用 a.Invalidate() 请求重绘。
 func (a *App) Run() error {
-	go loop(a.w, a.view, a.th)
+	go a.loop()
 	mainFunc()
 	return nil
 }
@@ -212,10 +299,10 @@ func RunWith(view View, th *material.Theme, cfg Config) error {
 }
 
 // loop 驱动事件循环直到窗口关闭。
-func loop(w *app.Window, view View, th *material.Theme) {
+func (a *App) loop() {
 	var ops op.Ops
 	for {
-		e := w.Event()
+		e := a.w.Event()
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			// 窗口被销毁：循环结束。错误由调用方通过其它机制感知，
@@ -223,11 +310,76 @@ func loop(w *app.Window, view View, th *material.Theme) {
 			_ = e
 			return
 		case app.FrameEvent:
-			gtx := app.NewContext(&ops, e)
-			view.Layout(gtx, th)
-			e.Frame(gtx.Ops)
+			a.frame(&ops, e)
 		}
 	}
+}
+
+// frame 处理一个 FrameEvent：懒加载替换 → 排版 → 提交。
+//
+// # 顺序冻结（TASK-FONT-001-D-IMPL-2 §1.2），不得调整
+//
+//	① 帧内标记置真
+//	② Take()（只在帧内）→ 只换 Shaper
+//	③ 排版（计时区间）
+//	④ 记首次排版耗时（只记一次）
+//	⑤ 提交
+//	⑥ 记首次提交时刻（提交返回**之后**）
+//
+// 四条不许动的理由：
+//
+//  1. ② 必须在 FrameEvent 内：`th.Shaper` 非并发安全，替换与渲染必须在同一
+//     goroutine；跨 goroutine 共用 shaper 是 Go 运行时 fatal error
+//     （D 卡 §4.3.2）。
+//  2. ② **只换 Shaper**：同时改 Palette / 字号会让"布局差"混入无关变量，
+//     D6-6 的度量差就不可归因了。
+//  3. ⑥ 必须在 ⑤ 之后：`e.Frame` 返回前只是"生成了绘制指令"；返回后才算
+//     这一帧交给了 Gio 的呈现路径（规则 R1：加载完成 ≠ 已提交）。
+//  4. ④ / ⑥ 只记首次：否则字段会随每帧漂移，变成一个没有意义的数字。
+//
+// 抽成方法的唯一理由：替换点必须唯一且可测。测试用合成 FrameEvent 直接
+// 调用本方法，从而在不依赖图形会话的前提下验证上面六步。
+func (a *App) frame(ops *op.Ops, e app.FrameEvent) {
+	a.inFrame.Store(true)
+	defer a.inFrame.Store(false)
+
+	swapped, layoutStart := a.swapPending()
+
+	gtx := app.NewContext(ops, e)
+	a.view.Layout(gtx, a.th)
+
+	if swapped && !a.firstLayoutDone {
+		a.lz.MarkFirstLayout(time.Since(layoutStart))
+		a.firstLayoutDone = true
+	}
+
+	e.Frame(gtx.Ops)
+
+	if swapped {
+		// 语义上界止于「Frame 已返回」：这是**提交**时刻的代理值，
+		// 不是屏幕呈现时刻，任何报告都不得表述为"用户已看到新字体"。
+		a.lz.MarkFrameSubmitted(time.Now())
+	}
+}
+
+// swapPending 取走待应用的真主题并只替换 Shaper——**懒加载切换的唯一实现**
+// （完成判据 §7-2：切换路径的赋值点必须唯一，且位于帧内分支）。
+//
+// 返回值：`swapped` 说明本帧是否发生了替换；`layoutStart` 是替换完成、
+// 排版即将开始的时刻（未替换时为零值，调用方不得用它计时）。
+//
+// 帧外调用返回 `(false, 零值)`，且**不消耗** pending：把"帧外替换"从
+// "靠测试抓的 bug"变成不可达的分支（见 `App.inFrame` 的注释）。
+func (a *App) swapPending() (swapped bool, layoutStart time.Time) {
+	if a.lz == nil || !a.inFrame.Load() {
+		return false, time.Time{}
+	}
+	next := a.lz.Take()
+	if next == nil {
+		return false, time.Time{}
+	}
+	a.th.Shaper = next.Shaper
+	return true, time.Now()
 }
 
 // RunWindowWithInvalidator 与 RunWindow 相同，另外把窗口的失效入口
