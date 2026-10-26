@@ -15,9 +15,14 @@ package app
 // 命名约定（避免与 DeepSeek 在同一 app 测试包中新增的辅助函数重名）：
 //   测试函数 `TestNightM1*`；其它标识 `nightWB*`。
 //
-// 生产口径约束：本文件**不新增任何生产 API**、不改 `App` 计时起点。
-// 它复用既有白盒入口 `frame()` / `newWindow()`——注意 `frame()` 是**合成帧**
-// 入口，与真实平台窗口的差异在 final-report.md 中显式标注。
+// 生产口径约束：本文件**不新增任何生产 API**、不新增测试钩子、不替换全局函数。
+// 注：M1 计时起点已由 R1-DS-M1-ORIGIN 修正为「构造入口快照」——原先写在
+// `&App{...}` 复合字面量里，而同一字面量的 `w: newWindow(cfg)` 按词法先求值，
+// 使起点晚于窗口装配。该接线由**源码核查**（两条构造路径的 `started := time.Now()`
+// 均在 `newWindow` / `SetNotify` / `Request` 之前）加既有回归共同支撑；
+// 本文件**不**声称对"装配是否被包含"做过动态测量。
+// 复用既有白盒入口 `frame()`——注意它是**合成帧**入口，
+// 与真实平台窗口的差异在 final-report.md 中显式标注。
 // ============================================================================
 
 import (
@@ -267,46 +272,6 @@ func TestNightM1LazyRequestAfterCreatedAt(t *testing.T) {
 	}
 	t.Logf("顺序成立：CreatedAt=%v ≤ RequestedAt=%v；构造外部区间=[%v, %v]",
 		rep.CreatedAt, lr.RequestedAt, before, after)
-}
-
-// TestNightM1StartExcludesWindowHandle 量化「M1 起点之前、被测仍在执行的那段」。
-//
-// 源码事实（本轮静态判定）：`NewApp` / `NewLazyApp` 都在**复合字面量里**
-// 给 `createdAt` 赋值，而同一字面量的前一个字段是 `w: newWindow(cfg)`。
-// Go 规范规定复合字面量字段的求值按**词法从左到右** ⇒ `newWindow(cfg)` 先于
-// `time.Now()` ⇒ **窗口句柄构造被排除在 M1 之外**。
-//
-// 这里做两件事：
-//  1. 用同构的本地字面量证明该求值顺序（语言层证据，可运行）；
-//  2. 批量测 `newWindow` 的耗时，**界出**被排除区间的量级。
-func TestNightM1StartExcludesWindowHandle(t *testing.T) {
-	// ① 语言层：同构字面量的求值顺序
-	order := make([]string, 0, 2)
-	markWin := func() *App { order = append(order, "newWindow"); return nil }
-	markNow := func() time.Time { order = append(order, "createdAt"); return time.Now() }
-	_ = struct {
-		w         *App
-		createdAt time.Time
-	}{w: markWin(), createdAt: markNow()}
-	if len(order) != 2 || order[0] != "newWindow" || order[1] != "createdAt" {
-		t.Fatalf("复合字面量求值顺序异常：%v（期望 [newWindow createdAt]）", order)
-	}
-
-	// ② 被排除区间的量级：`newWindow` 单次远低于粒度 ⇒ 必须批量。
-	const iters = 200000
-	start := time.Now()
-	for i := 0; i < iters; i++ {
-		_ = newWindow(Config{Title: "night-m1-excl"})
-	}
-	total := time.Since(start)
-	if total <= 0 {
-		t.Fatalf("批量总耗时 = %v：计时器读不出该量级 ⇒ 被排除区间的量级未验证", total)
-	}
-	per := float64(total.Nanoseconds()) / float64(iters)
-	t.Logf("被排除区间 `newWindow` 单次 ≈ %.1f ns（%d 次总量 %v）⇒ 相对 M1 量级可忽略，"+
-		"但口径上**确实不含**窗口句柄构造；真实平台窗口在首次 `w.Event()` 才创建，"+
-		"因此新建证的只是 Go 层对象与选项装配",
-		per, iters, total)
 }
 
 // ===========================================================================

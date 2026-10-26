@@ -225,7 +225,14 @@ func newWindow(cfg Config) *app.Window {
 //
 // 平台窗口在首次 w.Event() 时才真正创建（S0 源码证据），因此本函数
 // 不涉及显示服务器；错误只来自参数校验。
+//
+// M1 起点按 IMPL-3 §4.4 取**构造入口**：先记录 M1，再装配窗口。
+// 不能写进 `&App{...}` 字面量——复合字面量字段按词法从左到右求值，
+// `w: newWindow(cfg)` 会先于 `createdAt: time.Now()`，使起点晚于窗口装配。
 func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
+	// 入口快照：整条构造路径只取这一次时间。
+	started := time.Now()
+
 	if view == nil {
 		return nil, fmt.Errorf("app: nil view")
 	}
@@ -238,7 +245,7 @@ func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 		view:      view,
 		th:        th,
 		strict:    cfg.StrictFontFailure,
-		createdAt: time.Now(),
+		createdAt: started,
 	}, nil
 }
 
@@ -261,6 +268,10 @@ func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 // 由 `Lazy.SetNotify` 内部置位——本包对该字段**零命中**（`grep NotifyLateBound
 // pkg/runtime/app/` 必须无结果），这是 IMPL-1 §9-4 的验收项之一。
 func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
+	// 入口快照：必须早于 newWindow 与 SetNotify / Request（后者会同步构造临时主题，
+	// 按 §4.4 属构造路径的有界同步成本，应计入 M1）。
+	started := time.Now()
+
 	if view == nil {
 		return nil, fmt.Errorf("app: nil view")
 	}
@@ -271,7 +282,7 @@ func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
 	// 先建壳、后填主题：通知回调需要 `*App` 才能 Invalidate，而回调可能在
 	// `Request()` 之后的任意时刻（后台 goroutine）触发。若等到 `th` 就绪才
 	// 构造 App，回调闭包就会读到尚未赋值的变量——那是数据竞争，不是时序问题。
-	a := &App{w: newWindow(cfg), view: view, lz: lz, strict: cfg.StrictFontFailure, createdAt: time.Now()}
+	a := &App{w: newWindow(cfg), view: view, lz: lz, strict: cfg.StrictFontFailure, createdAt: started}
 
 	// 回调里**只允许请求重绘**（规则 R2）：绝不在这里替换 shaper。
 	bound := lz.SetNotify(func() { a.Invalidate() })
