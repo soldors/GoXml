@@ -6,9 +6,10 @@
 //   - 只消费已验证的事实，不重新推导布局语义、不重新判断兼容性。
 //
 // 当前实现范围：静态 Page/Text 整页固化、Column/Row/Page 布局、`<Spacer>` 占位、
+// `<Grid>` 网格（列定义、行优先换行、补位单元格、Gap 双轴）、
 // `<Text>`/`<Button>` 的绑定读取与 Click 事件、`<If>`/`<For>` 内联展开，
 // 以及 `Width`/`Height`/`Align`/`Justify`/`Gap` 的映射。
-// `<Grid>`、`<Expanded>` 与 `<Input>`/`<Image>` 尚未实现，见输出契约 §4.6。
+// `<Expanded>` 与 `<Input>`/`<Image>` 尚未实现，见输出契约 §4.6。
 package codegen
 
 import (
@@ -622,6 +623,10 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 			return "", err
 		}
 		return g.containerExpr(n.Children, true, "gtx", fields)
+
+	case "Grid":
+		// 列定义见 Contracts.GridColumn；生成形态与规范推演见 grid.go 文件头。
+		return g.gridExpr(n)
 
 	case "Spacer":
 		return g.spacerExpr(n)
