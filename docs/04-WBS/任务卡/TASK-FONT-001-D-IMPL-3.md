@@ -1,8 +1,12 @@
-# TASK-FONT-001-D-IMPL-3：诊断、失败终态与严格语义（第 3 版接口已冻结，实现未开始）
+# TASK-FONT-001-D-IMPL-3：诊断、失败终态与严格语义（第 3 版接口已冻结，实现已完成，待提交）
 
 ## 元信息
 
-- 状态：**接口与失败语义已冻结（第 3 版，按评审意见同步 `CompletedAt` 失败路径口径），实现未开始**
+- 状态（三段式，**不得合并表述**）：
+  - **实现状态：已完成**（2026-10-23，生产代码 + 10 个用例落盘，`go build` / `go vet` 通过）
+  - **实现自检：已通过**——依据**本次本地执行记录**，**未经独立复验**，不得作为验收结论
+  - **正式验收：待 `TASK-FONT-001-D-ACCEPT`**——**不得**标为"正式验收完成"
+- 接口与失败语义：**第 3 版已冻结**，本次实现未改动冻结接口
 - 上级：`TASK-FONT-001-D`（§12 实现边界冻结）
 - 前置：`TASK-FONT-001-D-IMPL-1`（状态机与 `Report`）、`TASK-FONT-001-D-IMPL-2`（帧内切换）
 - 交付物：`Report` 完整字段、`Config.StrictFontFailure`、指标分离报告、测试
@@ -22,6 +26,14 @@
 | B | 失败路径 `LoadElapsed` 无法成立（`LoadedAt` 为零），但 M3 又要求它表示后台总耗时 | 字段表补 `CompletedAt`；M3 计量边界改为 `RequestedAt→CompletedAt`（成功/失败都记）；`TestFontLazyLoadFailureVisible` 增加失败路径耗时断言，见 §3 / §4.1 |
 | C | `NotifyLateBound` 产出方写成本卡前置的 IMPL-2 | 改为**IMPL-1**（`SetNotify` 内部置位），见 §3 字段表 |
 | — | 97–109 ms 易被当成 M2 实测值 | §4.2 第 3 条补"它不是 M2 实测值、不得与 20 ms 直接比" |
+
+### 修订记录（第 4 版：仅职责描述与实现登记，接口与错误语义未变）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| D | §3 字段表把 `Err` 的产出方写成"本卡" | 按实际职责更正为 **IMPL-1 写入 / 本卡验证可观测性**；**不**据此回头修改 IMPL-1，见 §3 表下说明 |
+| E | M1 的起止点未在冻结接口里定义 | 授权**最小可测化**：只记录与暴露、不定阈值、不混入候选循环 `Elapsed`；起止事件与零值语义见 §4.4 |
+| F | §5 只列 7 个用例，实际实现 10 个 | §5.1 登记超出最小集的 3 个及其依据；§5 七用例未删减 |
 
 ## 0. 本卡要解决的是**语义冲突**，不是加日志
 
@@ -101,7 +113,20 @@ func (a *App) Lazy() *theme.Lazy
 | `FrameSubmittedAt` | IMPL-2 | 真主题首次**提交返回后**的时刻（代理指标，非屏幕呈现） |
 | `FirstLayoutAfterSwap` | IMPL-2 | 切换后首次排版耗时 |
 | `NotifyLateBound` | IMPL-1 | `SetNotify` 重复/晚绑定/nil 绑定未成功（第 3 版从 IMPL-2 收回） |
-| `Err error` | 本卡 | 终态错误；失败时 `errors.Is(err, contracts.ErrFontNotFound)` 为真 |
+| `Err error` | **IMPL-1**（写入）/ 本卡（**只验证可观测性**） | 终态错误；失败时 `errors.Is(err, contracts.ErrFontNotFound)` 为真 |
+
+> **`Err` 产出方的职责划分（第 4 版更正，不改变错误语义）**
+>
+> 第 3 版把 `Err` 的产出方写成"本卡"，是**归口**（本卡负责它的语义与验收），
+> 不是产出实现。实际分工：
+>
+> - **IMPL-1**：后台加载进入终态（`Ready`/`Failed`）时写入 `l.rep.Err`
+>   （`pkg/runtime/theme/lazy.go`）。失败值含 `contracts.ErrFontNotFound`。
+> - **本卡（IMPL-3）**：**不写入**该字段，只让它可观测——
+>   ① `App.Lazy()` 交出句柄；② 用例断言 `errors.Is(rep.Err, contracts.ErrFontNotFound)`；
+>   ③ `StrictFontFailure=true` 时由 `Run()` 包装返回。
+>
+> 因此**不**为迎合"产出方=本卡"这句表述去改 IMPL-1。D 卡 §6.1 已同步同一描述。
 
 ## 4. 规则 R3：四个指标独立验收（不得互相替代）
 
@@ -149,6 +174,32 @@ func (a *App) Lazy() *theme.Lazy
 - 不得输出"总耗时"合数——四个数各自有边界，加起来没有物理含义；
 - 首帧预算的阈值**必须**在 ACCEPT 卡拿到实测值后写死，本卡只负责让它可测。
 
+### 4.4 M1 的最小可测化（授权范围，第 4 版登记）
+
+冻结接口里没有 M1 的起止点定义。本卡按授权做**最小可测化**——
+**只记录与暴露，不定阈值，不做通用性能监控框架**。
+
+| 项 | 定义 |
+|---|---|
+| 起点 | `NewApp` / `NewLazyApp` **构造入口**（`createdAt = time.Now()`，构造时快照） |
+| 止点 | **第一个 `FrameEvent` 开始处理**的瞬间（`view.Layout` **之前**，`frame()` 入口） |
+| 时钟来源 | `time.Now()` / `time.Now().UnixNano()`，**墙钟**，不是单调时钟也不是 CPU 时间 |
+| 读取时机 | `Run()` 期间任意时刻可读；语义上在窗口关闭后读才有完整含义 |
+| 零值语义 | `FirstFrameReport.Measured() == false`（尚未有过帧）时 `Elapsed` **为 0 且无意义** |
+| 不可用时 | 用例必须报「**未验证**」并 `t.Fatalf`，**不得默认通过** |
+| 阈值 | **不在本卡设定**，归 `D-ACCEPT` |
+| 明确不做 | 不混入候选循环 `Elapsed`（M2）；不加"总耗时"；不做分位数/多轮/ warmup 隔离 |
+
+**为什么止点定在"`Layout` 之前"而不是"`e.Frame` 返回后"**：M1 的语义是
+"首帧**开始处理**之前等了多久"，即"有没有被字体加载阻塞"；
+`e.Frame` 之后的提交耗时属于渲染路径，**不属于**首帧等待。
+`FrameSubmittedAt`（IMPL-2，M1 之外）才是提交侧的代理指标，两者不得混用。
+
+**实测边界（本机，不得固化为跨机器阈值）**：本机 `time.Now()` 有效粒度约 **0.53 ms**
+（2026-10-23 实测：空区间 2000/2000 恒为 0 ns；忙等翻动值 523–548 µs）。
+因此单帧级微秒断言在本机是**空判据**；本卡的 M1 读数同样受此限制，
+用例只断言"可测出非零"与"起止顺序"，**不**断言具体数值区间。
+
 ## 5. 测试要求（全部以 `TestFontLazyLoad` 开头）
 
 | 用例 | 断言 |
@@ -160,6 +211,32 @@ func (a *App) Lazy() *theme.Lazy
 | `TestFontLazyLoadNonStrictKeepsRunning` | 默认 `false`：`Run()` 返回 nil，但 `Report().Err` 仍可读到失败原因 |
 | `TestFontLazyLoadMetricSeparation` | 四个指标字段**分别**可读、互不相同源；断言不存在"合数"字段；`ProbeElapsed` 只覆盖候选循环、`LoadElapsed >= ProbeElapsed`、`CompletedAt-RequestedAt ≈ LoadElapsed` |
 | `TestFontLazyLoadNoSilentFallback` | 失败后界面不得表现为"字体正常但内容错"——用 `MissingGlyphs` 或 `Coverage` 证明临时字体缺字形是可观测的 |
+
+### 5.1 实际实现清单（10 个，§5 七用例之外多 3 个）
+
+文件：`pkg/runtime/app/font_lazy_strict_test.go`（新增）。
+
+| # | 用例 | 来源 |
+|---|---|---|
+| 1 | `TestFontLazyLoadDiagnosticsFields` | §5 |
+| 2 | `TestFontLazyLoadFailureVisible` | §5 |
+| 3 | `TestFontLazyLoadFailureDistinguishable` | §5 |
+| 4 | `TestFontLazyLoadStrictFailure` | §5 |
+| 5 | `TestFontLazyLoadNonStrictKeepsRunning` | §5 |
+| 6 | `TestFontLazyLoadMetricSeparation` | §5 |
+| 7 | `TestFontLazyLoadNoSilentFallback` | §5 |
+| 8 | `TestFontLazyLoadStrictFlagNoEffectOnSyncPath` | **超出 §5**：完成判据 3 要求"同步路径在开关两种取值下行为一致"，需要一个显式用例，否则只靠"没写"来证明 |
+| 9 | `TestFontLazyLoadFirstFrameReport` | **超出 §5**：M1 最小可测化的读数与 `Measured()` 零值语义（§4.4） |
+| 10 | `TestFontLazyLoadNoImplicitRetry` | **超出 §5**：D 卡 §7 第 5b 项要求"计数器 1 → 2"，`TestFontLazyLoadNoAutoRetry`（IMPL-1）在 `theme` 层，本用例从 **`App` 侧**复核 `Attempts` |
+
+**两条实现约束（写死，防退化）**：
+
+- `TestFontLazyLoadNoSilentFallback` **必须构造可验证的缺字形场景**，
+  **不得**依赖"本机嵌入字体恰好缺字"这种不可控前提。实现做法是
+  对照组（`material.NewTheme()`，断言缺字数为 **0**，证明检测器**不是恒真**）
+  + 实验组（`text.NewShaper(text.NoSystemFonts())`，断言**必报**缺字）。
+- 失败路径用例注入 `failReadDelay = 50ms` 的读取延迟，否则真实"文件不存在"
+  只有几微秒、`LoadElapsed` 读数恒为 0（本机计时粒度 0.53 ms），断言会变成空判据。
 
 ## 6. 验收命令
 
@@ -187,3 +264,41 @@ go test -run TestEmbeddedFallback ./pkg/runtime/theme/
 - 不改 `theme.NewTheme()` / `app.Run` 的既有语义；
 - 不定首帧预算阈值（ACCEPT，需实测）；
 - 不碰 Linux（独立待办）。
+
+## 9. 本轮实现登记（2026-10-23）
+
+### 9.1 生产代码
+
+| 文件 | 改动 |
+|---|---|
+| `pkg/runtime/app/app.go` | `Config.StrictFontFailure`；`App` 增加 `strict` / `createdAt` / `firstFrameAt atomic.Int64`；`NewApp` / `NewLazyApp` 快照；`frame()` 入口记 M1 止点（只记第一次）；`Run()` 改为 `return a.fontFailure()` |
+| `pkg/runtime/app/lazy_status.go`（新增） | `App.Lazy()`、`FirstFrameReport` + `Measured()` + `App.FirstFrame()`、`App.fontFailure()` |
+
+### 9.2 自查状态（**自检，不是验收**）
+
+复跑时间 2026-10-23，**全部命令取真实退出码**（未走 `| tail` 管道）：
+
+| 命令 | 退出码 | 计数（**口径已标注**） |
+|---|---|---|
+| `go test -v -run TestFontLazyLoad ./pkg/runtime/theme/ ./pkg/runtime/app/` | 0 | 顶层 PASS **34**、子测试 PASS **15**、FAIL **0**、SKIP **0** |
+| `go test -count=1 -run TestFontProbe ./pkg/runtime/theme/` | 0 | —（0.966s） |
+| `go test -count=1 -run TestEmbeddedFallback ./pkg/runtime/theme/` | 0 | —（12.371s） |
+| `go test -v -count=1 -run TestFontLazyLoad ./pkg/runtime/app/` | 0 | 顶层 PASS **17**（IMPL-3 的 10 个 + IMPL-2 的 7 个，逐个列名） |
+| `go test -v -count=1 ./internal/docgate/` | 0 | 顶层 PASS **13**、FAIL 0、SKIP 0 |
+| `go vet ./pkg/runtime/app/` | 0 | — |
+| `go build ./...` | 0 | — |
+
+> 计数口径：**顶层测试函数数 ≠ 子测试数 ≠ 表内形态数**。34 是两包合计的
+> 顶层 `TestFontLazyLoad*` 函数数，15 是其子测试；app 包单独跑是 17 个顶层函数。
+
+- 变异取证 M7–M12 全部使对应用例变红，文件按 SHA-256 还原后复跑通过；
+- **未推送、未提交**；详细命令输出与实测值见 `docs/05-开发/dev-log/2026-10-23.md` §12。
+
+### 9.3 明确"未验证 / 待测"（交 `D-ACCEPT`）
+
+1. **M1 阈值**未定（§4.4），本卡只做到可测；
+2. D 卡 §7 第 2 项"不超过同步路径总耗时"的**比较**未实现；
+3. D 卡 §7 第 4 项"异步化后系统命中仍不解析嵌入"**无本卡专门用例**（依赖 IMPL-1 既有断言传递）；
+4. **真实窗口**（非合成 `FrameEvent`）下的 M1 读数未测；
+5. 跨平台（Linux/macOS）、`-race` 均未跑；
+6. 上述结论**均来自本机单次执行**，未经独立复验。

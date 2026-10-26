@@ -97,19 +97,37 @@ type LoadReport struct {
 	// ---- 状态机 ----
 	State      LoadState
 	Family     string
-	Attempts   int          // Request 实际触发加载的次数（Loading 期间的合并调用不计）
-	TempSource string       // 临时主题来源：embedded-subset / custom / gio-default
-	Probe      *ProbeReport // 后台探测诊断的副本（含 Candidates / Embedded / Coverage / Err）
+	Attempts   int    // Request 实际触发加载的次数（Loading 期间的合并调用不计）
+	TempSource string // 临时主题来源：embedded-subset / custom / gio-default
+	// Probe 是探测诊断的副本（含 Candidates / Embedded / Coverage / Err）。
+	//
+	// **它可以保留历史探测留下的诊断内容**（D-ACCEPT-07 裁决 ②）：
+	// 缓存命中时本轮没有执行探测，但历史报告里的候选状态、嵌入链路、
+	// 覆盖判定对排查仍有价值，因此**不得**因为命中就清空。
+	//
+	// 由此必须与本轮指标分开看：
+	// `Probe.Elapsed` 是"这份报告记录的那次探测"的耗时（可能是历史值），
+	// 本轮的耗时看 `ProbeElapsed`，本轮有没有探测看 `Probe.ProbeRan`。
+	Probe *ProbeReport
 
 	// ---- 计时（四个指标见 IMPL-3 §4，禁止互相替代、禁止合数）----
 	RequestedAt time.Time     // 最近一次**实际开始**加载的时刻
 	LoadedAt    time.Time     // 后台**产出可用主题**的时刻；零值 = 没有产出（失败必为零）
 	CompletedAt time.Time     // 后台进入**终态**（Ready 或 Failed）的时刻；成败都非零
 	LoadElapsed time.Duration // CompletedAt - RequestedAt，后台墙钟总量
-	// ProbeElapsed 是 `probe()` **候选循环**的实耗时（读文件 + 解析 + 覆盖判定）。
+	// ProbeElapsed 是**本轮**加载实际执行探测所耗费的时间
+	// （`probe()` 候选循环：读文件 + 解析 + 覆盖判定）。
 	//
-	// 两个"不是"：不是 `ResolveWithReport` 的总量（那还含补链与嵌入兜底），
-	// 也不是"纯解析耗时"（现有 API 分不开，见 IMPL-1 §6）。
+	// 四个"不是"（D-ACCEPT-07 冻结，避免与历史值混淆）：
+	//
+	//	- 不是 `ResolveWithReport` 的总量（那还含补链与嵌入兜底）；
+	//	- 不是"纯解析耗时"（现有 API 分不开，见 IMPL-1 §6）；
+	//	- 不是 `Probe.Elapsed`——后者是"该报告记录的那次探测"的耗时，
+	//	  缓存命中时**可能是历史值**；
+	//	- **0 不等于没耗时、也不等于失败**：它只表示"本轮没有记录到探测耗时"，
+	//	  本轮要走没走探测看 `Probe.ProbeRan`。
+	//
+	// 本轮没执行探测时保持 0（由 `Request` 侧的字段清理归零，写入处只做门控）。
 	ProbeElapsed time.Duration
 	// TempElapsed 是临时主题构造耗时（含一次嵌入解析），属首帧成本，只写一次。
 	TempElapsed time.Duration
@@ -338,7 +356,15 @@ func (l *Lazy) load(attempt int, notify func()) {
 		return
 	}
 	l.rep.Probe = copyProbeReport(probeRep)
-	if probeRep != nil {
+	// ProbeElapsed 是**本轮**指标：只有本轮真的执行了探测流程才记录。
+	//
+	// 缓存命中时 `ProbeRan == false`，本轮没有探测耗时 ⇒ **保持 0**，
+	// **不得**沿用 `Probe.Elapsed` 里的历史值——那会把上一次的耗时
+	// 伪装成本轮的耗时，进而让 `LoadElapsed >= ProbeElapsed` 这类判定
+	// 建立在不同源的测量上（D-ACCEPT-07 实证：命中时 `Now()` 根本没被调用）。
+	//
+	// 不赋值即可为 0：`Request` 侧在每次新尝试时已把本字段归零。
+	if probeRep != nil && probeRep.ProbeRan {
 		l.rep.ProbeElapsed = probeRep.Elapsed
 	}
 	l.rep.CompletedAt = now

@@ -710,34 +710,85 @@ func TestFontLazyLoadNoFrameCounting(t *testing.T) {
 		// 还是"到达后"无法判定——把这种帧当成"到达前的帧"去断言"不得替换"
 		// 就是拿一个不可判定的事实下结论，会在全量跑（时序不同）时偶发失败。
 		//
-		// 解法：按**帧的起止状态是否一致**给每一帧分类——
-		//   - 起止一致（都未 Ready）：确定处于到达前，断言不得替换；
-		//   - 起止不一致：跨越到达时刻，**单列并跳过**判定，不强行下结论。
+		// 解法：按帧的**起止状态**给每一帧分类，只有"两端都未 Ready"才断言——
+		//   - pre != post：跨越到达时刻，跳过判定；
+		//   - pre == Ready：帧开始前已 Ready（循环顶部 State() 检查与本处采集之间到达），跳过；
+		//   - post == Ready：本帧结束时已 Ready，跳过；
+		//   - 其余（pre 与 post 都非 Ready）：确定处于到达前，断言不得替换。
+		//
+		// 第三类（pre == Ready）是第二轮修正补的：早先只判 pre != post，
+		// 遗漏"检查后到达"这一窗口，导致约 1/31 的间歇误报。
 		var ops op.Ops
 		var rec frameRecorder
 		before, straddle := 0, 0
-		deadline := time.Now().Add(15 * time.Second)
+		// frameDiagMark 只是**诊断观察点**：越过它时记录墙钟，**不结束循环**。
+		// 它不再是完成/失败条件——把它当退出条件会让名义 15s 预算缩水到约 5ms。
+		const frameDiagMark = 500
+		var markAt time.Duration
+
+		started := time.Now()
+		reachedReady := false
+		deadline := time.Now().Add(15 * time.Second) // 唯一的定时退出条件
 		for time.Now().Before(deadline) {
 			if lz.State() == theme.LoadReady {
+				reachedReady = true
 				break
 			}
 			pre := lz.State()
 			a.frame(&ops, synthFrameEvent(&rec))
 			post := lz.State()
 			before++
-			if pre != post {
+			// 帧分类（三态，缺一不可）：
+			//
+			//  ① pre != post                    —— 本帧内跨越到达时刻，先后不可判定；
+			//  ② pre == theme.LoadReady         —— 帧开始前已 Ready（循环顶部的 State()
+			//     检查与这里的采集之间状态变成了 Ready，即"检查后到达"）；
+			//  ③ post == theme.LoadReady        —— 本帧结束时已 Ready。
+			//
+			// 只有 **pre 与 post 都未 Ready** 时，才能确定该帧完整处于"到达前"，
+			// 从而允许断言"不得替换"。
+			//
+			// 历史缺陷（本用例约 1/31 间歇失败）：早先只排除 ①，遗漏 ②。
+			// 此时 pre == post == Ready 会落进断言分支，把一帧"已经到达后"的帧
+			// 误判成"到达前"，于是 :740 的 t.Fatalf 误报——这是断言适用范围的问题，
+			// 不是被测量行为的问题。修复只收窄断言范围，不放宽被测量的语义。
+			switch {
+			case pre != post:
 				// 跨越到达时刻：无法判定先后，只计数。
 				straddle++
-			} else if !lz.Report().FrameSubmittedAt.IsZero() {
-				t.Fatalf("确定处于到达前的第 %d 帧发生了替换："+
-					"替换不是由状态驱动的", before)
+			case pre == theme.LoadReady:
+				// 帧开始前已 Ready：属"到达后"，不属本断言的适用范围。
+				straddle++
+			case post == theme.LoadReady:
+				// 本帧结束时已 Ready：同样不属"到达前"。
+				straddle++
+			default:
+				// 确定处于到达前：此时发生的替换必然是"非状态驱动"的缺陷。
+				if !lz.Report().FrameSubmittedAt.IsZero() {
+					t.Fatalf("确定处于到达前的第 %d 帧发生了替换："+
+						"替换不是由状态驱动的", before)
+				}
 			}
-			if before > 500 {
-				break
+			if before == frameDiagMark && markAt == 0 {
+				markAt = time.Since(started) // 只记录，不退出
 			}
 		}
+		elapsed := time.Since(started)
+
+		// F1：失败判定必须复检**真实状态**，不能只看 reachedReady。
+		// reachedReady 在循环顶部采集；若 Ready 恰在最后一帧运行期间或刚越过 deadline
+		// 时到达，标志仍为 false 而真实状态已是 Ready —— 只看标志会误报「墙钟耗尽」。
+		// 因此：以 lz.State() 为准判失败，reachedReady 只进诊断。
 		if lz.State() != theme.LoadReady {
-			t.Fatalf("15 秒内未进入 Ready（state=%s）", lz.State())
+			rep := lz.Report()
+			t.Fatalf("墙钟预算 %v 耗尽仍未进入 Ready（退出原因＝墙钟耗尽，不是帧数归因）："+
+				"已耗时=%v before=%d straddle=%d 帧观察点(%d帧)=%v reachedReady=%v state=%s err=%v",
+				15*time.Second, elapsed, before, straddle, frameDiagMark, markAt,
+				reachedReady, rep.State, rep.Err)
+		}
+		if markAt > 0 {
+			t.Logf("诊断：到达前跑满 %d 帧（越过观察点耗时 %v，总 %v）——最终已就绪，不构成失败",
+				frameDiagMark, markAt, elapsed)
 		}
 
 		// 若跨越帧没有替到（多数情况），Ready 之后的第一帧必须替换。

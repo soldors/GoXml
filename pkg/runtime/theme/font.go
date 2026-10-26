@@ -96,8 +96,38 @@ type ProbeReport struct {
 	Err error
 	// Timeout 表示发生过「因 deadline 放弃后续候选」。
 	Timeout bool
-	// Elapsed 是探测实际耗时（可能**超过** Timeout，见 probe 的超时语义）。
+	// Elapsed 是**本报告所记录的那一次探测**的耗时
+	// （可能**超过** Timeout，见 probe 的超时语义）。
+	//
+	// 与 `LoadReport.ProbeElapsed` 的对照（D-ACCEPT-07 冻结，两者**不可混用**）：
+	//
+	//	- 本字段＝这份报告所描述的**那一次**探测花了多久。
+	//	  缓存命中返回的是历史报告的派生副本，本字段因此**可能是历史值**——
+	//	  这是有意为之：它仍如实描述它所记录的那次探测。
+	//	- `LoadReport.ProbeElapsed`＝**本轮**加载实际花在探测上的时间，
+	//	  本轮没探测就是 0。
+	//
+	// 要判断"本轮到底跑没跑探测"，看 `ProbeRan`，**不要**看本字段是否为 0。
 	Elapsed time.Duration
+	// ProbeRan 表示本报告所描述的**调用**是否实际执行了探测流程。
+	//
+	// 三个必须分清的点（D-ACCEPT-07 冻结）：
+	//
+	//  1. 它描述的是「**当前返回的这份报告所对应的那次调用**」，
+	//     不是"历史上是否曾经探测过"。缓存命中时返回的是**派生副本**，
+	//     副本里本字段为 false，而缓存中原始报告对象里它仍为 true——
+	//     同一个类型在不同对象中指代不同，必须配合派生关系理解，
+	//     **不得**跨对象混读。
+	//  2. 语义是"是否执行了**探测流程**"，**不是**"是否至少扫了一个候选"。
+	//     候选数为 0 时 `probe()` 照样执行、构造报告后早退，
+	//     那时本字段仍为 true（零工作量≠没执行）。
+	//  3. **`false` 不等价于"缓存命中"**。它只表示本轮没有执行探测流程；
+	//     例如未知 family 从未进入探测流程，`theme.go` 会合成一份报告，
+	//     其零值同样是 false。**不得**据 false 反推具体原因。
+	//
+	// 只有两处置值：`probe()` 在构造报告时置真（唯一构造点），
+	// 以及 `ResolveWithReport` 在缓存命中时对派生副本置假。
+	ProbeRan bool
 	// Scanned 是实际发生读取/解析尝试的候选数（缓存命中的测试用它证明没重扫）。
 	Scanned int
 	// Embedded 是嵌入兜底链路的诊断（B 卡 §4）。
@@ -288,7 +318,21 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 	defer p.mu.Unlock()
 
 	if id, ok := p.resolved[family]; ok {
-		return id, p.last, nil
+		// 缓存命中：本轮**没有**执行探测流程，但历史诊断（`Candidates` /
+		// `Embedded` / `Coverage`）对排查仍有价值，**必须保留**。
+		//
+		// 因此不能直接交出 `p.last`：那既会把「本轮没探测」说成「探测过」，
+		// 又会让调用方拿到 Provider 的内部对象（改动它会污染缓存，
+		// 而改的人往往以为自己拿到的是副本）。
+		//
+		// 做法是交出**独立的派生副本**：历史字段照抄，本轮执行状态置假。
+		// 深拷贝复用 `copyProbeReport`（与 `Lazy` 侧同一手法），
+		// 免得两处副本行为分叉。
+		derived := copyProbeReport(p.last)
+		if derived != nil {
+			derived.ProbeRan = false
+		}
+		return id, derived, nil
 	}
 	switch family {
 	case FamilyCJK:
@@ -470,7 +514,10 @@ func (p *Provider) Scans() int {
 func probe(opts ProviderOptions) (string, []font.FontFace, *ProbeReport) {
 	opts = opts.withDefaults()
 	start := opts.Now()
-	rep := &ProbeReport{Family: FamilyCJK}
+	// 唯一的报告构造点：三个返回点（零候选早退 / 命中成功 / 全部失败）
+	// 全都返回本对象，因此 `ProbeRan` 必须在**这里**置真——
+	// 放到循环之后会漏掉零候选早退那一条。
+	rep := &ProbeReport{Family: FamilyCJK, ProbeRan: true}
 	deadline := start.Add(opts.Timeout)
 
 	if len(opts.Candidates) == 0 {

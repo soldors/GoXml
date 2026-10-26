@@ -284,22 +284,56 @@ Windows / D3D11 / Gio v0.10.3 / `CGO_ENABLED=0`，**非 BLOCKED**）。
   且诊断看不出原因。这比同步失败更糟——同步失败至少会立刻报错。
   → 必须有"失败后诊断可见 + 终态明确"的验收用例。
 
+### 6.1 证据入口（`TASK-FONT-001-D-IMPL-3`）
+
+> 状态口径：下列用例**实现已完成、本地自检通过**，但**未经独立复验**；
+> 正式验收结论由 `TASK-FONT-001-D-ACCEPT` 出具，**不得**把"用例存在且通过"
+> 等同于"本条要求已验收"。
+
+| 本条要求 | 用例 | 位置 |
+|---|---|---|
+| 异步失败可从诊断读到（`Candidates` / `Embedded` / `Coverage` / `Err` 同字段） | `TestFontLazyLoadFailureVisible` | `pkg/runtime/app/font_lazy_strict_test.go` |
+| 错误链含 `contracts.ErrFontNotFound` | `TestFontLazyLoadFailureVisible`、`TestFontLazyLoadStrictFailure` | 同上 |
+| 终态明确：`Loading` 与 `Failed` 在读数上可区分 | `TestFontLazyLoadFailureDistinguishable` | 同上 |
+| 禁止静默故障：临时字体缺字形**必须可观测**（有对照组的非恒真判据） | `TestFontLazyLoadNoSilentFallback` | 同上 |
+| 非严格模式：不终止窗口，但失败原因仍可读 | `TestFontLazyLoadNonStrictKeepsRunning` | 同上 |
+| `StrictFontFailure` **不得**影响同步路径 | `TestFontLazyLoadStrictFlagNoEffectOnSyncPath` | 同上 |
+
+**职责说明（同步描述，不改变既有错误语义）**：`LoadReport.Err` 由 **IMPL-1**
+在后台加载进入终态时写入（`lazy.go`）；IMPL-3 **不写入**该字段，只负责让它
+**可观测**——暴露 `App.Lazy()` 句柄、验证 `errors.Is` 判定、在
+`StrictFontFailure=true` 时把该错误从 `Run()` 返回。
+IMPL-3 卡 §3 字段表把 `Err` 的产出方写为"本卡"，那是**归口**而非产出实现，
+已同步更正；**不**因该表述回头修改 IMPL-1。
+
 ## 7. D6：性能与行为验收
 
-| # | 验收点 | 方法 |
-|---|---|---|
-| 1 | 冷启动首帧不等待加载 | 首帧耗时与"完全不加载字体"的基线同量级 |
-| 2 | 后台完成时间可观测 | 记录并断言不超过冷启动同步路径的总耗时 |
-| 3 | 后续帧稳定 | 加载完成后连续 N 帧无新增分配/无重复解析 |
-| 4 | **系统命中时不解析嵌入**（既有约束） | 计数器注入，沿用 B4/C 的手法，**不得因异步化失效** |
-| 5 | 并发首次请求合并 | N 个并发请求只触发 1 次加载（计数器） |
+| # | 验收点 | 方法 | 证据入口（用例 → 归属卡） |
+|---|---|---|---|
+| 1 | 冷启动首帧不等待加载 | 首帧耗时与"完全不加载字体"的基线同量级 | **M1 可测化**：`TestFontLazyLoadFirstFrameReport`（IMPL-3，**只记录与暴露，不定阈值**）；"不等待加载"本身由 IMPL-2 `TestFontLazyLoadFrameSubmittedAfterLoaded` / `TestFontLazyLoadNoRepeatShaping` 覆盖。**阈值待 `D-ACCEPT`** |
+| 2 | 后台完成时间可观测 | 记录并断言不超过冷启动同步路径的总耗时 | `TestFontLazyLoadDiagnosticsFields`（成功路径）、`TestFontLazyLoadFailureVisible`（失败路径 `CompletedAt` / `LoadElapsed` 同样非零）。**"不超过同步路径总耗时"的比较阈值未落地**，待 `D-ACCEPT` |
+| 3 | 后续帧稳定 | 加载完成后连续 N 帧无新增分配/无重复解析 | `TestFontLazyLoadNoRepeatShaping`、`TestFontLazyLoadSwapOncePerGeneration`（IMPL-2） |
+| 4 | **系统命中时不解析嵌入**（既有约束） | 计数器注入，沿用 B4/C 的手法，**不得因异步化失效** | 同步路径：`TestFontFallbackChainSupplementOnDemand/覆盖完整时不加载嵌入`（C 卡）；异步路径下该断言不失效：`TestFontLazyLoadTempDoesNotPolluteProbe`（IMPL-1） |
+| 5 | 并发首次请求合并 | N 个并发请求只触发 1 次加载（计数器） | `TestFontLazyLoadCoalesce`（IMPL-1） |
 | 5a | **Loading 期间重复请求立即返回临时字体**（§3 冻结） | 注入一个"永不完成"的加载器，断言请求**不阻塞**、
-  返回临时字体，且加载器只被调用 1 次 |
+  返回临时字体，且加载器只被调用 1 次 | `TestFontLazyLoadNonBlockingOnLoading`（IMPL-1） |
 | 5b | **Failed 后不自动重试**（§3 冻结） | 注入失败加载器，断言：失败后**不发起**第二次加载；
-  只有显式重试请求才触发第二次（计数器 1 → 2） |
-| 6 | 布局跳动可测 | 换字体前后同一段文本的度量差有断言，且**有明确接受阈值或修复** |
-| 7 | 失败诊断可见 | 注入两条链路全失败，断言 `Diagnostics()` 能读到原因 |
-| 8 | 两个预算分开报告 | 探测耗时与首帧耗时**分别**输出，不得只报一个 |
+  只有显式重试请求才触发第二次（计数器 1 → 2） | `TestFontLazyLoadNoAutoRetry` + `TestFontLazyLoadExplicitRetry`（IMPL-1，计数器）；`TestFontLazyLoadNoImplicitRetry`（IMPL-3，**从 `App` 侧**复核：`Attempts` 恒 1，显式 `Request()` 后 → 2） |
+| 6 | 布局跳动可测 | 换字体前后同一段文本的度量差有断言，且**有明确接受阈值或修复** | `TestFontLazyLoadLayoutDelta`（IMPL-2，阈值 ≤2%，理由写进代码注释） |
+| 7 | 失败诊断可见 | 注入两条链路全失败，断言 `Diagnostics()` 能读到原因 | `TestFontLazyLoadFailureVisible` + `TestFontLazyLoadFailureDistinguishable`（IMPL-3）；A/B 回归：`TestFontProbeErrFontNotFound`、`TestEmbeddedFallbackFailureSemantics` |
+| 8 | 两个预算分开报告 | 探测耗时与首帧耗时**分别**输出，不得只报一个 | `TestFontLazyLoadMetricSeparation`（IMPL-3，含"不存在合数/Total/Sum 字段"的反射断言） |
+
+**口径说明（三条，避免把索引当结论）**：
+
+1. 上表"证据入口"是**用例名索引**，不是验收结论。IMPL-3 名下的用例当前只有
+   **本地实现自检**（执行记录见 dev-log，未经独立复验）；C / IMPL-1 / IMPL-2
+   名下的是既有回归。正式结论由 `TASK-FONT-001-D-ACCEPT` 出具。
+2. **第 1 项的阈值**与**第 2 项"不超过同步路径总耗时"的比较**均**未在 IMPL-3 落地**
+   ——M1"只做可测化、不定阈值"是明确裁决（D 卡 §9-1 亦禁止先拍数字再找数据）。
+   这两项留待 `D-ACCEPT` 依据实测确定，**不得**视为已满足。
+3. 第 4 项的两条入口分别覆盖同步与异步，**都不是 IMPL-3 新增**；IMPL-3 未对
+   "异步化后系统命中仍不解析嵌入"再写专门用例（依赖 IMPL-1 的既有断言传递），
+   登记为 `D-ACCEPT` 的复核项。
 
 ## 8. 三个设计问题的冻结答复
 

@@ -52,6 +52,7 @@
 | TASK-BENCH-001 | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | go test -bench . -benchmem ./benchmarks/... |
 | TASK-AUDIT-001 | docs/audit | 全项目 TASK 总账审计：基线锁定、任务全集、逐项核证与总账发布（**只读审计**，不顺手修代码；发现/处置/整改/验收四阶段分离） | - | 见任务卡；产物：`docs/04-WBS/TASK总账.md`、`docs/04-WBS/审计发现清单.md` |
 | TASK-AUDIT-002 | docs/audit | A1 深化成果的独立复核（A2）：**A2-0 提交链与远端状态独立核验为前置门槛**（五个 SHA、父子关系、远端引用、审计工作树状态），通过后进入原五组问题；允许确认/降级/升级/撤销；只接收固定版本材料，**不得直接修复** | TASK-AUDIT-001 | 见任务卡；产物建议落盘：`docs/04-WBS/A2独立复核报告.md` |
+| TASK-APP-FLAKY-001 | runtime/app | `TestFontLazyLoadNoFrameCounting/晚到` 提前退出缺陷的最小修复（**任务卡第 6 版＝实施与验收结果回填；第 1–5 版身份与修订记录保留**；**实施已完成**：`pkg/runtime/app/font_lazy_test.go` `H_base 6d9b451f…` → `H_fix f5cf868a…`，+26/−4，CRLF 保留）：删除 `:735-737` 的 500 帧退出条件、让 `:719` 的 15 s 墙钟成为真实预算、500 帧降级为诊断观察点、区分墙钟耗尽与帧观察点的失败归因；保留 `straddle` 分类与全部核心断言，不改生产代码。**实测**：修复前隔离运行 **7/7 失败**（已可确定性复现；此前审计 60 次未复现是因整包/整用例先跑「早到」预热了进程内共享 `defaultProvider`）；修复后隔离 **6/6**、父用例 **3/3**、整包 **20/20** 均 PASS，build/vet/docgate rc=0。**结论边界（不得扩大）**：①**测试自身提前退出的根因已定位并修正**；②**生产代码未发现缺陷证据**——不等于"生产代码已证明无缺陷"（未做变异/负向验证、未跑 `-race`、未跨平台验证）。**未完成项**：`gofmt -l` 因该文件为 CRLF 基线仍列出它（待负责人裁决 V8 口径）；`-race` 因本机缺 gcc rc=1；负向验证 N 系列未授权未执行 | TASK-FONT-001-D-IMPL-2 | 见任务卡 §6：`go test -count=1 -v -run '^TestFontLazyLoadNoFrameCounting$' ./pkg/runtime/app/`（**×1 ＋ ×30**）；`go test ./pkg/runtime/app/ -count=1 -v -timeout 30m`（**×20**，第 2 版由 10 上调）；负向验证 N1–N4 只改该测试文件。⚠ 上述为**卡内计划次数**（以卡为准，不自行推测）；第 6 版实际执行次数见卡 §6「第 6 版实际」列（V2 实际 6 < 计划 30；V4/V5/V6 未执行；V8 未通过） |
 
 ## 开发流程与契约治理
 

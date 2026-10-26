@@ -38,6 +38,20 @@ type Config struct {
 	Title string
 	// Width / Height 是初始逻辑尺寸（dp）。
 	Width, Height unit.Dp
+
+	// StrictFontFailure 只在**懒加载路径**（`NewLazyApp`）生效
+	// （TASK-FONT-001-D-IMPL-3 §1）。
+	//
+	//	false（默认）：字体加载失败**不终止窗口**，UI 停留在临时字体，
+	//	              失败原因从 `App.Lazy().Report().Err` 读取（含 ErrFontNotFound）。
+	//	true：窗口照常运行（**不得**闪退、不得 panic），但 `Run()` 在窗口正常
+	//	      关闭后返回包装了 `contracts.ErrFontNotFound` 的错误，
+	//	      供 CI / 上层据此判定失败。
+	//
+	// 对同步路径（`NewApp` / `Run` / `RunWith` / `RunWindow*`）**无影响**：
+	// 那两条链路的严格语义由 `Run` 的默认主题构建保证（B6），与本开关无关。
+	// 两套语义各自独立，不得让一个开关同时改两条链路（卡 §1 禁止事项 3）。
+	StrictFontFailure bool
 }
 
 // 默认窗口参数。
@@ -175,6 +189,21 @@ type App struct {
 	// 与 `Lazy.MarkFirstLayout` 内部的幂等互为双保险——方法保证"写不进去"，
 	// 本字段保证"根本不调用"。只由事件循环 goroutine 读写，无需同步。
 	firstLayoutDone bool
+
+	// strict 是构造时快照的 `Config.StrictFontFailure`。
+	//
+	// 快照而不是每次读 cfg：`Config` 是值传递的入参，构造之后调用方改自己的
+	// 副本不应影响运行中的窗口。
+	strict bool
+
+	// createdAt 是运行句柄构造的**入口**时刻（M1 起点，见 FirstFrameReport）。
+	createdAt time.Time
+
+	// firstFrameAt 是首帧开始处理的时刻（UnixNano，0 = 尚未有过帧）。
+	//
+	// 只由事件循环 goroutine 写入（唯一写入者），但可能在任意 goroutine 被读
+	// （`FirstFrame()`），因此用 atomic 而非裸 time.Time。
+	firstFrameAt atomic.Int64
 }
 
 // newWindow 按配置创建窗口句柄（不显示）。
@@ -203,7 +232,14 @@ func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 	if th == nil {
 		return nil, fmt.Errorf("app: nil theme")
 	}
-	return &App{w: newWindow(cfg), view: view, th: th}, nil
+	// StrictFontFailure 也会快照，但对同步路径不产生任何影响（见 fontFailure）。
+	return &App{
+		w:         newWindow(cfg),
+		view:      view,
+		th:        th,
+		strict:    cfg.StrictFontFailure,
+		createdAt: time.Now(),
+	}, nil
 }
 
 // NewLazyApp 用**异步加载**的主题构造运行句柄（TASK-FONT-001-D-IMPL-2 §1.1）。
@@ -235,7 +271,7 @@ func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
 	// 先建壳、后填主题：通知回调需要 `*App` 才能 Invalidate，而回调可能在
 	// `Request()` 之后的任意时刻（后台 goroutine）触发。若等到 `th` 就绪才
 	// 构造 App，回调闭包就会读到尚未赋值的变量——那是数据竞争，不是时序问题。
-	a := &App{w: newWindow(cfg), view: view, lz: lz}
+	a := &App{w: newWindow(cfg), view: view, lz: lz, strict: cfg.StrictFontFailure, createdAt: time.Now()}
 
 	// 回调里**只允许请求重绘**（规则 R2）：绝不在这里替换 shaper。
 	bound := lz.SetNotify(func() { a.Invalidate() })
@@ -273,10 +309,22 @@ func (a *App) Invalidate() {
 //
 // 必须在主系统线程调用（内部走 app.Main()，契约 §4）。
 // 后台 goroutine 应在本调用之前启动，并使用 a.Invalidate() 请求重绘。
+//
+// # 返回值（TASK-FONT-001-D-IMPL-3 §1）
+//
+//   - 同步路径（`NewApp`，`lz == nil`）：**恒返回 nil**——字体语义由
+//     `Run` 的默认主题构建保证，`Config.StrictFontFailure` 对它无影响；
+//   - 懒加载路径（`NewLazyApp`）：`StrictFontFailure=true` 且字体加载进入
+//     失败终态时，窗口**照常运行**（不闪退、不 panic），关闭后本函数返回
+//     包装了 `contracts.ErrFontNotFound` 的错误；否则返回 nil。
+//
+// 读取时机：在 `mainFunc()`（即 `app.Main()`）返回之后——那时窗口已经关闭，
+// 后台加载的终态也已确定。不得为了"早点知道结果"而在构造或首帧时同步等待
+// 加载（卡 §1 禁止事项 2：那等于取消懒加载）。
 func (a *App) Run() error {
 	go a.loop()
 	mainFunc()
-	return nil
+	return a.fontFailure()
 }
 
 // RunWith 与 Run 相同，但允许注入主题。
@@ -340,6 +388,13 @@ func (a *App) loop() {
 // 抽成方法的唯一理由：替换点必须唯一且可测。测试用合成 FrameEvent 直接
 // 调用本方法，从而在不依赖图形会话的前提下验证上面六步。
 func (a *App) frame(ops *op.Ops, e app.FrameEvent) {
+	// M1 止点：第一个 FrameEvent **开始处理**的瞬间（`view.Layout` 之前）。
+	// 只记第一次——首帧预算的语义是"到首帧处理开始为止"，后续帧不参与。
+	// 唯一写入者是本 goroutine，因此先判 0 再写不会丢更新。
+	if a.firstFrameAt.Load() == 0 {
+		a.firstFrameAt.Store(time.Now().UnixNano())
+	}
+
 	a.inFrame.Store(true)
 	defer a.inFrame.Store(false)
 
