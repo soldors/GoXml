@@ -397,13 +397,21 @@ func TestFontLazyLoadMetricSeparation(t *testing.T) {
 	// ⚠ 这里**必须**用全新的 Provider，不能用 `newTestLazy`（它用包级共享的
 	// defaultProvider）。
 	//
-	// 原因（本轮实测取证）：共享 Provider 命中解析缓存时，`ResolveWithReport`
-	// 直接返回上一次的 `ProbeReport`，于是 `Report.ProbeElapsed` 带的是**上一次**
-	// 探测的耗时，而 `LoadElapsed` 测的是本次（缓存命中，仅 1 ms）。
-	// 实测出现过 ProbeElapsed=105.05ms 与 LoadElapsed=1.03ms 同框——
-	// 两者不同源，M2/M3 的大小关系无从成立。
-	// 该缓存语义属 Provider 层（IMPL-1 范围），本卡不越界修改，
-	// 只在测量时避开它，并已单独上报。
+	// 【历史问题】（当时的事实，保留以备追溯）：在 `ProbeRan` 门控落地之前，
+	// 共享 Provider 命中解析缓存时，`ResolveWithReport` 直接返回上一次的
+	// `ProbeReport`，于是 `Report.ProbeElapsed` 带的是**上一次**探测的耗时，
+	// 而 `LoadElapsed` 测的是本次（缓存命中，仅 1 ms）。实测出现过
+	// ProbeElapsed=105.05ms 与 LoadElapsed=1.03ms 同框——两者不同源。
+	//
+	// 【当前语义】（D-ACCEPT-07 已实施 `ProbeRan` 门控，**问题已不再出现**）：
+	// 缓存命中路径**返回派生副本**，其中 `Probe.ProbeRan=false`，
+	// 且 `Lazy` 侧 `ProbeElapsed` **保持 0**（`lazy.go:359-369`）——
+	// 不再把历史探测耗时伪装成本轮耗时。历史值仍保留在 `Probe.Elapsed` 里作诊断。
+	//
+	// 但"用全新 Provider"这条前提**仍然保留**：本用例要验的是
+	// 「M2 区间 ⊂ M3 区间」这一**同源同轮**的包含关系，只有未命中路径
+	// 才同时具备两个本轮实测值。命中路径的正确判据是"`ProbeElapsed==0`"，
+	// 属另一条契约（见下面的条件化断言与 TestNight07Downstream* 用例）。
 	lz, err := theme.NewLazy(theme.LazyOptions{
 		Provider: theme.NewProvider(theme.ProviderOptions{}),
 	})
@@ -439,9 +447,33 @@ func TestFontLazyLoadMetricSeparation(t *testing.T) {
 			rep.LoadElapsed, want)
 	}
 	// M2 是 M3 的一部分：候选循环不可能比整个后台还慢。
-	if rep.ProbeElapsed > rep.LoadElapsed {
-		t.Errorf("M2(%v) > M3(%v)：候选循环不可能比后台总量还大",
-			rep.ProbeElapsed, rep.LoadElapsed)
+	//
+	// ⚠ 该不变式 **只在"本轮确实执行了探测"时成立**（D-ACCEPT-07 要求④）：
+	// 命中路径 `ProbeElapsed` 恒为 0 ⇒ `0 > LoadElapsed` 恒假，
+	// 无条件写法在那种路径上会退化成**空判据**（不报错，也不再能发现"两种耗时不同源"）。
+	// 因此按 `ProbeRan` 分路径断言，而**不是**改符号、删除或 `t.Skip`：
+	//   - ProbeRan == true  → 同源同轮，断言 ProbeElapsed <= LoadElapsed；
+	//   - ProbeRan == false → 本轮没探测，断言 ProbeElapsed == 0（历史值留在 Probe.Elapsed）。
+	// 本用例用全新 Provider，实际走 ProbeRan==true 分支；else 分支是给
+	// 「将来复用该断言到命中路径」兜底的显式契约，避免静默失效。
+	if rep.Probe == nil {
+		t.Fatal("本轮 Ready 报告缺少 Probe，不能按未探测或缓存命中处理")
+	}
+	if rep.Probe.ProbeRan {
+		if rep.ProbeElapsed > rep.LoadElapsed {
+			t.Errorf("M2(%v) > M3(%v)：候选循环不可能比后台总量还大",
+				rep.ProbeElapsed, rep.LoadElapsed)
+		}
+	} else {
+		// 本轮没有执行探测流程 ⇒ 本轮探测耗时必须为 0。
+		// 注意：`Probe==nil` 不等于缓存命中（未知 family 等路径同样是 nil），
+		// 所以这里只断言"本轮无探测耗时"，不宣称命中语义——
+		// 命中语义由 TestNight07Downstream* 用读计数单独证明。
+		if rep.ProbeElapsed != 0 {
+			t.Errorf("ProbeRan=%v（本轮未探测）却记录 ProbeElapsed=%v，期望 0；"+
+				"疑似把历史 Probe.Elapsed 当成了本轮耗时",
+				rep.Probe != nil && rep.Probe.ProbeRan, rep.ProbeElapsed)
+		}
 	}
 	if rep.FirstLayoutAfterSwap <= 0 {
 		t.Errorf("M4 FirstLayoutAfterSwap = %v, 期望 > 0", rep.FirstLayoutAfterSwap)
