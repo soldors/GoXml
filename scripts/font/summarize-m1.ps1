@@ -63,6 +63,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'font-comparison.ps1')
+
 if (-not (Test-Path -LiteralPath $InputDir)) { Write-Host "REJECT InputDir not found: $InputDir"; exit 2 }
 if (-not $OutDir -or $OutDir -eq '') { $OutDir = $InputDir }
 
@@ -204,6 +206,12 @@ foreach ($r in $raw) {
         continue
     }
     $isValid = ConvertTo-RealBool -Value $r.valid
+    $measurementContract = [string](Get-PropValue -Obj $r -Name 'measurementContract')
+    if ($measurementContract -eq '') { $measurementContract = 'app-m1-v1' }
+    if ($measurementContract -notin @('app-m1-v1', 'font-init-v1')) {
+        Add-Rejection -Source $src -Reason 'unsupported-measurement-contract'
+        continue
+    }
     if (($r.valid -isnot [bool]) -and -not ($r.valid -is [string])) {
         Add-Rejection -Source $src -Reason ('non-boolean-valid:' + [string]$r.valid)
         continue
@@ -281,6 +289,14 @@ foreach ($r in $raw) {
             }
         }
 
+        if ($measurementContract -eq 'font-init-v1') {
+            foreach ($reason in @(Get-FontComparisonErrors -Observed $r.observed -LoadMode $r.load)) {
+                $forged.Add($reason)
+            }
+        } elseif ($null -ne (Get-PropValue -Obj $r.observed -Name 'fontComparisonContract')) {
+            $forged.Add('comparison-observations-without-contract')
+        }
+
         if ($forged.Count -gt 0) {
             foreach ($f in $forged) { Add-Rejection -Source $src -Reason ('forged-valid:' + $f) }
             continue
@@ -301,7 +317,9 @@ function Get-GroupKey {
     $gl = [string]$R.load
     $ge = [string]$R.exeSha256
     $gs = [string]$R.sourceSha256
-    return ($gk + '|' + $gl + '|' + $ge + '|' + $gs)
+    $gc = [string](Get-PropValue -Obj $R -Name 'measurementContract')
+    if ($gc -eq '') { $gc = 'app-m1-v1' }
+    return ($gk + '|' + $gl + '|' + $ge + '|' + $gs + '|' + $gc)
 }
 
 $groups = @{}
@@ -383,6 +401,13 @@ function New-GroupStats {
     $stats.Add((New-Stat -Name 'm1ElapsedNs(positive only)' -Values $m1Pos -ZeroCount 0))
     $stats.Add((New-Stat -Name 'framesObserved' -Values $fr -ZeroCount 0))
     $stats.Add((New-Stat -Name 'frameWindowNs' -Values $win -ZeroCount 0))
+    if ((Get-PropValue -Obj $Records[0] -Name 'measurementContract') -eq 'font-init-v1') {
+        foreach ($metric in @('fontReadyElapsedNs', 'fontToFirstFrameElapsedNs')) {
+            $values = Get-Values -Records $Records -Prop $metric
+            $zeros = @($values | Where-Object { $_ -eq 0 })
+            $stats.Add((New-Stat -Name $metric -Values $values -ZeroCount $zeros.Count))
+        }
+    }
     $note = 'insufficient samples; no threshold frozen'
     if ($Records.Count -ge $MinSamples) { $note = ("valid samples >= " + $MinSamples + "; threshold still requires owner decision") }
     return [ordered]@{
@@ -427,6 +452,7 @@ $summary = [ordered]@{
         'M1 = App construction start -> first frame processing start, not process startup',
         'zero elapsed means not observed / below clock granularity, never cost 0',
         'different baseSHA/load/exeSha256/sourceSha256 are never merged into one median',
+        'font-init-v1 comparisons are separate from constructor-only app-m1-v1; none is not synchronous font loading',
         'failed, timed-out, terminated and zero samples are preserved and counted separately',
         'no threshold is set by this script'
     )

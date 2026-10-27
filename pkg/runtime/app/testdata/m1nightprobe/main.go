@@ -103,6 +103,7 @@ func (v *probeView) Layout(gtx layout.Context, th *material.Theme) layout.Dimens
 func main() {
 	mode := flag.String("mode", "window", "探针模式：window=真实平台窗口（唯一实现）")
 	load := flag.String("load", "none", "字体加载方式：none=material.NewTheme(不加载系统字体) / sync=theme.NewTheme / lazy=NewLazyApp")
+	compareFonts := flag.Bool("compare-fonts", false, "sync/lazy 同口径测量：字体初始化至主题就绪及首帧，等待 Ready；不改变 M1")
 	frames := flag.Int("frames", 3, "需要观测到的真实帧数（达到即退出 0）")
 	timeout := flag.Duration("timeout", 20*time.Second, "等待帧的最长时间；超时退出 3")
 	hardTimeout := flag.Duration("hardtimeout", 45*time.Second, "全程硬上限，兜底防止挂起；超过退出 3")
@@ -115,6 +116,10 @@ func main() {
 
 	if *mode != "window" {
 		fmt.Printf("MODE_ERR unsupported mode=%q\n", *mode)
+		os.Exit(1)
+	}
+	if *compareFonts && *load != "sync" && *load != "lazy" {
+		fmt.Println("RESULT verdict=ERROR detail=compare-fonts 只接受 sync/lazy")
 		os.Exit(1)
 	}
 
@@ -138,6 +143,13 @@ func main() {
 		a   *nightapp.App
 		err error
 	)
+	comparison := fontComparison{}
+	if *compareFonts {
+		if theme.Diagnostics() != nil {
+			fmt.Println("RESULT verdict=ERROR detail=默认 Provider 已解析，冷缓存前提不成立")
+			os.Exit(1)
+		}
+	}
 	ctorEntry := time.Now()
 	switch *load {
 	case "none":
@@ -145,10 +157,24 @@ func main() {
 		ctorEntry = time.Now()
 		a, err = nightapp.NewApp(view, th, cfg)
 	case "sync":
-		th := theme.NewTheme()
+		var th *material.Theme
+		if *compareFonts {
+			comparison.start = time.Now()
+			var probe *theme.ProbeReport
+			th, probe = theme.NewThemeWithReport()
+			if cerr := comparison.observeReady(time.Now(), probe, nil); cerr != nil {
+				fmt.Printf("RESULT verdict=ERROR detail=%v\n", cerr)
+				os.Exit(1)
+			}
+		} else {
+			th = theme.NewTheme()
+		}
 		ctorEntry = time.Now()
 		a, err = nightapp.NewApp(view, th, cfg)
 	case "lazy":
+		if *compareFonts {
+			comparison.start = time.Now()
+		}
 		lz, lerr := theme.NewLazy(theme.LazyOptions{})
 		if lerr != nil {
 			fmt.Printf("RESULT verdict=ERROR detail=Lazy 构造失败: %v\n", lerr)
@@ -194,7 +220,15 @@ func main() {
 		default:
 		}
 		observed = view.snapshot()
-		if observed.calls >= int64(*frames) && a.FirstFrame().Measured() {
+		if *compareFonts && comparison.ready.IsZero() && a.Lazy() != nil {
+			lr := a.Lazy().Report()
+			if cerr := comparison.observeLazy(lr); cerr != nil {
+				fmt.Printf("RESULT verdict=ERROR detail=%v\n", cerr)
+				os.Exit(1)
+			}
+		}
+		if observed.calls >= int64(*frames) && a.FirstFrame().Measured() &&
+			(!*compareFonts || !comparison.ready.IsZero()) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -207,6 +241,14 @@ func main() {
 	}
 
 	rep := a.FirstFrame()
+	if *compareFonts {
+		cr, cerr := comparison.result(rep.FirstFrameAt)
+		if cerr != nil {
+			fmt.Printf("RESULT verdict=ERROR detail=%v\n", cerr)
+			os.Exit(1)
+		}
+		cr.write()
+	}
 	fmt.Printf("RESULT_DATA procStartNs=%d\n", procStart.UnixNano())
 	fmt.Printf("RESULT_DATA ctorEntryNs=%d\n", ctorEntry.UnixNano())
 	fmt.Printf("RESULT_DATA ctorDoneNs=%d\n", ctorDone.UnixNano())

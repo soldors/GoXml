@@ -67,6 +67,10 @@ param(
     [ValidateSet('none', 'lazy', 'sync')]
     [string]$Load = 'none',
 
+    # Adds font-init-v1 intervals and waits for the final font theme to be ready.
+    # Ordinary M1 collection keeps its original, non-waiting behavior.
+    [switch]$CompareFonts,
+
     [ValidateRange(1, 10000)]
     [int]$Runs = 1,
 
@@ -136,6 +140,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'font-comparison.ps1')
+if ($CompareFonts -and $Load -notin @('sync', 'lazy')) {
+    Write-Host 'REJECT CompareFonts requires Load sync or lazy'
+    exit 2
+}
 
 $script:LockHeld = $false
 $script:RunPath = $null
@@ -404,8 +414,27 @@ function New-SampleRecord {
     # this host, so sub-millisecond intervals read as 0. Flagged, not dropped.
     $belowGranularity = ($m1Parsed -and $m1Ns -le 0)
 
+    $comparisonObserved = [pscustomobject]@{
+        fontComparisonContract = (Get-StringFieldOrNull -Fields $fields -Key 'fontComparisonContract')
+        fontComparisonMeasured = (Get-StringFieldOrNull -Fields $fields -Key 'fontComparisonMeasured')
+        fontComparisonColdProvider = (Get-StringFieldOrNull -Fields $fields -Key 'fontComparisonColdProvider')
+        fontInitAtNs = (Get-LongFieldOrNull -Fields $fields -Key 'fontInitAtNs')
+        fontReadyAtNs = (Get-LongFieldOrNull -Fields $fields -Key 'fontReadyAtNs')
+        firstFrameAtNs = (Get-LongFieldOrNull -Fields $fields -Key 'firstFrameAtNs')
+        fontReadyElapsedNs = (Get-LongFieldOrNull -Fields $fields -Key 'fontReadyElapsedNs')
+        fontToFirstFrameElapsedNs = (Get-LongFieldOrNull -Fields $fields -Key 'fontToFirstFrameElapsedNs')
+    }
+    if ($CompareFonts) {
+        foreach ($reason in @(Get-FontComparisonErrors -Observed $comparisonObserved -LoadMode $LoadMode)) {
+            $reasons.Add($reason)
+        }
+    } elseif ($null -ne $comparisonObserved.fontComparisonContract) {
+        $reasons.Add('comparison-output-requires-CompareFonts')
+    }
+
     return [ordered]@{
         id            = $Id
+        measurementContract = $(if ($CompareFonts) { 'font-init-v1' } else { 'app-m1-v1' })
         agent         = $AgentName
         baseSHA       = $BaseSha
         load          = $LoadMode
@@ -431,6 +460,13 @@ function New-SampleRecord {
         stdoutTail    = @(Get-TailLines -Text $StdoutText -Count 8)
         stderrTail    = @(Get-TailLines -Text $StderrText -Count 20)
         observed      = [ordered]@{
+            fontComparisonContract = $comparisonObserved.fontComparisonContract
+            fontComparisonMeasured = $comparisonObserved.fontComparisonMeasured
+            fontComparisonColdProvider = $comparisonObserved.fontComparisonColdProvider
+            fontInitAtNs = $comparisonObserved.fontInitAtNs
+            fontReadyAtNs = $comparisonObserved.fontReadyAtNs
+            fontReadyElapsedNs = $comparisonObserved.fontReadyElapsedNs
+            fontToFirstFrameElapsedNs = $comparisonObserved.fontToFirstFrameElapsedNs
             m1ElapsedNs          = $m1Ns
             m1ElapsedNsPresent   = $m1Present
             m1Measured           = $m1Measured
@@ -625,6 +661,11 @@ Write-Line ("LOCK_VERIFIED " + $lockVerification.verified)
 $sourceFiles = [ordered]@{}
 foreach ($rel in @('pkg/runtime/app/app.go',
                    'pkg/runtime/app/testdata/m1nightprobe/main.go',
+                   'pkg/runtime/app/testdata/m1nightprobe/comparison.go',
+                   'pkg/runtime/theme/theme.go',
+                   'pkg/runtime/theme/font.go',
+                   'pkg/runtime/theme/lazy.go',
+                   'scripts/font/font-comparison.ps1',
                    'scripts/font/collect-m1.ps1',
                    'scripts/font/summarize-m1.ps1')) {
     $sourceFiles[$rel] = (Get-FileSha256 -Path (Join-Path $RepoDir $rel))
@@ -639,6 +680,7 @@ $script:RunState = [ordered]@{
     repoDir   = $RepoDir
     outDir    = $OutDir
     load      = $Load
+    measurementContract = $(if ($CompareFonts) { 'font-init-v1' } else { 'app-m1-v1' })
     runs      = $Runs
     frames    = $Frames
     timeoutSec = $TimeoutSec
@@ -842,6 +884,7 @@ try {
             '-timeout', "$($TimeoutSec)s",
             '-hardtimeout', "$($HardTimeoutSec)s"
         )
+        if ($CompareFonts) { $argList += '-compare-fonts' }
         if ($useExternal) { $argList = $ExecutableArgs }
 
         $start = Get-Date
