@@ -225,6 +225,21 @@ foreach ($r in $raw) {
         # integration-v2/sampler-review-fixture-1).
         $forged = New-Object System.Collections.Generic.List[string]
 
+        if ($null -ne $r.PSObject.Properties['runtimeProcsPolicy'] -or $null -ne $r.PSObject.Properties['runtimeProcsObserved']) {
+            $runtimeValue = 0
+            $observedProcs = Get-PropValue -Obj $r -Name 'runtimeProcsObserved'
+            if (-not [int]::TryParse([string]$observedProcs,[ref]$runtimeValue) -or $runtimeValue -lt 1) {
+                $forged.Add('runtime-procs-not-observed')
+            }
+            $policy = [string](Get-PropValue -Obj $r -Name 'runtimeProcsPolicy')
+            $requested = 0
+            if ($policy -ne 'inherit' -and $policy -ne 'auto') {
+                if (-not [int]::TryParse($policy,[ref]$requested) -or $requested -lt 1 -or $requested -ne $runtimeValue) {
+                    $forged.Add('runtime-procs-policy-mismatch')
+                }
+            }
+        }
+
         if (-not (ConvertTo-RealBool -Value $r.exitCodeKnown)) { $forged.Add('exitCodeKnown-not-true') }
 
         $ecProp = $r.PSObject.Properties['exitCode']
@@ -319,7 +334,11 @@ function Get-GroupKey {
     $gs = [string]$R.sourceSha256
     $gc = [string](Get-PropValue -Obj $R -Name 'measurementContract')
     if ($gc -eq '') { $gc = 'app-m1-v1' }
-    return ($gk + '|' + $gl + '|' + $ge + '|' + $gs + '|' + $gc)
+    $gp = [string](Get-PropValue -Obj $R -Name 'runtimeProcsObserved')
+    $gpolicy = [string](Get-PropValue -Obj $R -Name 'runtimeProcsPolicy')
+    if ($gp -eq '') { $gp = 'legacy-unobserved' }
+    if ($gpolicy -eq '') { $gpolicy = 'legacy' }
+    return ($gk + '|' + $gl + '|' + $ge + '|' + $gs + '|' + $gc + '|procs=' + $gp + '|policy=' + $gpolicy)
 }
 
 $groups = @{}

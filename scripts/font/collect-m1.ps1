@@ -71,6 +71,11 @@ param(
     # Ordinary M1 collection keeps its original, non-waiting behavior.
     [switch]$CompareFonts,
 
+    # -1: inherit caller; 0: Go automatic default; positive: explicit runtime P.
+    # Build parallelism stays bounded independently and never leaks to samples.
+    [ValidateRange(-1, 1024)]
+    [int]$RuntimeProcs = -1,
+
     [ValidateRange(1, 10000)]
     [int]$Runs = 1,
 
@@ -150,6 +155,7 @@ if ($CompareFonts -and $Load -notin @('sync', 'lazy')) {
 $script:LockHeld = $false
 $script:RunPath = $null
 $script:ExitCode = 0
+$runtimeProcsPolicy = $(if ($RuntimeProcs -lt 0) { 'inherit' } elseif ($RuntimeProcs -eq 0) { 'auto' } else { [string]$RuntimeProcs })
 
 function Write-Line { param([string]$Message) Write-Host $Message }
 
@@ -343,6 +349,8 @@ function Parse-ProbeStdout {
             foreach ($tok in ($Matches[1] -split '\s+')) {
                 if ($tok -match '^([A-Za-z0-9_]+)=(.*)$') { $fields[$Matches[1]] = $Matches[2] }
             }
+        } elseif ($line -match '^ENV\s+.*\bgomaxprocs=([0-9]+)\b') {
+            $fields['runtimeProcsObserved'] = $Matches[1]
         } elseif ($line -match '^RESULT\s+verdict=([A-Za-z_]+)') {
             if ($null -eq $verdict) { $verdict = $Matches[1] }
         }
@@ -390,6 +398,9 @@ function New-SampleRecord {
     if ($null -ne $layoutRaw -and $layoutRaw -gt 0) { $layoutNs = $layoutRaw }
 
     $reasons = New-Object System.Collections.Generic.List[string]
+    $runtimeObserved = Get-LongFieldOrNull -Fields $fields -Key 'runtimeProcsObserved'
+    if ($null -eq $runtimeObserved -or $runtimeObserved -lt 1) { $reasons.Add('runtime-procs-not-observed') }
+    elseif ($RuntimeProcs -gt 0 -and $runtimeObserved -ne $RuntimeProcs) { $reasons.Add('runtime-procs-request-mismatch') }
     if ($TerminatedByCollector) { $reasons.Add('terminated-by-collector-after-bounded-wait') }
     if ($TimedOut -and -not $TerminatedByCollector) { $reasons.Add('wait-window-exceeded') }
     if (-not $RcKnown) { $reasons.Add('exitCode-unknown') }
@@ -435,6 +446,8 @@ function New-SampleRecord {
     return [ordered]@{
         id            = $Id
         measurementContract = $(if ($CompareFonts) { 'font-init-v1' } else { 'app-m1-v1' })
+        runtimeProcsPolicy = $runtimeProcsPolicy
+        runtimeProcsObserved = $runtimeObserved
         agent         = $AgentName
         baseSHA       = $BaseSha
         load          = $LoadMode
@@ -681,6 +694,8 @@ $script:RunState = [ordered]@{
     outDir    = $OutDir
     load      = $Load
     measurementContract = $(if ($CompareFonts) { 'font-init-v1' } else { 'app-m1-v1' })
+    runtimeProcsPolicy = $runtimeProcsPolicy
+    runtimeProcsInheritedEnv = [Environment]::GetEnvironmentVariable('GOMAXPROCS','Process')
     runs      = $Runs
     frames    = $Frames
     timeoutSec = $TimeoutSec
@@ -745,7 +760,6 @@ try {
     Write-RunState -Status 'building'
     Write-Line ("RUN_JSON_WROTE " + $script:RunPath)
 
-    $env:GOMAXPROCS = '2'
     # Raw argv is kept as an ARRAY and logged element by element, and separately
     # as the quoted command line that is actually handed to Start-Process.
     # R3 defect: Start-Process does not quote -ArgumentList elements, so an
@@ -755,10 +769,14 @@ try {
     $buildArgv = @('build', '-p=1', '-o', $exePath, './pkg/runtime/app/testdata/m1nightprobe')
     Write-Line ("BUILD go " + (ConvertTo-WindowsArgv -Argv $buildArgv))
     $buildStart = Get-Date
-    $bp = Invoke-BoundedProcess -FilePath 'go' -Argv $buildArgv -WorkingDirectory $RepoDir `
-        -StdoutPath $buildOutLog -StderrPath $buildErrLog `
-        -WaitMs ([int]$BuildTimeoutSec * 1000) -KillGraceMs ([int]$KillGraceSec * 1000) `
-        -ExpectedName 'go'
+    $buildProcsBefore = [Environment]::GetEnvironmentVariable('GOMAXPROCS','Process')
+    try {
+        $env:GOMAXPROCS = '2'
+        $bp = Invoke-BoundedProcess -FilePath 'go' -Argv $buildArgv -WorkingDirectory $RepoDir `
+            -StdoutPath $buildOutLog -StderrPath $buildErrLog `
+            -WaitMs ([int]$BuildTimeoutSec * 1000) -KillGraceMs ([int]$KillGraceSec * 1000) `
+            -ExpectedName 'go'
+    } finally { [Environment]::SetEnvironmentVariable('GOMAXPROCS',$buildProcsBefore,'Process') }
     $buildRc = $bp.rc
     if (-not $bp.rcKnown) { $buildRc = $null }
     $buildEnd = Get-Date
@@ -893,9 +911,14 @@ try {
         # so ExitCode is observable, bounded wait, targeted kill of the confirmed
         # child, grace wait, dispose. The result carries whether cleanup failed.
         $waitMs = [int](($HardTimeoutSec + 15) * 1000)
-        $pr = Invoke-BoundedProcess -FilePath $targetExe -Argv $argList -WorkingDirectory $RepoDir `
-            -StdoutPath $outFile -StderrPath $errFile -WaitMs $waitMs `
-            -KillGraceMs ([int]$KillGraceSec * 1000) -ExpectedName $exeName
+        $sampleProcsBefore = [Environment]::GetEnvironmentVariable('GOMAXPROCS','Process')
+        try {
+            if ($RuntimeProcs -eq 0) { Remove-Item Env:GOMAXPROCS -ErrorAction SilentlyContinue }
+            elseif ($RuntimeProcs -gt 0) { $env:GOMAXPROCS = [string]$RuntimeProcs }
+            $pr = Invoke-BoundedProcess -FilePath $targetExe -Argv $argList -WorkingDirectory $RepoDir `
+                -StdoutPath $outFile -StderrPath $errFile -WaitMs $waitMs `
+                -KillGraceMs ([int]$KillGraceSec * 1000) -ExpectedName $exeName
+        } finally { [Environment]::SetEnvironmentVariable('GOMAXPROCS',$sampleProcsBefore,'Process') }
         $handleCached = $pr.handleCached
         $childPid = $pr.pid
         $exited = $pr.exited
