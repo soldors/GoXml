@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - **`<Page>` 布局语义缺失**：规范从未定义 `<Page>` 如何排列多个子节点。现明确等价于没有 `Gap`/`Padding` 的 `<Column>`（垂直排列），避免按 `Stack` 叠放导致的静默覆盖。
 
 ### Added
+- 显式字体选面入口 `theme.LoadSelectedFaces` 与 `theme.NewLazyWithSelection`：按调用方给定的源及索引加载字体面；异步入口在既有 worker 中读取、解析并交接最终主题。提供独立选面诊断、覆盖检查与结构化失败，不改变默认字体探测和回退策略。真实窗口启动收益与内存预算仍待测量。
 - **ADR-0001 / 0002 / 0003 重构**：三份此前只有 5–6 行结论的根基文档补齐为完整决策记录，统一采用「证据分级」结构：项目实测 / 项目证据 / 外部事实 / 设计判断四类分离，外部框架事实附来源且明确限定适用范围。
 - **ADR-0001**：加入构建实测（Windows 零 CGO，Linux/macOS 必须 CGO）与性能量级证据，并声明 11×/5.9× **当前不可复现**（仓库无 Benchmark 代码，复现任务为 TASK-BENCH-001-5/9）。外部事实只引用 Gio 官方 README、Fyne Quick Start、Wails How-does-it-work，并记录 Fyne「C 编译器仅开发环境需要」这一官方限定。
 - **ADR-0002**：记录四组语法决议、`@` 非合法 XML 字符的实测、`Clik` 拼写错误绝不退化为事件，以及 Parser/Expander/Analyzer 分层是被两个具体发现逼出来的（Parser 不能内置控件白名单；适用性检查需 Schema 知识）。

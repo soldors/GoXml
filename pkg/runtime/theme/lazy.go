@@ -178,6 +178,17 @@ type Lazy struct {
 
 	rep LoadReport
 
+	// sel 非 nil 时本 Lazy 走"显式选面"后台加载：最终字体来自
+	// FaceSelection，而不是 Provider 探测链（见 lazy_facesel.go）。
+	// 该字段只在 NewLazyWithSelection 中赋值一次，之后只读。
+	sel *selectionConfig
+	// selInline 是 Bytes 源的构造期快照，由本 Lazy 独占；
+	// Ready 后释放（不再用于重试）。访问时须持 mu。
+	selInline []byte
+	// selRep 是最近一次选面尝试的诊断；与 rep 在同一临界区发布，
+	// 对外只经 SelectionReport() 深拷贝暴露。访问时须持 mu。
+	selRep *SelectionReport
+
 	// 一次性标记（幂等写入，见 MarkFrameSubmitted / MarkFirstLayout）
 	frameSubmitted bool
 	firstLayout    bool
@@ -317,6 +328,9 @@ func (l *Lazy) Request() {
 	l.rep.ProbeElapsed = 0
 	l.rep.Probe = nil
 	l.rep.Err = nil
+	// 新尝试开始：上一轮的选面诊断必须清空，否则失败重试会读到上一轮索引/
+	// 覆盖事实，把"这一轮还没完成"误读成"上一轮的结论就是这一轮的结论"。
+	l.selRep = nil
 	attempt := l.attempts
 	notify := l.notify
 	l.mu.Unlock()
@@ -326,6 +340,13 @@ func (l *Lazy) Request() {
 
 // load 是后台加载的全部内容：探测 → 反查集合 → 构造真主题 → 终态写入 → 通知。
 func (l *Lazy) load(attempt int, notify func()) {
+	// 选面路径：最终字体来自 FaceSelection 而不是 Provider 探测链。
+	// 分支放在最前，其余（状态机/终态/通知）与默认路径共用同一套语义。
+	if l.sel != nil {
+		l.loadSelection(attempt, notify)
+		return
+	}
+
 	id, probeRep, err := l.provider.ResolveWithReport(l.family)
 
 	var faces []giofont.FontFace
@@ -440,6 +461,12 @@ func (l *Lazy) Report() LoadReport {
 	defer l.mu.Unlock()
 	cp := l.rep
 	cp.Probe = copyProbeReport(l.rep.Probe)
+	// 选面路径：本层自有的 *SelectionError 是可变对象，必须**每次读取**都
+	// 给调用方一份独立副本；否则多个 Report() 调用方共享同一指针，
+	// 一方改 Report 字段就污染另一方的观测（默认路径无此分支，行为不变）。
+	if l.sel != nil {
+		cp.Err = selSnapshotOwnedErr(l.rep.Err)
+	}
 	return cp
 }
 
