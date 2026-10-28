@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +105,10 @@ func main() {
 	mode := flag.String("mode", "window", "探针模式：window=真实平台窗口（唯一实现）")
 	load := flag.String("load", "none", "字体加载方式：none=material.NewTheme(不加载系统字体) / sync=theme.NewTheme / lazy=NewLazyApp")
 	compareFonts := flag.Bool("compare-fonts", false, "sync/lazy 同口径测量：字体初始化至主题就绪及首帧，等待 Ready；不改变 M1")
+	// FACE-SELECT-WINDOW-PROBE：显式选面探针（独立协议 face-selection-window-v1）。
+	// 空 case 走原流程；非空则进入 selection_window.go 的分派，旧协议行为与输出不变。
+	faceCaseFlag := flag.String("face-case", "", "显式选面 case：default-lazy | selected0-lazy | selected1-lazy | selected-all-lazy（空=原流程）")
+	fontSource := flag.String("font-source", "", "字体路径（仅与 -face-case 一起使用）")
 	frames := flag.Int("frames", 3, "需要观测到的真实帧数（达到即退出 0）")
 	timeout := flag.Duration("timeout", 20*time.Second, "等待帧的最长时间；超时退出 3")
 	hardTimeout := flag.Duration("hardtimeout", 45*time.Second, "全程硬上限，兜底防止挂起；超过退出 3")
@@ -118,6 +123,33 @@ func main() {
 		fmt.Printf("MODE_ERR unsupported mode=%q\n", *mode)
 		os.Exit(1)
 	}
+
+	// FACE-SELECT-WINDOW-PROBE 分派。
+	//
+	// 只有在**显式**给出 -face-case 时才进入新协议；空 case 完全走下面的原流程。
+	// 参数组合的不相容性在这里拒绝（退出码 2，与加载失败的 1 区分），
+	// 而不是静默忽略某个 flag。
+	explicitFlags := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
+	selectedCase, caseErr := validateFaceProbeFlags(faceProbeFlags{
+		caseName:     *faceCaseFlag,
+		sourcePath:   *fontSource,
+		compareFonts: *compareFonts,
+		explicit:     explicitFlags,
+	})
+	if caseErr != nil {
+		fmt.Printf("RESULT verdict=ERROR detail=参数错误: %v\n", caseErr)
+		os.Exit(2)
+	}
+	if selectedCase != faceCaseNone {
+		os.Exit(runFaceSelectionProbe(selectedCase, strings.TrimSpace(*fontSource), faceProbeRunConfig{
+			Frames:      *frames,
+			Timeout:     *timeout,
+			HardTimeout: *hardTimeout,
+			Title:       *title,
+		}))
+	}
+
 	if *compareFonts && *load != "sync" && *load != "lazy" {
 		fmt.Println("RESULT verdict=ERROR detail=compare-fonts 只接受 sync/lazy")
 		os.Exit(1)

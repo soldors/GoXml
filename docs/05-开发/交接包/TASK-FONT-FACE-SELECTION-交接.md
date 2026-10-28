@@ -10,6 +10,10 @@
 
 集成验证：全仓测试及覆盖率、全仓 vet、Windows amd64/arm64 构建、gofmt 与 diff 检查通过。新 facesel.go/lazy_facesel.go 语句覆盖率分别为 86.2%/85.6%。没有 race、跨平台运行、真实窗口或生产性能通过结论。
 
-下一步由 DeepSeek 扩展既有 `pkg/runtime/app/testdata/m1nightprobe`，新增独立 `face-selection-window-v1` 协议；原 font-init-v1 强制 ProbeRan=true，不适用于合法无 Probe 的显式选面路径，原守卫不得放宽。工具通过复核后，由 WorkBuddy 执行真实窗口 smoke，再按固定资源、独立进程、随机配对、环境分层采样。首帧、Ready、帧内最终交接均需实际观测；headless parseTotal 的收益不替代 M1 或进程启动指标。
+真实窗口探针已收口至 DeepSeek WINDOW-PROBE-R1.2 三文件固定候选，沿用独立 `face-selection-window-v1`，旧 font-init-v1 守卫不变。协调者复跑 28 顶层/71 子测试、vet/build 通过；M1 直接取 App.FirstFrame.CreatedAt/FirstFrameAt，加载失败分类、测量标志、原始错误单行编码和可复算端点已经发射。
 
-本机证据与任务书：`D:/Codes/Goxml-agent-rounds/2026-10-27/face-selection/production-integration-r1/coordinator/`。下一任务书为 `deepseek-window-probe-prompt.md`；历史交付在同根目录 production-impl-r1.1 下。后续提交需在 dev-log 登记本次已经产生的实现提交号，避免旧提交离开 HEAD 豁免后触发 docgate。提交必须逐次覆盖为空 hooksPath，防止环境钩子推送。
+下一步完成 collector 的最终冻结门禁和来源绑定后再安排真实窗口 smoke，不能仅把 FROZEN 改为 true 就跑正式采样。R2 的 115 项无窗口自检已复跑通过；作者成功 fixture 缺构造完成时刻，协调者重新生成并逐条先做 producer.validate 的 8 份 synthetic fixtures 可作为有效对照，未冒称真实窗口。R2 原始命令台账与 manifest 不一致需保留证据并登记更正。
+
+生产六文件保持实现提交 `97c0f7b645f1b2bb596df8382fd4693cc09e8d11` 的哈希；该提交已在 dev-log 登记。主仓库仍保留既有未提交内容，尚未合入显式选面实现。没有真实窗口/M1性能/240样本/race/跨平台运行/RSS结论，不升级正式验收。
+
+本机证据：`D:/Codes/Goxml-agent-rounds/2026-10-27/face-selection/window-final-validation/coordinator/`；后续以该处复核和最终 source snapshot 为准。提交逐次临时覆盖空 hooksPath，禁止 push。用户当前手工派发 Agent，协调者不自行发送 GUI 消息。
