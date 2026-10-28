@@ -1,19 +1,15 @@
-# 显式字体选面：集成断点
+# 显式字体选面：实现与采样收口
 
-基线为 `27b2e1905828bda48a4f7f448d6ade68af2a4629`。DeepSeek 实现 R1.1，经 ZCode 修复差异复审后，六份固定源码已在 `codex/night-font-integration` 集成验证。主仓库已有未提交内容不得覆盖；本轮未推送，也未升级 FONT ACCEPT/WBS 正式状态。
+生产实现`97c0f7b645f1b2bb596df8382fd4693cc09e8d11`与探针快照`2ed565c8b277e54b75b061f3cb283f9a83bccda2`已完成代码复审、集成验证、真实窗口smoke和240固定样本双重复算，无阻断，进入主仓库本地安全快进。实际合入以主仓库HEAD及本机final-integration收口记录为准；不推送、不升级FONT ACCEPT/WBS或预算。
 
-实现入口是 `theme.LoadSelectedFaces` 和 `theme.NewLazyWithSelection`。后者接受源与索引，在既有 worker 内执行读取、解析和最终主题构建，App 继续通过原 pending/Take 链在帧内交换。默认 NewLazy/Provider 路径保持原行为。
+入口为`theme.LoadSelectedFaces`和`theme.NewLazyWithSelection`；后者在既有worker内读取、解析并构造最终主题，经pending/Take帧内交接。默认NewLazy/Provider不改变。同步取得的SelectedFaces可显式交给NewApp；不得先同步解析，再用LazyOptions.Temp冒充异步最终加载。
 
-同步调用取得的 `SelectedFaces` 可用于显式 NewApp；异步调用将 `NewLazyWithSelection` 的结果交给 `app.NewLazyApp`。不得先同步加载，再用 LazyOptions.Temp 冒充异步最终加载。Path 每次显式失败重试重新读取；Bytes 在构造时复制冻结，Ready 后释放源快照。字体对象仍可持有表级缓冲，尚无常驻内存预算结论。
+Path每次显式失败重试重新读取；Bytes构造时复制冻结、Ready后释放源快照；字体对象仍可持有表缓冲，RSS未验证。普通解析错误与recover的parser-panic按类型区分；Lazy.Report每次读取复制自有SelectionError及切片，默认路径不经过新增快照分支。上游go-text的panic未全局修复。
 
-两项修复已闭合：普通缺表错误为 parse，真正 recover 的解析器 panic 为 parser-panic；Lazy.Report 每次读取复制自有 SelectionError 与诊断切片，默认路径不经过新增快照分支。结构化错误仍支持 errors.Is(ErrFontNotFound) 与 errors.As(*SelectionError)。
+全仓测试/覆盖率、vet、Windows amd64/arm64 build已经执行，新facesel.go/lazy_facesel.go覆盖率86.2%/85.6%。独立协议探针28顶层/71子测试及vet/build通过。源文件自固定快照后不变，采样后文档收口不重复全仓。
 
-集成验证：全仓测试及覆盖率、全仓 vet、Windows amd64/arm64 构建、gofmt 与 diff 检查通过。新 facesel.go/lazy_facesel.go 语句覆盖率分别为 86.2%/85.6%。没有 race、跨平台运行、真实窗口或生产性能通过结论。
+真实窗口8次smoke通过，随后240/240固定样本有效。协调者从raw独立核验41,065项，ZCode另行复算一致。单面选择缩短最终字体Ready中位数约33%–35%；M1未呈现稳定改善，八格median均超过53ms，不能声称50ms冷启动达标。239条首Layout用临时主题，seq217首Layout已用最终Shaper且changes=0合法，保留未剔除。计时、逐格表和证据边界见[窗口采样记录](../../06-测试/显式字体选面窗口采样记录.md)。
 
-真实窗口探针已收口至 DeepSeek WINDOW-PROBE-R1.2 三文件固定候选，沿用独立 `face-selection-window-v1`，旧 font-init-v1 守卫不变。协调者复跑 28 顶层/71 子测试、vet/build 通过；M1 直接取 App.FirstFrame.CreatedAt/FirstFrameAt，加载失败分类、测量标志、原始错误单行编码和可复算端点已经发射。
+本轮有限链条收口，不继续安排Agent或新批次。M1根因profiling、完整冷启动/呈现、RSS/race/跨平台为未验证事项，后续另行确定范围，不改变本轮合入的显式opt-in定位。
 
-下一步完成 collector 的最终冻结门禁和来源绑定后再安排真实窗口 smoke，不能仅把 FROZEN 改为 true 就跑正式采样。R2 的 115 项无窗口自检已复跑通过；作者成功 fixture 缺构造完成时刻，协调者重新生成并逐条先做 producer.validate 的 8 份 synthetic fixtures 可作为有效对照，未冒称真实窗口。R2 原始命令台账与 manifest 不一致需保留证据并登记更正。
-
-生产六文件保持实现提交 `97c0f7b645f1b2bb596df8382fd4693cc09e8d11` 的哈希；该提交已在 dev-log 登记。主仓库仍保留既有未提交内容，尚未合入显式选面实现。没有真实窗口/M1性能/240样本/race/跨平台运行/RSS结论，不升级正式验收。
-
-本机证据：`D:/Codes/Goxml-agent-rounds/2026-10-27/face-selection/window-final-validation/coordinator/`；后续以该处复核和最终 source snapshot 为准。提交逐次临时覆盖空 hooksPath，禁止 push。用户当前手工派发 Agent，协调者不自行发送 GUI 消息。
+本机证据根`D:/Codes/Goxml-agent-rounds/2026-10-27/face-selection/`，collector/raw/exe未复制入Git。`window-sampling-r1/`保存采样与独立复核，`final-integration/coordinator/`保存主仓库既有文件SHA/状态的前后对照、真实命令和本地合入结果。保留主仓库20条既有改动；提交与快进每次临时空hooksPath并禁自动push。
