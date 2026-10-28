@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -195,8 +196,8 @@ func (p *parser) parseColumns(a contracts.Attr) ([]contracts.GridColumn, *contra
 			weight := float32(1)
 			if num != "" {
 				v, err := strconv.ParseFloat(num, 32)
-				if err != nil || v <= 0 {
-					e := p.diag(a.Span, CodeAttrCall, "invalid flex column %q; expected * or N* with N > 0", f)
+				if err != nil || v <= 0 || math.IsInf(v, 0) || math.IsNaN(v) {
+					e := p.diag(a.Span, CodeAttrCall, "invalid flex column %q; expected * or N* with finite N > 0", f)
 					return nil, &e
 				}
 				weight = float32(v)

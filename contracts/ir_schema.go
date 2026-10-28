@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -462,12 +463,15 @@ const (
 // GridColumn <Grid> 的单列定义。
 type GridColumn struct {
 	Mode GridColumnMode
-	// Value 在 GridColumnFixed 时是 dp 宽度，在 GridColumnFlex 时是权重（>= 1）。
+	// Value 必须有限；在 GridColumnFixed 时是 dp 宽度（>= 0），在 GridColumnFlex 时是权重（> 0）。
 	Value float32
 }
 
 // IsValid 报告列定义是否合法。
 func (c GridColumn) IsValid() bool {
+	if math.IsNaN(float64(c.Value)) || math.IsInf(float64(c.Value), 0) {
+		return false
+	}
 	switch c.Mode {
 	case GridColumnFixed:
 		return c.Value >= 0

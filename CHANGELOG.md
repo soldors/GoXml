@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Grid在Parser与IR校验处拒绝NaN和正负无穷，避免非法权重流入生成代码；保留正常有限小数权重。
 - 字体采样工具分离构建限流与被测程序的 `GOMAXPROCS`，支持 `-RuntimeProcs` 显式选择运行配置，记录探针实际观测值，并隔离不同配置的统计；既有双核性能样本保持原条件。
 - **P0-2 `Fill` 语义错误**：原规范把 `Fill` 等同于「生成 `Flexed(1)`」，但 `Flexed` 只作用于主轴——在 `<Column Width="Fill">` 里完全无效。现改为语言层语义（「占满父容器在对应方向上的可用空间」），由 Codegen 按主轴/交叉轴分别实现。同步修正 `TASK-CODEGEN-001` 中错误的映射指令。
 - **P0-1 v1 移除 `AlignSelf`（子项级对齐）**：原表写「同 `Align`」，语义与实现都不成立。核查 Gio 后发现 `layout.FlexChild` 没有对齐字段，`Flex.Alignment` 是容器级——实现 `AlignSelf` 只能给每个子项包一层 `Stack`，代价是多一层嵌套、破坏静态子树固化、每帧多一次闭包分配（实测约 11× 慢）。而 `AlignSelf` 的价值恰是「省一层嵌套」，用嵌套换嵌套净收益为零，故 v1 不提供，需要时用嵌套 `<Row>`/`<Column>` 表达。详见 ADR-0008 §2.6.1。
