@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- 修复 Lazy 提前 Request 后交给 NewLazyApp 时可能缺少终态重绘的问题；新增按尝试观察的 Lazy.Done，保持原回调和帧内主题交换。
+- Go profile/trace 辅助解析使用独立、可写的 GOCACHE/GOTMPDIR，不更改被测诊断进程环境或追改历史失败批次。
 - Grid在Parser与IR校验处拒绝NaN和正负无穷，避免非法权重流入生成代码；保留正常有限小数权重。
 - 字体采样工具分离构建限流与被测程序的 `GOMAXPROCS`，支持 `-RuntimeProcs` 显式选择运行配置，记录探针实际观测值，并隔离不同配置的统计；既有双核性能样本保持原条件。
 - **P0-2 `Fill` 语义错误**：原规范把 `Fill` 等同于「生成 `Flexed(1)`」，但 `Flexed` 只作用于主轴——在 `<Column Width="Fill">` 里完全无效。现改为语言层语义（「占满父容器在对应方向上的可用空间」），由 Codegen 按主轴/交叉轴分别实现。同步修正 `TASK-CODEGEN-001` 中错误的映射指令。

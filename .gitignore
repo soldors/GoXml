@@ -24,6 +24,10 @@ coverage.out
 *.prof
 *.cov
 
+# Python measurement helper bytecode
+__pycache__/
+*.py[cod]
+
 # vendor（本仓库不使用 vendor）
 /vendor/
 

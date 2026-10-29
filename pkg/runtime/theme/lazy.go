@@ -165,6 +165,9 @@ type Lazy struct {
 	// 状态机
 	state    LoadState
 	attempts int
+	// done observes the current attempt without replacing the one-shot notify.
+	done       chan struct{}
+	doneClosed bool
 
 	// 通知（绑定只允许一次，见 SetNotify）
 	notify        func()
@@ -225,7 +228,7 @@ func NewLazy(opts LazyOptions) (*Lazy, error) {
 // 语义（逐条冻结，实现不得自行选择）：
 //   - 只允许在 `Request()` 之前成功调用**一次**；重复调用返回 false；
 //   - 已 `Request` 过再调用返回 false（不得 panic，也不得静默吞掉：
-//     调用方必须自己补一次 `Invalidate`）；
+//     调用方需保证终态唤醒；NewLazyApp 通过 Done 补偿，见 ADR-0014）；
 //   - `fn == nil` 视为无效绑定：返回 false、不绑定、不 panic、永不触发；
 //   - 绑定成功后，加载进入终态（Ready **或** Failed）时在**后台 goroutine 内**
 //     同步调用一次 `fn`；
@@ -273,6 +276,33 @@ func (l *Lazy) State() LoadState {
 	return l.state
 }
 
+// Done returns the completion channel for the current attempt, or the first
+// attempt if Request has not been called. It performs no IO and starts no work.
+// The channel closes after Ready/Failed and its report/pending are published.
+// An explicit retry after Failed gets a new channel; old snapshots stay closed.
+// Callers observing retries must obtain the channel again. Done does not bind,
+// replace or invoke SetNotify, and does not apply a theme on the caller's thread.
+func (l *Lazy) Done() <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done == nil {
+		l.done = make(chan struct{})
+	}
+	if l.state == LoadReady || l.state == LoadFailed {
+		l.completeLocked()
+	}
+	return l.done
+}
+
+// completeLocked publishes completion once. The caller holds mu and has already
+// written all terminal state. A stale worker must return before this point.
+func (l *Lazy) completeLocked() {
+	if l.done != nil && !l.doneClosed {
+		close(l.done)
+		l.doneClosed = true
+	}
+}
+
 // Request 是**唯一**的加载入口：首次加载 + 失败后的显式重试。
 //
 // 任意 goroutine 可调用。语义（IMPL-1 §1.1 / §3 冻结）：
@@ -314,6 +344,11 @@ func (l *Lazy) Request() {
 	case LoadLoading, LoadReady:
 		l.mu.Unlock()
 		return
+	}
+	// Ordinary callers that never observe Done need no channel allocation.
+	if l.done != nil && l.state == LoadFailed {
+		l.done = make(chan struct{})
+		l.doneClosed = false
 	}
 	l.state = LoadLoading
 	l.attempts++
@@ -403,6 +438,7 @@ func (l *Lazy) load(attempt int, notify func()) {
 		l.rep.LoadedAt = now
 		l.pending = next
 	}
+	l.completeLocked()
 	l.mu.Unlock()
 
 	// ④ 通知在锁外发：回调里可能调用 Report()/State()，持锁调用会自锁。

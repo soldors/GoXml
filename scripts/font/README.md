@@ -1,5 +1,11 @@
 # 字体测量探针
 
+## Go profile/trace 解析环境
+
+`go_profile_env.py` 为 Go **解析子进程**复制环境并设置绝对的 `GOCACHE`、`GOTMPDIR`。调用方传入自己持有的解析输出目录下的缓存路径；不能将结果反写诊断 exe 的环境，不能改变 A/B 两层的 GOMAXPROCS。目录创建失败直接上报，不能吞错当作 profile 有效。
+
+无窗口单测：`python -m unittest discover -s scripts/font -p test_go_profile_env.py -v`。真实 Go 工具接线验证、旧批次保护及新宿主位置见 [2026-10-30 回归记录](../../docs/06-测试/2026-10-30-两项遗留修复回归记录.md)。此 helper 不签发窗口许可，不补跑或追认历史失败样本。
+
 ## 同步／异步比较口径：font-init-v1
 
 本口径对应 D-ACCEPT-02 的“同步冷字体路径总耗时”取数准备；只定义可观测区间，

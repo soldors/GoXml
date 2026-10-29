@@ -224,6 +224,7 @@ func (l *Lazy) loadSelection(attempt int, notify func()) {
 		// Ready 之后不再需要内联快照（不会再用它重试）；释放以免长期占用。
 		l.selInline = nil
 	}
+	l.completeLocked()
 	l.mu.Unlock()
 
 	if notify != nil {
@@ -256,6 +257,7 @@ func (l *Lazy) publishSelectionFailure(attempt int, notify func(), kind, phase s
 	l.rep.State = LoadFailed
 	l.rep.Err = fmt.Errorf("%w: %w", contracts.ErrFontNotFound, se)
 	l.pending = nil
+	l.completeLocked()
 	l.mu.Unlock()
 
 	if notify != nil {

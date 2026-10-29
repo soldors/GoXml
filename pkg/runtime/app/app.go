@@ -172,6 +172,13 @@ type App struct {
 	// lz 是懒加载句柄；nil 表示不走懒加载。只有 NewLazyApp 会填它。
 	lz *theme.Lazy
 
+	// Late binding needs a completion wake after the window has begun framing.
+	// These fields belong to the event-loop goroutine; the waiter only captures
+	// the callback and stop channel, and never touches rendering state.
+	lateWake func()
+	lateDone <-chan struct{}
+	lateStop chan struct{}
+
 	// inFrame 标记"当前是否处于 FrameEvent 的处理区间内"。
 	//
 	// 存在的理由（规则 R2）：主题替换**只能**发生在帧内、渲染线程。
@@ -263,8 +270,9 @@ func NewApp(view View, th *material.Theme, cfg Config) (*App, error) {
 //
 // # SetNotify 失败的处理（第 3 版：写入责任已收回 IMPL-1）
 //
-// `SetNotify` 返回 false（重复绑定 / 晚绑定 / nil）时，本函数**只**补一次
-// `a.Invalidate()`，把下一次帧的机会补回来。`Report().NotifyLateBound`
+// `SetNotify` 返回 false（重复绑定 / 晚绑定 / nil）时，保留一次构造期
+// `a.Invalidate()`；首帧开始后另观察当前加载尝试的完成信号，再请求重绘。
+// 这覆盖窗口驱动尚未创建时失效被跳过的情形。`Report().NotifyLateBound`
 // 由 `Lazy.SetNotify` 内部置位——本包对该字段**零命中**（`grep NotifyLateBound
 // pkg/runtime/app/` 必须无结果），这是 IMPL-1 §9-4 的验收项之一。
 func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
@@ -295,8 +303,10 @@ func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error) {
 	}
 
 	if !bound {
-		// 通知通道不可靠：补一次失效，把"取真主题"的机会交给下一帧。
-		// 这里是**唯一**的补偿点；NotifyLateBound 的诊断由 Lazy 自己写。
+		a.lateWake = a.Invalidate
+		a.lateStop = make(chan struct{})
+		// Preserve the constructor compensation; completion is observed only once
+		// a frame exists, so an App that never runs creates no waiting goroutine.
 		a.Invalidate()
 	}
 	return a, nil
@@ -359,6 +369,7 @@ func RunWith(view View, th *material.Theme, cfg Config) error {
 
 // loop 驱动事件循环直到窗口关闭。
 func (a *App) loop() {
+	defer a.stopLateCompletion()
 	var ops op.Ops
 	for {
 		e := a.w.Event()
@@ -371,6 +382,43 @@ func (a *App) loop() {
 		case app.FrameEvent:
 			a.frame(&ops, e)
 		}
+	}
+}
+
+// watchLateCompletion runs on the event-loop goroutine. Each attempt creates at
+// most one waiter; ordinary frames allocate nothing. The waiter only requests a
+// frame, leaving Take and Shaper replacement on the event-loop goroutine.
+func (a *App) watchLateCompletion() {
+	if a.lateWake == nil {
+		return
+	}
+	done := a.lz.Done()
+	if done == a.lateDone {
+		return
+	}
+	a.lateDone = done
+	wake, stop := a.lateWake, a.lateStop
+	go func() {
+		select {
+		case <-stop:
+			return
+		case <-done:
+			select {
+			case <-stop:
+				return
+			default:
+				wake()
+			}
+		}
+	}()
+}
+
+// Called by the event loop on exit; blocked loaders may outlive the window,
+// but the App's completion waiter must not do so.
+func (a *App) stopLateCompletion() {
+	if a.lateStop != nil {
+		close(a.lateStop)
+		a.lateStop = nil
 	}
 }
 
@@ -405,6 +453,7 @@ func (a *App) frame(ops *op.Ops, e app.FrameEvent) {
 	if a.firstFrameAt.Load() == 0 {
 		a.firstFrameAt.Store(time.Now().UnixNano())
 	}
+	a.watchLateCompletion()
 
 	a.inFrame.Store(true)
 	defer a.inFrame.Store(false)

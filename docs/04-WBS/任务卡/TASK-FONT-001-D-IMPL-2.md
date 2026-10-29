@@ -67,7 +67,7 @@ func NewLazyApp(view View, lz *theme.Lazy, cfg Config) (*App, error)
 
 - `NewLazyApp` 内部**先 `lz.SetNotify(...)` 再 `lz.Request()`**（顺序与闭包捕获见
   `TASK-FONT-001-D-IMPL-1` §2.3），且**不等待**加载完成。
-- `SetNotify` 返回 false 时，本卡**只**补一次 `a.Invalidate()`；
+- `SetNotify` 返回 false 时，保留构造期一次 `a.Invalidate()`，并按 [ADR-0014](../../03-架构/adr/ADR-0014-Lazy晚绑定的终态观察与帧内交接.md) 在首帧后观察当前尝试完成再请求重绘；不覆盖旧回调、不在后台交换 Shaper；
   `Report().NotifyLateBound` **由 `Lazy.SetNotify` 内部置位**（第 3 版从本卡收回
   IMPL-1），`pkg/runtime/app` **一行都不许写这个字段**——`grep NotifyLateBound
   pkg/runtime/app/` 必须零命中，这是 IMPL-1 §9-4 的验收项之一。
