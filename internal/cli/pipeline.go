@@ -208,9 +208,17 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		// 「磁盘无任何变更」——声称与事实不符。把写副作用全部收拢到阶段二开头，
 		// 阶段一就真的是纯内存阶段，那条错误信息才站得住。
 		// stageBatch 要求目标目录已存在，因此这一步必须排在它之前。
+		// createdDirs 只记**真正新建**的目录（先 Stat 判存在）：暂存失败时
+		// reportStageFailure 据此给出诚实措辞——建过目录就不能再声称「磁盘无任何变更」。
+		var createdDirs []string
 		for _, p := range preparedFiles {
-			if err := os.MkdirAll(p.r.targetDir, 0o755); err != nil {
-				return fmt.Errorf("创建输出目录 %s: %w", p.r.targetDir, err)
+			if _, err := os.Stat(p.r.targetDir); os.IsNotExist(err) {
+				if err := os.MkdirAll(p.r.targetDir, 0o755); err != nil {
+					return fmt.Errorf("创建输出目录 %s: %w", p.r.targetDir, err)
+				}
+				createdDirs = append(createdDirs, p.r.targetDir)
+			} else if err != nil {
+				return fmt.Errorf("检查输出目录 %s: %w", p.r.targetDir, err)
 			}
 		}
 		sorted := sortTargets(missTargets)
@@ -222,15 +230,17 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			return os.WriteFile(tmpPath, byTarget[sorted[i]].artifact.Source, 0o644)
 		})
 		if err != nil {
-			if strings.Contains(err.Error(), "回滚时清理") {
-				return fmt.Errorf("%w", err)
-			}
-			return fmt.Errorf("暂存失败（磁盘无任何变更）: %w", err)
+			return reportStageFailure(err, createdDirs)
 		}
 
-		// ---------- 阶段二 B：全部成功，原子提交 ----------
-		if err := commitBatch(staged); err != nil {
-			return fmt.Errorf("提交失败: %w", err)
+		// ---------- 阶段二 B：提交（单文件原子替换；批次失败进程内回滚）----------
+		commitResidue, err := commitBatchOps(staged, realOps)
+		if err != nil {
+			return reportCommitFailure(err, createdDirs)
+		}
+		// 产物已正确落盘；删不掉的旧备份只警告，不阻断 Manifest/缓存登记（与缓存写失败同策）。
+		for _, r := range commitResidue {
+			fmt.Fprintf(stderr, "警告：旧产物备份清理失败（不影响生成结果）：%s\n", r)
 		}
 		for _, t := range sorted {
 			// 措辞按 TASK-GENERATE-CACHE-001 §5 冻结为 `已生成 <rel-output>`。

@@ -218,16 +218,18 @@ func TestEndToEndBatchAllOrNothing(t *testing.T) {
 	}
 }
 
-// TestCommitBatchRenameFailureLeavesNoTempFile 提交期 rename 失败时，
-// **失败那一个**的临时文件也必须清掉。
+// TestCommitBatchRenameFailureLeavesNoTempFile 提交期 rename 失败时：
+// 新建目标被回滚撤回、失败目标（目录）原样保留、一个临时/备份文件都不留。
 //
-// 注入方式只用真实文件系统语义：把批次第二个目标做成一个已存在的空目录，
-// Windows 下 os.Rename 报「Access is denied」且源临时文件仍在——实测见交付
-// 目录 raw/。不需要权限、进程或改造系统函数，跑完即可删。
+// 注入方式只用真实文件系统语义：把批次第二个目标做成一个已存在的目录，
+// rename 文件到目录上必然失败（Windows「Access is denied」/ Unix EISDIR），
+// 源临时文件仍在。不需要权限、进程或改造系统函数，跑完即可删。
 //
-// 判别力：修复前 commitBatch 的清理列表**排除**当前失败项，
-// 于是用户的包目录里会留下一个 `.goxml-*.tmp`（违反
-// TASK-GENERATE-CLI-001 退出条件 5「临时文件在失败后清理干净」）。
+// 两条判别力：
+//   - 非普通文件目标**绝不备份移走**——否则成功路径删备份会连用户目录一起删；
+//     这里跳过备份让 rename 自然失败，目录与 keep.txt 必须原样。
+//   - 失败后清理列表含**失败项自身**，且进程内回滚撤回已提交的新建目标
+//     （输出契约 §9「磁盘写入失败…旧生成文件必须保持不变」）。
 func TestCommitBatchRenameFailureLeavesNoTempFile(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "a_gen.go")
@@ -258,15 +260,12 @@ func TestCommitBatchRenameFailureLeavesNoTempFile(t *testing.T) {
 		t.Errorf("错误应指明提交期失败: %v", err)
 	}
 
-	// 已提交的那一个保留，且内容是新字节（提交不可逆，语义不变）。
-	data, err := os.ReadFile(first)
-	if err != nil {
-		t.Fatalf("第一个目标应已提交: %v", err)
+	// 进程内回滚（输出契约 §9「磁盘写入失败…旧生成文件必须保持不变」）：
+	// 第一个目标本批之前不存在，失败后必须被撤回，而不是留下新字节。
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Errorf("提交失败后新建目标应被撤回，实际仍存在: %v", err)
 	}
-	if string(data) != "NEW" {
-		t.Errorf("已提交内容 = %q，期望 NEW", data)
-	}
-	// 失败目标不得被破坏：目录与其中文件仍在。
+	// 失败目标不得被破坏：目录与其中文件仍在（非普通文件绝不备份移走）。
 	keep, err := os.ReadFile(filepath.Join(blocked, "keep.txt"))
 	if err != nil {
 		t.Fatalf("失败不应动到目标目录: %v", err)
