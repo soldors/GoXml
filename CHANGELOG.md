@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - 新增可构建CLI入门工程与同源自动验证，覆盖重复生成、错误不覆盖旧文件、实际生成代码及窗口入口编译；更新文档/目录现状和并行开发流程。
 
 ### Fixed
+- CLI 提交期备份/检查/安装失败统一恢复本批已提交目标并如实报告残留；包加载保留真实 Go 错误位置，支持导出类型别名，命名预检不再使用伪文件名 x.go。GOFLAGS 配置切换修复仍在隔离候选中。
 - 修复For行事件/If守卫/Index的生成作用域及事件字符串内部逗号切分；覆盖生成Go编译与无窗口点击。
 - Provider冷报告与LastReport返回独立诊断，窗口事件泵结束后收口stop等待者。
 - Generate校验Manifest输出边界及Windows junction，局部clean保留仍有源页面，用户接管源码继续参与缓存指纹。
