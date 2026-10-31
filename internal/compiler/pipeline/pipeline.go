@@ -33,6 +33,9 @@ type Config struct {
 	PackageName string
 	// SourcePath 是 .gxml 相对目标包目录的路径。
 	SourcePath string
+	// GoOverlay is a read-only Go loading snapshot supplied by the orchestrator.
+	// It changes neither source files nor the verified-document gate.
+	GoOverlay map[string][]byte
 }
 
 // Artifact 是内存中的完整生成结果。
@@ -156,7 +159,7 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 		return res
 	}
 	res.Status = p.Status
-	res.Diags = append(res.Diags, p.Diags...)
+	res.Diags = append(res.Diags, withSourceFile(p.Diags, p.file)...)
 	res.ModulePath = p.modulePath
 	if p.Doc == nil {
 		return res
@@ -204,6 +207,31 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 	return res
 }
 
+// withSourceFile 返回补齐了缺失 File 的诊断**副本**列表。
+//
+// 背景（并行产品 2026-11-01）：Analyzer 的加载/VM 类型失败诊断（如
+// GXML-ROOT-002）以空 File 构造——其 Span 是 GXML 位置（:1:20），
+// Message 内是 Go 工具的绝对 file:line:col；直接 append 会丢失 .gxml
+// 来源文件名，真实 CLI 显示 ":1:20: GXML-ROOT-002"。本函数在管线边界
+// 为缺失 File 的诊断补上已知输入源：
+//   - 已有 File 的诊断**原样保留**（显式给出者不覆盖）；
+//   - Span/Code/Message 一律不动；
+//   - 返回全新切片，**不改写 Analyzer 原结果**（避免共享污染）；
+//   - file 为空（来源未知）时原样返回，不伪造文件名。
+func withSourceFile(diags []contracts.CompilerError, file string) []contracts.CompilerError {
+	if file == "" {
+		return diags
+	}
+	out := make([]contracts.CompilerError, len(diags))
+	for i, d := range diags {
+		if d.File == "" {
+			d.File = file
+		}
+		out[i] = d
+	}
+	return out
+}
+
 // frontEnd 执行 parse→expand→analyze→verify，产出已验证文档。
 //
 // 与 Run 共用同一实现是刻意的：预检若另写一条前端链，就会出现
@@ -245,7 +273,10 @@ func frontEnd(file string, src []byte, cfg Config, hooks Hooks) (*analyzer.Verif
 	}
 	ar := analyze(file, er.Doc, er.Schemas, env)
 	res.Status = ar.Status
-	res.Diags = append(res.Diags, ar.Diags...)
+	// Analyzer 的加载/VM 类型失败诊断以空 File 构造（Span 是 GXML 位置，
+	// Message 内是 Go 工具位置）——直接 append 会丢失 .gxml 来源文件名。
+	// 在此管线边界为缺失 File 的诊断补已知输入源；显式 File 原样保留。
+	res.Diags = append(res.Diags, withSourceFile(ar.Diags, file)...)
 
 	// 门禁：只有 StatusOK 且无诊断才继续。
 	//
@@ -280,6 +311,7 @@ func loadEnv(cfg Config, hooks Hooks) (*analyzer.TypeEnv, error) {
 	return analyzer.NewTypeEnv(analyzer.Config{
 		ModuleRoot: cfg.ModuleRoot,
 		SourceDir:  cfg.SourceDir,
+		Overlay:    cfg.GoOverlay,
 	})
 }
 

@@ -171,6 +171,10 @@ type Config struct {
 	ModuleRoot string
 	// SourceDir 是 .gxml 文件所在目录，用于解析「同包」声明。
 	SourceDir string
+	// Overlay is an optional compiler-owned, in-memory source snapshot. It is
+	// copied at construction and never written to disk. The CLI uses it only
+	// for verified owned outputs with an obsolete package declaration.
+	Overlay map[string][]byte
 }
 
 // Validate 检查配置是否完整。
@@ -185,6 +189,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("analyzer: ModuleRoot %q has no go.mod: %w", c.ModuleRoot, err)
 	} else if fi.IsDir() {
 		return fmt.Errorf("analyzer: go.mod in %q is a directory", c.ModuleRoot)
+	}
+	for path := range c.Overlay {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("analyzer: overlay path must be absolute: %q", path)
+		}
+		rel, err := filepath.Rel(c.ModuleRoot, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("analyzer: overlay path must stay within ModuleRoot: %q", path)
+		}
 	}
 	return nil
 }
@@ -212,6 +225,13 @@ func NewTypeEnv(cfg Config) (*TypeEnv, error) {
 	modPath, err := readModulePath(cfg.ModuleRoot)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Overlay != nil {
+		copyMap := make(map[string][]byte, len(cfg.Overlay))
+		for path, data := range cfg.Overlay {
+			copyMap[path] = append([]byte(nil), data...)
+		}
+		cfg.Overlay = copyMap
 	}
 	return &TypeEnv{
 		cfg:     cfg,
@@ -340,7 +360,8 @@ func (e *TypeEnv) load(importPath string) (*packages.Package, error) {
 		Dir: e.cfg.ModuleRoot,
 		Mode: packages.NeedName | packages.NeedFiles |
 			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax,
-		Tests: false,
+		Tests:   false,
+		Overlay: e.cfg.Overlay,
 	}
 	pkgs, err := packages.Load(cfg, importPath)
 	if err != nil {
