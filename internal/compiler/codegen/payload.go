@@ -39,6 +39,10 @@ type payloadExprFunc func(i int) (string, error)
 //
 // 返回空串表示无实参（零参调用）。
 func (g *generator) renderInvocationArgs(ev analyzer.ResolvedEvent, payload payloadExprFunc) (string, error) {
+	return g.renderInvocationArgsWithRoots(ev, payload, nil)
+}
+
+func (g *generator) renderInvocationArgsWithRoots(ev analyzer.ResolvedEvent, payload payloadExprFunc, roots map[string]string) (string, error) {
 	// ---- 内部一致性校验（不是用户错误）----
 	//
 	// 三者关系由 Analyzer 保证；不成立说明 Analyzer 实现缺陷。
@@ -100,7 +104,7 @@ func (g *generator) renderInvocationArgs(ev analyzer.ResolvedEvent, payload payl
 			pi++
 
 		case analyzer.FromCallArg:
-			expr, err := g.renderEventArg(ev.CallArgs[ci])
+			expr, err := g.renderEventArgWithRoots(ev.CallArgs[ci], roots)
 			if err != nil {
 				return "", err
 			}

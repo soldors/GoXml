@@ -31,6 +31,12 @@ func bindingExpr(ra analyzer.ResolvedAttr, vm string) (string, error) {
 // 属性绑定与事件路径实参共用本函数——两者的路径语义必须一致
 // （事件处理输出契约 §5.4.3）。
 func pathExpr(path *analyzer.ResolvedPath, vm, what string) (string, error) {
+	return pathExprWithRoots(path, vm, what, nil)
+}
+
+// pathExprWithRoots renders a verified path in its destination loop scope.
+// Only RootForVar names are mapped; fields, methods and literals are untouched.
+func pathExprWithRoots(path *analyzer.ResolvedPath, vm, what string, roots map[string]string) (string, error) {
 	if path == nil {
 		return "", fmt.Errorf("codegen: %s has no resolved path", what)
 	}
@@ -48,6 +54,9 @@ func pathExpr(path *analyzer.ResolvedPath, vm, what string) (string, error) {
 			return "", fmt.Errorf("codegen: %s binds to a <For> variable but root is empty", what)
 		}
 		base = path.Root
+		if mapped, ok := roots[path.Root]; ok {
+			base = mapped
+		}
 	default:
 		return "", fmt.Errorf("codegen: %s has unknown root kind %v", what, path.RootKind)
 	}
@@ -74,6 +83,10 @@ func pathExpr(path *analyzer.ResolvedPath, vm, what string) (string, error) {
 //
 // 只使用结构化的 Kind/Literal/Path；`Literal.Raw` 仅用于诊断，禁止据此生成。
 func (g *generator) renderEventArg(a analyzer.ResolvedArg) (string, error) {
+	return g.renderEventArgWithRoots(a, nil)
+}
+
+func (g *generator) renderEventArgWithRoots(a analyzer.ResolvedArg, roots map[string]string) (string, error) {
 	switch a.Kind {
 	case analyzer.ArgLiteral:
 		switch a.Literal.Kind {
@@ -96,8 +109,8 @@ func (g *generator) renderEventArg(a analyzer.ResolvedArg) (string, error) {
 
 	case analyzer.ArgPath:
 		// ForVar 实参在轮询作用域内合法：<For> 列表契约 §6.3。
-		// item 在 Layout 顶部的循环里可见，pathExpr 会生成 item.ID。
-		return pathExpr(a.Path, "v.vm", "event argument")
+		// 使用同一份路径事实，在目标循环作用域中选择根变量名。
+		return pathExprWithRoots(a.Path, "v.vm", "event argument", roots)
 
 	default:
 		return "", fmt.Errorf("codegen: event argument has unsupported kind %v", a.Kind)
@@ -338,6 +351,9 @@ func (g *generator) forVarUsed(nodes []*contracts.NodeIR, name string) bool {
 			}
 		}
 		if g.forVarUsed(n.Children, name) {
+			return true
+		}
+		if n.If != nil && (g.forVarUsed(n.If.Then, name) || g.forVarUsed(n.If.Else, name)) {
 			return true
 		}
 	}

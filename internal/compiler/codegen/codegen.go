@@ -252,17 +252,14 @@ type clickSlot struct {
 
 // rowClickSlot 记录一个 <For> 的行状态池（<For> 列表契约 §3）。
 //
-// 一个 <For> 一个池（而不是每按钮一个）：同一行的多个按钮共享同一份
-// 行身份，池的生命周期也由同一把清理逻辑管理。
+// 每个按钮一个池：同一行的多个按钮保留独立的 Clickable 状态。
 type rowClickSlot struct {
 	// inExpr 是数据源表达式（如 v.vm.Items），轮询与渲染共用。
 	inExpr string
-	// keyExpr 是 Key 表达式（如 item.ID）。
+	// keyExpr 是轮询作用域中的 Key 表达式（如 rowItem.ID）。
 	keyExpr string
 	// keyType 是 Key 的类型信息（用于生成 map 的键类型）。
 	keyType analyzer.TypeInfo
-	// each 是循环变量名。
-	each string
 	// index 是索引变量名（可为空）。
 	index string
 	// method 是该行按钮的处理器方法名。
@@ -459,8 +456,10 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 	// Index 变量只在循环体**真的引用**它时才生成。
 	// Go 对 `for i, item := range` 中未使用的 i 会报 "declared and not used"，
 	// 而 Index 是可选的，声明了却不引用是完全合法的写法。
-	if nf.Index != "" && g.forVarUsed(n.Children, nf.Index) {
+	if nf.Index != "" && (g.forVarUsed(n.Children, nf.Index) || pathRootsAt(nf.Key, nf.Index)) {
 		b.WriteString(indent + "\tfor " + nf.Index + ", " + nf.Each + " := range items {\n")
+		// Event arguments and keys may use the index only in the polling scope.
+		b.WriteString(indent + "\t\t_ = " + nf.Index + "\n")
 	} else {
 		b.WriteString(indent + "\tfor _, " + nf.Each + " := range items {\n")
 	}
@@ -468,6 +467,7 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 	// （Go 1.22 起 range 变量本就每轮独立，这里显式写出来是为了让生成的
 	// 代码在任何阅读者眼里都不依赖那个语言细节。）
 	b.WriteString(indent + "\t\t" + nf.Each + " := " + nf.Each + "\n")
+	b.WriteString(indent + "\t\t_ = " + nf.Each + "\n")
 
 	// 循环体内不分配显示缓存槽位：槽位按节点分配，每行复用会互相覆盖
 	// （<For> 列表契约 §6.2）。
@@ -737,7 +737,10 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 			slot.inFor = true
 			slot.keyExpr = keyExpr
 			rowKey = keyExpr
-			slot.poolIndex = g.registerRowClick(rf, ev.Method, args, keyExpr)
+			slot.poolIndex, err = g.registerRowClick(rf, resolved)
+			if err != nil {
+				return "", err
+			}
 			rowPool = slot.poolIndex
 		}
 		g.clicks = append(g.clicks, slot)
@@ -1299,14 +1302,29 @@ func (g *generator) vmTypeExprStr() string {
 	return t
 }
 
-// registerRowClick 把循环内按钮的事件登记到所属 <For> 的行状态池。
-//
-// 同一 <For> 内的多个按钮共享一个池与一份轮询循环。
-func (g *generator) registerRowClick(rf analyzer.ResolvedFor, method, args, keyExpr string) int {
+// rowScopeRoots maps verified loop roots into the generated polling scope.
+func rowScopeRoots(rf analyzer.ResolvedFor) map[string]string {
+	roots := map[string]string{rf.Each: "rowItem"}
+	if rf.Index != "" {
+		roots[rf.Index] = "rowIndex"
+	}
+	return roots
+}
+
+// registerRowClick 从已验证事实生成轮询实参及 Key，并登记每按钮的行状态池。
+func (g *generator) registerRowClick(rf analyzer.ResolvedFor, event analyzer.ResolvedEvent) (int, error) {
 	inExpr, err := pathExpr(rf.In, "v.vm", "<For In>")
 	if err != nil {
-		// In 已在 For 展开时用过一次；到这里失败说明事实被破坏。
-		panic("codegen: <For In> path failed on second use: " + err.Error())
+		return 0, err
+	}
+	roots := rowScopeRoots(rf)
+	keyExpr, err := pathExprWithRoots(rf.Key, "v.vm", "<For Key>", roots)
+	if err != nil {
+		return 0, err
+	}
+	args, err := g.renderInvocationArgsWithRoots(event, nil, roots)
+	if err != nil {
+		return 0, err
 	}
 	// **每按钮一池**：同一行的两个按钮必须各自持有独立的 Clickable。
 	// 若共享一个 Clickable，两个按钮的悬停/按下状态会互相串，
@@ -1315,14 +1333,13 @@ func (g *generator) registerRowClick(rf analyzer.ResolvedFor, method, args, keyE
 		inExpr:     inExpr,
 		keyExpr:    keyExpr,
 		keyType:    rf.Key.Type,
-		each:       rf.Each,
 		index:      rf.Index,
-		method:     method,
+		method:     event.Method.Name,
 		args:       args,
 		fieldIndex: len(g.rowClicks),
 		guards:     append([]guardCond(nil), g.guards...),
 	})
-	return len(g.rowClicks) - 1
+	return len(g.rowClicks) - 1, nil
 }
 
 // pollCode 生成一个行状态池的顶部轮询块（<For> 列表契约 §5）。
@@ -1333,8 +1350,12 @@ func (s rowClickSlot) pollCode() string {
 	var b strings.Builder
 	b.WriteString("\t{\n")
 	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
-	b.WriteString("\t\tfor _, rowItem := range rowItems {\n")
+	b.WriteString("\t\tfor " + s.rangeIndex() + ", rowItem := range rowItems {\n")
 	b.WriteString("\t\t\trowItem := rowItem\n")
+	b.WriteString("\t\t\t_ = rowItem\n")
+	if s.index != "" {
+		b.WriteString("\t\t\t_ = rowIndex\n")
+	}
 	if gd := s.guardRef(); gd != "" {
 		b.WriteString("\t\t\tif " + gd + " {\n")
 	}
@@ -1344,7 +1365,7 @@ func (s rowClickSlot) pollCode() string {
 	}
 	b.WriteString(ind + fmt.Sprintf("if c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
 	b.WriteString(ind + "\tfor c.Clicked(gtx) {\n")
-	b.WriteString(ind + "\t\tv.vm." + s.method + "(" + s.rewriteRoot(s.args) + ")\n")
+	b.WriteString(ind + "\t\tv.vm." + s.method + "(" + s.args + ")\n")
 	b.WriteString(ind + "\t\tgtx.Execute(op.InvalidateCmd{})\n")
 	b.WriteString(ind + "\t}\n")
 	b.WriteString(ind + "}\n")
@@ -1356,44 +1377,16 @@ func (s rowClickSlot) pollCode() string {
 	return b.String()
 }
 
-// keyRef 把 Key 表达式改写到轮询变量 rowItem 上（每段路径根名替换）。
+// keyRef 返回从已验证路径直接渲染的轮询作用域表达式。
 func (s rowClickSlot) keyRef() string {
-	return s.rewriteRoot(s.keyExpr)
+	return s.keyExpr
 }
 
-// rewriteRoot 把表达式里以循环变量（item）为根的路径改写为 rowItem。
-//
-// 渲染期与轮询期是两个作用域，变量名不同但数据相同——同一份 items 的
-// 同一个元素。改写是纯文本的根段替换，安全边界：表达式由本文件生成，
-// 根名必为 Each 名。
-func (s rowClickSlot) rewriteRoot(expr string) string {
-	if expr == "" || s.each == "" {
-		return expr
+func (s rowClickSlot) rangeIndex() string {
+	if s.index != "" {
+		return "rowIndex"
 	}
-	if expr == s.each {
-		return "rowItem"
-	}
-	if strings.HasPrefix(expr, s.each+".") {
-		return "rowItem." + expr[len(s.each)+1:]
-	}
-	// 复合实参（如 "f(item.ID)" 不会出现；逗号分隔的多实参）：
-	// 逐段替换每个以 each. 开头的路径段。
-	parts := strings.Split(expr, ", ")
-	for i, p := range parts {
-		parts[i] = s.rewriteSingle(p)
-	}
-	return strings.Join(parts, ", ")
-}
-
-// rewriteSingle 改写单个实参表达式的根。
-func (s rowClickSlot) rewriteSingle(expr string) string {
-	if expr == s.each {
-		return "rowItem"
-	}
-	if strings.HasPrefix(expr, s.each+".") {
-		return "rowItem." + expr[len(s.each)+1:]
-	}
-	return expr
+	return "_"
 }
 
 // cleanupCode 生成键清理块（<For> 列表契约 §4）。
@@ -1413,7 +1406,11 @@ func (s rowClickSlot) cleanupCode() string {
 	}
 	b.WriteString(fmt.Sprintf("len(v.rowClicks%d) > len(rowItems) {\n", s.fieldIndex))
 	b.WriteString("\t\t\tkeep := make(map[" + s.keyTypeExprMust() + "]struct{}, len(rowItems))\n")
-	b.WriteString("\t\t\tfor _, rowItem := range rowItems {\n")
+	b.WriteString("\t\t\tfor " + s.rangeIndex() + ", rowItem := range rowItems {\n")
+	b.WriteString("\t\t\t\t_ = rowItem\n")
+	if s.index != "" {
+		b.WriteString("\t\t\t\t_ = rowIndex\n")
+	}
 	b.WriteString("\t\t\t\tkeep[" + s.keyRef() + "] = struct{}{}\n")
 	b.WriteString("\t\t\t}\n")
 	b.WriteString(fmt.Sprintf("\t\t\tfor k := range v.rowClicks%d {\n", s.fieldIndex))
@@ -1455,6 +1452,18 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 	if err != nil {
 		return err
 	}
+	pollExpr := condExpr
+	if g.inFor {
+		rf, ok := lookupFor(g.currentFor, g.facts)
+		if !ok {
+			return fmt.Errorf("codegen: <If> in <For> has no resolved loop scope")
+		}
+		ra, _ := lookupAttr(n, "Condition", g.facts)
+		pollExpr, err = pathExprWithRoots(ra.Path, "v.vm", "<If Condition>", rowScopeRoots(rf))
+		if err != nil {
+			return err
+		}
+	}
 	if len(n.If.Then) == 0 {
 		// Parser 保证 <Then> 存在；空 Then 是合法但无意义的写法。
 		// 不报错——只要求不生成坏代码。
@@ -1466,7 +1475,7 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 
 	// Then 分支：轮询守卫即条件本身。
 	prev := g.guards
-	g.guards = append(prev, guardCond{expr: condExpr, rowScoped: g.inFor})
+	g.guards = append(prev, guardCond{expr: condExpr, pollExpr: pollExpr, rowScoped: g.inFor})
 	err = g.emitBranchAppends(b, n.If.Then, indent+"\t\t", mainIsHorizontal)
 	g.guards = prev
 	if err != nil {
@@ -1476,7 +1485,7 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 	if len(n.If.Else) > 0 {
 		b.WriteString(indent + "\t} else {\n")
 		// Else 分支：守卫是条件的否定（读同一表达式，同一帧内等价）。
-		g.guards = append(prev, guardCond{expr: "!(" + condExpr + ")", rowScoped: g.inFor})
+		g.guards = append(prev, guardCond{expr: "!(" + condExpr + ")", pollExpr: "!(" + pollExpr + ")", rowScoped: g.inFor})
 		err = g.emitBranchAppends(b, n.If.Else, indent+"\t\t", mainIsHorizontal)
 		g.guards = prev
 		if err != nil {
@@ -1492,6 +1501,8 @@ func (g *generator) emitIfChildren(b *strings.Builder, n *contracts.NodeIR, inde
 type guardCond struct {
 	// expr 是条件的 Go 表达式（渲染作用域）。
 	expr string
+	// pollExpr is rendered from the same verified path in the polling scope.
+	pollExpr string
 	// rowScoped 表示该条件在循环作用域内求值（含循环变量）。
 	//
 	// 行级条件只能逐行守卫轮询，**不能**用于整池清理——清理是
@@ -1550,14 +1561,14 @@ func (g *generator) ifConditionExpr(n *contracts.NodeIR) (string, error) {
 	return pathExpr(ra.Path, "v.vm", "<If Condition>")
 }
 
-// guardRef 把该池的守卫条件改写到轮询变量 rowItem 上（轮询用）。
+// guardRef 合并已在轮询作用域渲染的守卫条件。
 func (s rowClickSlot) guardRef() string {
 	if len(s.guards) == 0 {
 		return ""
 	}
 	out := make([]string, 0, len(s.guards))
 	for _, gd := range s.guards {
-		out = append(out, s.rewriteRoot(gd.expr))
+		out = append(out, gd.pollExpr)
 	}
 	return strings.Join(out, " && ")
 }

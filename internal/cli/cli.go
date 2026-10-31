@@ -81,9 +81,7 @@ type generateOptions struct {
 	noCache bool
 }
 
-// runGenerate 解析并执行 generate。
-//
-// 1-1 只做解析与校验；与管线的接线在 1-2（TASK-GENERATE-CLI-001-2）。
+// runGenerate 解析 generate 参数，执行生成管线并映射稳定退出码。
 func runGenerate(argv []string, stdout, stderr io.Writer) int {
 	opts, err := parseGenerate(argv)
 	if err != nil {

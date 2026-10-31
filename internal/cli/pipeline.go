@@ -1,8 +1,5 @@
-// Package cli 的 generate 执行阶段（任务卡 1-2）：
-// 接通 Parser → Expander → Analyzer → Codegen → Commit。
-//
-// 范围纪律：目录发现与 --out-dir 在 1-3；Manifest 与 --clean 归 1-6。
-// 多文件提交语义 = G4 冻结的两阶段事务（commit.go）：全或无。
+// Package cli 的 generate 执行阶段：发现输入、校验路径与所有权、判定缓存，
+// 再接通 Parser → Expander → Analyzer → Codegen → 批量暂存与提交。
 package cli
 
 import (
@@ -28,13 +25,12 @@ var pipelineFunc = runPipeline
 // （任务卡 §8 第 1 条）。
 var pipelineHooks pipeline.Hooks
 
-// runPipeline 执行生成（1-3）：发现输入 → 逐文件 管线 → Commit。
+// runPipeline 执行生成：只读预检和生成全部成功后才暂存、提交本批产物。
 //
 // 决策落实（见 GENERATE-CLI-001-短检查记录 §6 与 1-3 边界冻结）：
 //   - G2：SourceDir = 每个 .gxml 实际所在目录（单文件解析上下文）；
 //   - 输入路径与输出路径**分开计算**：SourceDir 服务解析，--out-dir 服务布局；
-//   - 多文件**逐文件提交、无批次事务**——部分失败的回滚归 1-5（G4 未冻结，
-//     本切片明确不宣称原子性），失败前已成功的文件保持原样；
+//   - 多文件在提交前完成整批生成与暂存；暂存失败保留已有产物；
 //   - G6：--check 暂与默认行为相同（L1+L2 已是默认路径）。
 func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if len(opts.paths) > 1 {
@@ -97,6 +93,9 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	// ---------- 阶段零 B：缓存判定（读 Manifest、算键、建 K3 排除集）----------
 	man, err := loadManifest(manifestPath(moduleRoot))
 	if err != nil {
+		return err
+	}
+	if err := validateManifestOutputPaths(moduleRoot, man); err != nil {
 		return err
 	}
 	exclude := fingerprintExclusion(manifestOutputPaths(moduleRoot, man), targets)

@@ -385,7 +385,12 @@ func (e *expander) parseEvent(ra contracts.RawAttr) (contracts.EventBinding, *co
 		return ev, nil
 	}
 
-	for _, part := range strings.Split(argSrc, ",") {
+	parts, ok := splitEventArgs(argSrc)
+	if !ok {
+		cerr := e.err(ra.Span, CodeEventArg, "event %q has an unterminated string argument", ra.Name)
+		return contracts.EventBinding{}, cerr
+	}
+	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			cerr := e.err(ra.Span, CodeEventArg, "event %q has an empty argument", ra.Name)
@@ -398,6 +403,48 @@ func (e *expander) parseEvent(ra contracts.RawAttr) (contracts.EventBinding, *co
 		ev.Args = append(ev.Args, arg)
 	}
 	return ev, nil
+}
+
+// splitEventArgs separates arguments without treating commas inside a string
+// literal as separators. The literal text is retained verbatim, including its
+// quotes and backslashes; interpreting it remains parseEventArg's responsibility.
+func splitEventArgs(src string) ([]string, bool) {
+	var parts []string
+	start := 0
+	quoted := false
+	atStart := true
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if atStart && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+			continue
+		}
+		if atStart && c == '\'' {
+			quoted = true
+			atStart = false
+			continue
+		}
+		atStart = false
+		if quoted {
+			if c == '\'' {
+				// Existing string literals retain their interior apostrophes.
+				// A closing quote must end the argument, before a comma or EOF.
+				rest := strings.TrimLeft(src[i+1:], " \t\r\n")
+				if rest == "" || rest[0] == ',' {
+					quoted = false
+				}
+			}
+			continue
+		}
+		if c == ',' {
+			parts = append(parts, src[start:i])
+			start = i + 1
+			atStart = true
+		}
+	}
+	if quoted {
+		return nil, false
+	}
+	return append(parts, src[start:]), true
 }
 
 // parseEventArg 解析单个实参。

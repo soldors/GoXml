@@ -183,11 +183,12 @@ func TestNamingConflictDiagnosticsNotDuplicated(t *testing.T) {
 // TestNamingPrecheckSkippedOnAllHit：G6。
 //
 // 预检只对**未命中**输入（`precheckPackageSymbols` 的文档决定）。若把命中
-// 输入也算进来，"磁盘上恰好有同名用户符号"就会让一个什么都不写的运行失败。
+// 输入也算进来，"其他产物恰好有同名符号"就会让一个什么都不写的运行失败。
 //
 // 构造难点：新增一个用户 .go 文件会改变 K3 包指纹 → 变成未命中，就测不到
-// 命中路径。因此这里复用**Manifest 已登记的产物路径**（K3 排除 Manifest 产物），
-// 把它改写成"用户声明"（去掉保护头）——包内出现同名符号，而缓存键不变。
+// 命中路径。因此这里复用**Manifest 已登记且仍带保护头的产物**，在其中放入
+// 同名符号，而缓存键不变。去掉保护头的文件已经由用户接管，必须进入 K3，
+// 不能拿它构造命中前提（见 TestManifestCannotHideUserSourceFromCacheFingerprint）。
 //
 // 变红方式：把 `precheckPackageSymbols(missResolved, ...)` 改成 `resolved` → 本用例红。
 func TestNamingPrecheckSkippedOnAllHit(t *testing.T) {
@@ -209,9 +210,15 @@ func TestNamingPrecheckSkippedOnAllHit(t *testing.T) {
 		t.Fatalf("home 产物里没有包级类型:\n%s", homeGen)
 	}
 
-	// ---- 把 detail 的产物改写成用户声明（该路径在 Manifest 里 → 不进 K3）----
-	userLike := "package miniproj\n\ntype " + names[0] + " struct{}\n"
-	if err := os.WriteFile(filepath.Join(tmp, "detail_gen.go"), []byte(userLike), 0o644); err != nil {
+	// ---- 让另一个已登记产物声明同名符号，保留保护头以维持 K3 排除前提 ----
+	detailPath := filepath.Join(tmp, "detail_gen.go")
+	detailGen, err := os.ReadFile(detailPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := strings.SplitN(string(detailGen), "\n\n", 2)[0]
+	artifactLike := header + "\n\npackage miniproj\n\ntype " + names[0] + " struct{}\n"
+	if err := os.WriteFile(detailPath, []byte(artifactLike), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -102,6 +102,9 @@ func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, er
 	if err != nil {
 		return nil, fmt.Errorf("计算输出相对路径: %w", err)
 	}
+	if err := validateOutputBoundary(moduleRoot, target); err != nil {
+		return nil, err
+	}
 
 	return &resolvedInput{
 		in:         in,
@@ -335,7 +338,7 @@ func newCacheRecordFor(r *resolvedInput, key string, artifact []byte) cacheRecor
 	return rec
 }
 
-// manifestOutputPaths 把 Manifest 登记的产物转成绝对路径（用于 K3 排除集）。
+// manifestOutputPaths 返回仍带保护头的 Manifest 产物（用于 K3 排除集）。
 //
 // 只排除 Manifest 产物不够（见陷阱 T1），调用方还要并上本批 target；
 // 本函数只负责「已登记」这一半。
@@ -345,7 +348,15 @@ func manifestOutputPaths(moduleRoot string, man *manifest) []string {
 		if e.Output == "" {
 			continue
 		}
-		out = append(out, filepath.Join(moduleRoot, filepath.FromSlash(e.Output)))
+		target := filepath.Join(moduleRoot, filepath.FromSlash(e.Output))
+		// Manifest is untrusted ownership metadata. A user-owned Go file must
+		// still participate in the fingerprint, even if listed as an output;
+		// otherwise a cache hit can hide new syntax/binding/naming errors.
+		data, err := os.ReadFile(target)
+		if err != nil || !codegen.HasProtectedHeader(data) {
+			continue
+		}
+		out = append(out, target)
 	}
 	return out
 }

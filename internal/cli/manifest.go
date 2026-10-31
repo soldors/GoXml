@@ -81,6 +81,15 @@ func loadManifest(path string) (*manifest, error) {
 	if m.Version != manifestVersion {
 		return nil, fmt.Errorf("Manifest 版本 %d 不受支持（期望 %d）；禁止任何清理操作", m.Version, manifestVersion)
 	}
+	// Valid JSON is not sufficient: these paths control fingerprint exclusion
+	// and deletion. Validate the entire document before any generation/cleanup.
+	for i, e := range m.Entries {
+		for _, field := range []struct{ label, value string }{{"source", e.Source}, {"output", e.Output}} {
+			if err := validateProjectFilePath(field.label, field.value); err != nil {
+				return nil, fmt.Errorf("Manifest 损坏（%s，第 %d 条）: %w；禁止生成或清理，请人工修复 Manifest", path, i+1, err)
+			}
+		}
+	}
 	return &m, nil
 }
 
@@ -153,11 +162,21 @@ func cleanOrphans(moduleRoot string, keepSources map[string]bool) ([]string, []s
 	if err != nil {
 		return nil, nil, err // 损坏即自锁
 	}
+	if err := validateManifestOutputPaths(moduleRoot, m); err != nil {
+		return nil, nil, err
+	}
 
 	var deleted, skipped []string
 	for _, e := range m.Entries {
 		if keepSources[e.Source] {
 			continue // 本轮生成中还在用的不删
+		}
+		// An input omitted by a single-file/subdirectory invocation is not an
+		// orphan. Only a source that actually disappeared permits cleanup.
+		if _, err := os.Stat(filepath.Join(moduleRoot, filepath.FromSlash(e.Source))); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("检查源文件 %s: %w", e.Source, err)
 		}
 		target := filepath.Join(moduleRoot, filepath.FromSlash(e.Output))
 		data, err := os.ReadFile(target)
