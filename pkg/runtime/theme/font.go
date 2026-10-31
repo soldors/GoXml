@@ -312,7 +312,8 @@ func (p *Provider) Resolve(family string) (string, error) {
 	return id, err
 }
 
-// ResolveWithReport 与 Resolve 相同，另外返回诊断报告。
+// ResolveWithReport 与 Resolve 相同，另外返回诊断报告的独立副本。
+// 报告中的切片和嵌套诊断归调用方所有；修改它们不影响缓存或其他调用方。
 func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -355,7 +356,7 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 		p.sets[id] = &fontSet{ID: id, Path: rep.Resolved, Faces: faces}
 		p.resolved[family] = id
 		rep.ID = id
-		return id, rep, nil
+		return id, copyProbeReport(rep), nil
 	}
 
 	// 系统链路失败 → 嵌入兜底（B 卡 §4 第 2 步）。
@@ -372,13 +373,13 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 		// 系统链路确实全失败了，但整体解析成功：Err 必须清空，
 		// 否则调用方会把"已兜底成功"读成"失败"。
 		rep.Err = nil
-		return embID, rep, nil
+		return embID, copyProbeReport(rep), nil
 	}
 
 	// 两条链路都失败 → 严格失败，且错误里两条链路的原因都要在（B 卡 §6）。
 	rep.Err = fmt.Errorf("%w: 系统候选 %d 个与嵌入兜底均不可用（system: %v | embedded: %v）",
 		contracts.ErrFontNotFound, len(rep.Candidates), sysErr, embRes.Err)
-	return "", rep, rep.Err
+	return "", copyProbeReport(rep), rep.Err
 }
 
 // loadEmbedded 加载并解析嵌入字体，返回标识、集合与诊断。
@@ -479,11 +480,11 @@ func (p *Provider) Faces(id string) ([]font.FontFace, bool) {
 	return set.Faces, true
 }
 
-// LastReport 返回最近一次探测的诊断报告（未探测过时为 nil）。
+// LastReport 返回最近一次探测的诊断报告的独立副本（未探测过时为 nil）。
 func (p *Provider) LastReport() *ProbeReport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.last
+	return copyProbeReport(p.last)
 }
 
 // Scans 返回实际发生磁盘扫描的次数（测试用：证明缓存命中不再扫描）。
