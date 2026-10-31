@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"go/build"
 	"go/token"
 	"io"
 	"os"
@@ -96,6 +97,17 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		return err
 	}
 	if err := validateManifestOutputPaths(moduleRoot, man); err != nil {
+		return err
+	}
+	// 跨批次的产物所有权冲突（R2-qcode-03）：单文件形态 + --out-dir 会把输入
+	// 相对路径压平（discoverInputs 对单文件只给 basename），于是
+	//   goxml generate ui/home.gxml --out-dir gen    → gen/home_gen.go
+	//   goxml generate admin/home.gxml --out-dir gen  → gen/home_gen.go（同一个文件）
+	// 同批次内有 seen 拦着，跨批次此前无人拦：后一次静默覆盖前一次的产物，
+	// Manifest 出现两条登记指向同一个文件，之后每次来回生成都判
+	// output-modified 互相覆盖（真实 CLI 实测见 dev-log §2）。
+	// 放在阶段零 B 末尾：此时仍然只有读操作，拦下来就是「磁盘无任何变更」。
+	if err := checkOutputOwnership(moduleRoot, man, resolved); err != nil {
 		return err
 	}
 	exclude := fingerprintExclusion(manifestOutputPaths(moduleRoot, man), targets)
@@ -221,7 +233,12 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			return fmt.Errorf("提交失败: %w", err)
 		}
 		for _, t := range sorted {
-			fmt.Fprintf(stdout, "已生成 %s\n", t)
+			// 措辞按 TASK-GENERATE-CACHE-001 §5 冻结为 `已生成 <rel-output>`。
+			// 同一轮里 `跳过 <rel-output>（缓存命中）` 与
+			// `缓存未命中 <rel-output>：<原因>` 两行本来就是项目相对路径，只有这一行
+			// 打绝对路径：它把用户机器的目录结构写进构建日志，脚本换机器后无法比对，
+			// 而路径含空格/非 ASCII 时还会让同一份诊断在不同机器上形态不同。
+			fmt.Fprintf(stdout, "已生成 %s\n", byTarget[t].r.outputRel)
 		}
 		if len(sorted) > 1 {
 			fmt.Fprintf(stdout, "共 %d 个文件生成成功（按路径排序处理）\n", len(sorted))
@@ -367,28 +384,73 @@ func findModuleRoot(start string) (string, error) {
 	}
 }
 
-// packageDirName 读目录内任一 .go 文件的 package 子句作为包名。
+// packageDirName 读目录内**非测试** Go 源文件的 package 子句作为包名。
 //
-// 目录没有 Go 文件时报错——生成文件必须落在真实 Go 包里（契约 §3.2：
+// 目录没有可定名的 Go 文件时报错——生成文件必须落在真实 Go 包里（契约 §3.2：
 // 输出目录必须能解析为明确的 Go package）。
+//
+// 两条契约依据（`代码生成输出契约.md` §3.2、§4.1）：
+//   - 「如果输出目录存在多个非测试 package，生成失败」→ 这里必须把冲突报出来，
+//     而不是抓到一个算一个；
+//   - 包名要能「从目标目录正确解析」→ 外部测试包 `package foo_test` 里的名字
+//     **不是**该目录的构建包名。
+//
+// 为什么要专门排除 `*_test.go`（R2-qcode-02，本轮实测）：老实现按 ReadDir 顺序
+// 取**第一个** `.go` 的 package 子句，测试文件也在候选里。`ui/home_test.go`
+// （`package ui_test`）在字母序上排在 `ui/view.go` 前面，于是产物写成
+// `package ui_test`，CLI 却报「已生成」退出码 0：
+//
+//	go build ./ui → found packages ui_test (home_gen.go) and ui (view.go)
+//
+// 这是任何「先写了外部测试文件、再生成页面」的普通工程都会踩到的形态，
+// 不是构造出来的边界。排除测试文件同时与 K3 指纹的口径对齐
+// （cache_wire.go 的 packageSourcesFingerprint 本来就不收 `_test.go`）。
 func packageDirName(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("读取目录 %s: %w", dir, err)
 	}
+	// 按 ReadDir 的文件名序收集，包名集合至多一个才可用；报错信息里的顺序也是确定的。
+	var name string
+	var others []string
+	seen := make(map[string]bool, 2)
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".go" {
+		name0 := e.Name()
+		if e.IsDir() || filepath.Ext(name0) != ".go" || strings.HasSuffix(name0, "_test.go") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		// Match Go's build selection before collecting package declarations:
+		// generator scripts and files for other platforms are not this package.
+		match, err := build.Default.MatchFile(dir, name0)
+		if err != nil {
+			return "", fmt.Errorf("匹配 Go 构建文件 %s: %w", filepath.Join(dir, name0), err)
+		}
+		if !match {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name0))
 		if err != nil {
 			continue
 		}
-		if name, ok := parsePackageName(data); ok {
-			return name, nil
+		pkg, ok := parsePackageName(data)
+		if !ok || seen[pkg] {
+			continue
 		}
+		seen[pkg] = true
+		if name == "" {
+			name = pkg
+			continue
+		}
+		others = append(others, pkg)
 	}
-	return "", fmt.Errorf("目录 %s 中没有 Go 源文件，无法确定包名", dir)
+	if name == "" {
+		return "", fmt.Errorf("目录 %s 中没有可定名的非测试 Go 源文件，无法确定包名；请先在该目录初始化目标 package", dir)
+	}
+	if len(others) > 0 {
+		return "", fmt.Errorf("目录 %s 存在多个非测试 package（%s），无法确定生成文件的包名（契约 §3.2）",
+			dir, strings.Join(append([]string{name}, others...), " / "))
+	}
+	return name, nil
 }
 
 // parsePackageName 从 Go 源码提取 package 子句的名字。

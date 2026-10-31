@@ -217,3 +217,71 @@ func TestEndToEndBatchAllOrNothing(t *testing.T) {
 		t.Errorf("错误信息应说明全或无语义:\n%s", errb.String())
 	}
 }
+
+// TestCommitBatchRenameFailureLeavesNoTempFile 提交期 rename 失败时，
+// **失败那一个**的临时文件也必须清掉。
+//
+// 注入方式只用真实文件系统语义：把批次第二个目标做成一个已存在的空目录，
+// Windows 下 os.Rename 报「Access is denied」且源临时文件仍在——实测见交付
+// 目录 raw/。不需要权限、进程或改造系统函数，跑完即可删。
+//
+// 判别力：修复前 commitBatch 的清理列表**排除**当前失败项，
+// 于是用户的包目录里会留下一个 `.goxml-*.tmp`（违反
+// TASK-GENERATE-CLI-001 退出条件 5「临时文件在失败后清理干净」）。
+func TestCommitBatchRenameFailureLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a_gen.go")
+	// 第二个目标是一个已存在的目录：rename 文件到它上面必然失败。
+	blocked := filepath.Join(dir, "b_gen.go")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "keep.txt"), []byte("KEEP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := stageBatch([]string{first, blocked}, func(tmp string, i int) error {
+		return os.WriteFile(tmp, []byte("NEW"), 0o644)
+	})
+	if err != nil {
+		t.Fatalf("暂存应成功（故障要落在提交期，不是暂存期）: %v", err)
+	}
+	if len(staged) != 2 {
+		t.Fatalf("应有 2 个暂存项，实际 %d", len(staged))
+	}
+
+	err = commitBatch(staged)
+	if err == nil {
+		t.Fatal("目标是已存在目录时 rename 必须失败——故障没有到达提交期")
+	}
+	if !strings.Contains(err.Error(), "提交") {
+		t.Errorf("错误应指明提交期失败: %v", err)
+	}
+
+	// 已提交的那一个保留，且内容是新字节（提交不可逆，语义不变）。
+	data, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("第一个目标应已提交: %v", err)
+	}
+	if string(data) != "NEW" {
+		t.Errorf("已提交内容 = %q，期望 NEW", data)
+	}
+	// 失败目标不得被破坏：目录与其中文件仍在。
+	keep, err := os.ReadFile(filepath.Join(blocked, "keep.txt"))
+	if err != nil {
+		t.Fatalf("失败不应动到目标目录: %v", err)
+	}
+	if string(keep) != "KEEP" {
+		t.Errorf("目标目录内容被改动: %q", keep)
+	}
+	// 核心断言：一个临时文件都不留。
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".goxml-") {
+			t.Errorf("提交失败后残留临时文件: %s", e.Name())
+		}
+	}
+}

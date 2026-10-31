@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goxml/goxml/internal/compiler/codegen"
 )
@@ -129,6 +130,119 @@ func inputHashOf(src []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// sameProjectFile compares existing filesystem identities, retaining the recorded
+// spelling. EqualFold would conflate distinct files in case-sensitive directories.
+// Missing leaves are compared through existing parent identities. Case ambiguity
+// without an existing leaf fails closed rather than guessing directory case rules.
+func sameProjectFile(moduleRoot, a, b string, stat func(string) (os.FileInfo, error)) (bool, error) {
+	if a == b {
+		return true, nil
+	}
+	ai, ae := stat(filepath.Join(moduleRoot, filepath.FromSlash(a)))
+	bi, be := stat(filepath.Join(moduleRoot, filepath.FromSlash(b)))
+	for _, err := range []error{ae, be} {
+		if err != nil && !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	if ae == nil && be == nil {
+		return os.SameFile(ai, bi), nil
+	}
+	ap, at, err := existingProjectParent(moduleRoot, a, stat)
+	if err != nil {
+		return false, err
+	}
+	bp, bt, err := existingProjectParent(moduleRoot, b, stat)
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(ap, bp) {
+		return false, nil
+	}
+	if at == bt {
+		return true, nil
+	}
+	if strings.EqualFold(at, bt) {
+		return false, fmt.Errorf("缺失路径 %q 与 %q 存在大小写歧义，无法确认产物所有权；请使用 Manifest 原路径拼写", a, b)
+	}
+	return false, nil
+}
+
+// existingProjectParent resolves missing descendants without assuming a directory's
+// case rules. Comparing parent FileInfo also recognizes supported directory aliases.
+func existingProjectParent(moduleRoot, path string, stat func(string) (os.FileInfo, error)) (os.FileInfo, string, error) {
+	full := filepath.Join(moduleRoot, filepath.FromSlash(path))
+	tail := filepath.Base(full)
+	parent := filepath.Dir(full)
+	for {
+		info, err := stat(parent)
+		if err == nil {
+			if !info.IsDir() {
+				return nil, "", fmt.Errorf("路径父级 %s 不是目录", parent)
+			}
+			return info, tail, nil
+		}
+		if !os.IsNotExist(err) || filepath.Dir(parent) == parent {
+			return nil, "", err
+		}
+		tail = filepath.Join(filepath.Base(parent), tail)
+		parent = filepath.Dir(parent)
+	}
+}
+
+// checkOutputOwnership 拦住「本批要写的产物，Manifest 已经登记给另一个还活着的源」。
+//
+// 一个产物只能属于一个源，否则：
+//   - 后一次运行静默毁掉前一次的页面（两边都报「已生成」、退出码 0）；
+//   - Manifest 出现两条指向同一文件，`--clean` 会按 output 撤下**两条**登记，
+//     却只删掉一个文件；
+//   - 保护头里的 `// Source:` 是文件名基名，同名不同目录的两页无法靠头部区分
+//     （该语义冲突见 dev-log 的提案，需项目所有者裁决，本函数不依赖它）。
+//
+// 只读，不写盘：调用点在阶段零 B，拦下来即「磁盘无任何变更」。
+// 另一条登记的源**已不存在**时不拦：那是失效登记，本次写入是合法的接管，
+// 由 updateManifestAfterGenerate 撤下旧条目，避免留下双重所有权。
+func checkOutputOwnership(moduleRoot string, man *manifest, rs []*resolvedInput) error {
+	return checkOutputOwnershipWithStat(moduleRoot, man, rs, os.Stat)
+}
+
+// The stat parameter permits deterministic filesystem-failure coverage without
+// modifying process-wide hooks or requiring platform-specific ACL changes.
+func checkOutputOwnershipWithStat(moduleRoot string, man *manifest, rs []*resolvedInput, stat func(string) (os.FileInfo, error)) error {
+	if man == nil || len(man.Entries) == 0 {
+		return nil
+	}
+	for _, r := range rs {
+		for _, e := range man.Entries {
+			sameOutput, err := sameProjectFile(moduleRoot, e.Output, r.outputRel, stat)
+			if err != nil {
+				return fmt.Errorf("检查产物所有权 %s: %w", e.Output, err)
+			}
+			if !sameOutput || e.Source == r.sourceRel {
+				continue
+			}
+			if _, err := stat(filepath.Join(moduleRoot, filepath.FromSlash(e.Source))); err != nil {
+				if os.IsNotExist(err) {
+					continue // 只有确实不存在才能接管。
+				}
+				return fmt.Errorf("检查源文件 %s: %w", e.Source, err)
+			}
+			sameSource, err := sameProjectFile(moduleRoot, e.Source, r.sourceRel, stat)
+			if err != nil {
+				return fmt.Errorf("检查源文件 %s: %w", e.Source, err)
+			}
+			if sameSource {
+				continue
+			}
+			return fmt.Errorf(
+				"输出冲突：%s 已由 Manifest 登记给 %q，本次要写入的源是 %q；"+
+					"两个源不得共用同一个产物文件。请改用目录形态一次生成（保留输入相对路径结构）、"+
+					"或为其中一页换 --out-dir", r.outputRel, e.Source, r.sourceRel)
+		}
+	}
+	return nil
+}
+
 // updateManifestAfterGenerate 在生成成功后更新 Manifest 登记并原子保存。
 func updateManifestAfterGenerate(moduleRoot string, es []entry) error {
 	path := manifestPath(moduleRoot)
@@ -136,14 +250,26 @@ func updateManifestAfterGenerate(moduleRoot string, es []entry) error {
 	if err != nil {
 		return err
 	}
-	// 用本次的 entries 覆盖同 source 的旧登记；其余保留。
-	bySrc := make(map[string]entry, len(es))
-	for _, e := range es {
-		bySrc[e.Source] = e
-	}
+	// Use the same filesystem identity as the pre-write ownership gate. Keep
+	// original path spelling in the serialized entries, including on Windows.
 	kept := m.Entries[:0]
 	for _, old := range m.Entries {
-		if _, touched := bySrc[old.Source]; !touched {
+		replaced := false
+		for _, e := range es {
+			sameSource, err := sameProjectFile(moduleRoot, old.Source, e.Source, os.Stat)
+			if err != nil {
+				return fmt.Errorf("检查 Manifest 源文件 %s: %w", old.Source, err)
+			}
+			sameOutput, err := sameProjectFile(moduleRoot, old.Output, e.Output, os.Stat)
+			if err != nil {
+				return fmt.Errorf("检查 Manifest 产物 %s: %w", old.Output, err)
+			}
+			if sameSource || sameOutput {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
 			kept = append(kept, old)
 		}
 	}

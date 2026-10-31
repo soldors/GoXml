@@ -73,17 +73,17 @@ func stageBatch(targets []string, write func(tmpPath string, i int) error) ([]st
 // rename 极少失败（同目录、目标无只读锁时）；一旦失败，已 rename 的
 // 文件**无法**逐字节还原（rename 不是 copy），此时按冻结语义上报错误——
 // 这属于环境级故障（磁盘满/权限突变），不是本工具能在进程内回滚的。
+//
+// 失败时必须清掉**本批全部**临时文件，包括当前这个失败的：它已经躺在目标
+// 目录里，留着就是在用户的包目录里丢下一个 `.goxml-*.tmp`
+// （TASK-GENERATE-CLI-001 退出条件 5「临时文件在失败后清理干净」）。
+// 已经 rename 成功的条目也放进清理列表：它们的临时文件已被搬走，
+// os.Remove 返回 IsNotExist，cleanup 按不存在忽略，不会误删已提交的产物
+// （cleanup 只碰 tmp 路径，永远不碰 target）。
 func commitBatch(staged []stagedFile) error {
 	for _, sf := range staged {
 		if err := os.Rename(sf.tmp, sf.target); err != nil {
-			// 先清掉尚未 rename 的临时文件，再上报。
-			rest := make([]stagedFile, 0, len(staged))
-			for _, s := range staged {
-				if s.target != sf.target {
-					rest = append(rest, s)
-				}
-			}
-			cleanupErr := cleanup(rest)
+			cleanupErr := cleanup(staged)
 			if cleanupErr != nil {
 				return fmt.Errorf("提交 %s 失败: %w；且回滚也失败: %w", filepath.Base(sf.target), err, cleanupErr)
 			}
