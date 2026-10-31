@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/io/event"
 	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -525,6 +526,18 @@ func RunWindowWithInvalidator(view View, th *material.Theme, cfg Config, stop <-
 		app.Title(cfg.Title),
 		app.Size(cfg.Width, cfg.Height),
 	)
+	return runWindowEvents(w, view, th, stop, inv)
+}
+
+// windowEvents is the Gio boundary used by the test/integration entry point.
+// Keeping the event pump here also allows lifecycle tests without native windows.
+type windowEvents interface {
+	Event() event.Event
+	Perform(system.Action)
+	Invalidate()
+}
+
+func runWindowEvents(w windowEvents, view View, th *material.Theme, stop <-chan struct{}, inv func(Invalidator)) error {
 
 	// 交付失效入口：在事件循环启动前回调，调用方持有它即可请求重布局。
 	//
@@ -533,12 +546,10 @@ func RunWindowWithInvalidator(view View, th *material.Theme, cfg Config, stop <-
 		inv(w)
 	}
 
-	// stop 到达时通知窗口关闭。
-	go func() {
-		<-stop
-		w.Perform(system.ActionClose)
-		w.Invalidate()
-	}()
+	// stop 到达时通知窗口关闭；窗口先退出时结束等待，不再保留 goroutine。
+	loopDone := make(chan struct{})
+	defer close(loopDone)
+	go watchWindowStop(w, stop, loopDone)
 
 	var ops op.Ops
 	for {
@@ -552,6 +563,23 @@ func RunWindowWithInvalidator(view View, th *material.Theme, cfg Config, stop <-
 			e.Frame(gtx.Ops)
 		}
 	}
+}
+
+func watchWindowStop(w windowEvents, stop, loopDone <-chan struct{}) {
+	select {
+	case <-loopDone:
+		return
+	case <-stop:
+	}
+	// Both signals can already be closed when the watcher is scheduled. Give
+	// an exited loop priority instead of sending a redundant native request.
+	select {
+	case <-loopDone:
+		return
+	default:
+	}
+	w.Perform(system.ActionClose)
+	w.Invalidate()
 }
 
 // RunWindow 与 RunWith 相同，但**不调用 app.Main()**，只驱动事件循环。
