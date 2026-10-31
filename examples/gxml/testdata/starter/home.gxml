@@ -1,0 +1,9 @@
+<Goxml Version="1" ViewModel="ViewModel">
+  <Page Route="/">
+    <Column Padding="24" Gap="12">
+      <Text Value="Goxml starter"/>
+      <Text Value="{Title}"/>
+      <Button Text="Increment" Click="Increment"/>
+    </Column>
+  </Page>
+</Goxml>

@@ -1,0 +1,21 @@
+// Copy to cmd/starter/main.go after generating home_gen.go.
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"example.com/goxml-starter"
+	"github.com/goxml/goxml/pkg/runtime/app"
+)
+
+func main() {
+	view, err := starter.NewGoxmlHomeView(starter.NewViewModel())
+	if err == nil {
+		err = app.Run(view, app.Config{Title: "Goxml starter", Width: 480, Height: 240})
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation and examples
+- 新增可构建CLI入门工程与同源自动验证，覆盖重复生成、错误不覆盖旧文件、实际生成代码及窗口入口编译；更新文档/目录现状和并行开发流程。
+
 ### Fixed
+- 修复For行事件/If守卫/Index的生成作用域及事件字符串内部逗号切分；覆盖生成Go编译与无窗口点击。
+- Provider冷报告与LastReport返回独立诊断，窗口事件泵结束后收口stop等待者。
+- Generate校验Manifest输出边界及Windows junction，局部clean保留仍有源页面，用户接管源码继续参与缓存指纹。
 - 修复 Lazy 提前 Request 后交给 NewLazyApp 时可能缺少终态重绘的问题；新增按尝试观察的 Lazy.Done，保持原回调和帧内主题交换。
 - Go profile/trace 辅助解析使用独立、可写的 GOCACHE/GOTMPDIR，不更改被测诊断进程环境或追改历史失败批次。
 - Grid在Parser与IR校验处拒绝NaN和正负无穷，避免非法权重流入生成代码；保留正常有限小数权重。

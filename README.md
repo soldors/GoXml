@@ -29,19 +29,22 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
   → 运行入口    窗口 + Gio 主循环                        [已实现·最小]
 ```
 
-**这张图描述的是目标管线，不是已实现的端到端能力。** 当前状态：
+当前实现已经接通 CLI 生成与运行时入口；功能实现和完整验收分别记录：
 
 - 前端三阶段（Parser / Expander / Analyzer）已实现并有测试；
 - 管线四阶段已串联，失败门禁有实测证据（Codegen 未被调用、不产生文件）；
 - `examples/demo` 已能**打开真实窗口**并交互（绑定、事件、`<For>`、`<If>`）；
 - CLI 已可用：`goxml generate` 支持单文件与目录批量生成、确定性输出、
   两阶段事务回滚与 `--clean`（见下方使用说明）；
-- 尚未实现：Grid 生成、`<Def>`/`<Slot>` 生成侧完整覆盖、Input 控件、Watch。
+- Grid、Input、If/For、绑定与事件已有生成实现及对应测试；`<Def>`/`<Slot>` 在编译期展开。完整功能验收范围仍以任务卡和实测记录为准，不能由“已有实现”推出全部边界已验收。
+- Watch、Preview、通用 Lifecycle/Hydration、Router 正式集成尚未交付；强类型 ThemeRef 接线仍待批准，不属于现有字体 Theme 便利层。
+
+新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。当前并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
 
 ### goxml generate 使用说明
 
 ```text
-go generate 需 Go module 工程。在仓库根构建：
+goxml generate 需 Go module 工程。在仓库根构建：
 
   go build -o goxml.exe ./cmd/goxml/
 
@@ -66,6 +69,7 @@ go generate 需 Go module 工程。在仓库根构建：
   - 生成登记写入 .goxml/generate-manifest.json，损坏即拒绝清理。
 
 各阶段的实现进度与验收证据，以任务卡为唯一权威来源（见下方导航）。
+```
 
 ## 开发与验证
 
@@ -85,6 +89,8 @@ go vet ./...          # 静态检查
 go test ./...         # 全部测试
 go test -cover ./...  # 覆盖率
 ```
+
+`go test ./...` 默认包含原生窗口测试；只做无窗口开发时应按[并行验证记录](docs/06-测试/2026-10-31-并行开发验证记录.md)选择范围，不能把未执行的原生项报为通过。Windows 构建/测试先设置 `CGO_ENABLED=0`；race 需要另有 C 工具链与明确运行条件。
 
 诊断码与文档一致性门禁：
 
@@ -120,7 +126,7 @@ go run ./examples/demo
 
 ### 决策记录
 
-架构决策记录位于 [docs/03-架构/adr/](docs/03-架构/adr/)，共 8 篇。
+架构决策记录位于 [docs/03-架构/adr/](docs/03-架构/adr/)，各文件标明批准状态；未批准草案不是开发许可。
 其中 ADR-0001 说明「编译期 GXML → Gio 零抽象开销」的整体取舍。
 
 ### 进度与证据
@@ -141,10 +147,10 @@ go run ./examples/demo
 
 | 限制 | 说明 |
 |---|---|
-| Codegen 覆盖极小 | 仅 `<Page>` + 单个静态 `<Text>`；绑定、事件、布局、`<For>` 均未支持 |
+| Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
 | CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`；Watch 未做（归 TASK-DEVX-001/002） |
 | 窗口渲染未自动验证 | 自动化只验证「启动不崩溃」，窗口显示与文字渲染需人工确认 |
-| 仅 Windows 验证 | 未在 macOS / Linux 上运行过测试 |
+| 本批仅 Windows 验证 | 历史Linux原生编译记录见平台矩阵；本批不外推Linux/macOS运行结果 |
 | `<Def Events>` 不传播事件 | v1 只做契约声明，调用点处理器签名不被校验 |
 
 更完整的未验证清单见 [Analyzer 验收报告 §5](docs/06-测试/Analyzer验收报告.md)。

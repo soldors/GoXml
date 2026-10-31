@@ -67,7 +67,7 @@
 AI 在修改文件时，必须严格遵守以下目录的单向依赖规则，严禁逆向引用。
 
 > **图例**：`[已有]` = 目录已存在且有代码；`[规划]` = 目标拓扑，尚未创建。
-> 截至 2026-10-19，运行时只有 `pkg/runtime/app` 已实现，其余规划目录需在对应任务中创建。
+> 2026-10-31 现状核对：已版本化运行时为 `app/` 与 `theme/`，平台层已实现 `font/`，CLI 已实现 `generate`。Router 用户未提交候选不代表已合入；其余规划能力仍需对应任务批准。
 
 
 
@@ -83,15 +83,15 @@ goxml/
 │   ├── grid/              # Grid 列宽计算的规范参考实现（oracle）
 │   ├── sizelayout/        # 尺寸决策的可执行形式（主轴/交叉轴、无界判断）
 │   └── diagdoc/           # 诊断码目录一致性门禁（AST 发射校验）
-├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（当前仅 app/）
+├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（app/、theme/）
 │   ├── app/               # [已有] 窗口创建与 Gio 主循环入口（最小实现）
 │   ├── router/            # [规划] 单窗口虚拟路由，MacroOp 转场快照动画器，OSWindow 逃生舱
-│   ├── theme/             # [规划] 强类型 Theme 结构体，指针切换与暗色模式
+│   ├── theme/             # [已有] Gio Theme 字体策略、Provider、Lazy 与显式选面；强类型 ThemeRef 接线仍待批准
 │   ├── lifecycle/         # [规划] Context 驱动的 OnMount/OnUnmount 生命周期管理
 │   └── hydration/         # [规划] Live Reload 状态序列化暂存与恢复 (.goxml_state.json)
-├── pkg/platform/          # [规划] [Zero-CGO OS 桥接] 纯 Go 实现的托盘、菜单、异步弹窗、剪贴板
+├── pkg/platform/          # [部分已有] font/ 已有；托盘、菜单、异步弹窗、剪贴板仍规划
 ├── pkg/widgets/           # [规划] [标准组件库] 自绘 ContextMenu、DataGrid (虚拟滚动)、Modal 等
-├── cmd/goxml/             # [规划] [CLI 工具链] generate、watch (双进程防抖热重启)、preview (静态预览)
+├── cmd/goxml/             # [已有] generate（编排在 internal/cli）；watch、preview 仍规划
 └── docs/                  # [工程文档库] ADR、WBS 任务卡、交接包、踩坑记录
 ```
 
