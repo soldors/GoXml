@@ -134,3 +134,119 @@ go test -v -run '^TestTasksProject$' ./examples/gxml
 扫描断言**不硬编码像素坐标**：按钮尺寸随字体/主题变化，测试用实测网格确定命中区，避免猜坐标造成的脆断言与静默失真。本机一次实测（560×400、`PxPerDp=1`）的命中区为：`remove:1` y 84–120、`toggle:2` y 140–168 x 456–492、`remove:2` y 136–172 x 516–540、`toggle:3` y 188–220、`remove:3` y 188–224。
 
 **本测试不证明**：原生窗口真的显示出来、真实鼠标点击链路、以及任何性能数据。含 `<For>` 的页面按 `For列表输出契约.md` §7 不享有零分配保证。
+
+## 一键验证脚本（用户直接运行）
+
+上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把两个入门工程（starter、tasks）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。
+
+```powershell
+# 默认：starter + tasks，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
+pwsh -File scripts/verify-examples.ps1
+
+# 单个示例 + 指定输出目录（支持空格与中文路径）
+scripts\verify-examples.ps1 -Example tasks -OutputRoot "D:\我的 构建\验证"
+
+# checkout 形态：在仓库内子目录构建，自动把 main 模板的导入换成本地包路径
+scripts\verify-examples.ps1 -Mode checkout -OutputRoot "<仓库>\tmp\verify-examples\r3-checkout"
+```
+
+脚本对每个示例做三件事，**从不执行窗口**：复制 `testdata/<示例>` 的同一份源材料 → 真实构建 CLI 并 `goxml generate --no-cache` → `go build` 窗口入口（只构建）。子进程输出**直通控制台**，不重定向、不转码，所以 `go` / `goxml` 的报错就是原文。
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功（真实生成 + 真实构建，未运行窗口） |
+| 2 | 前置条件/用法（缺 Go、缺 Python 或 Python 不可用、锁助手缺失、未知示例、`-SourceDir` 与 `-Example all` 同用、checkout 输出目录不在仓库内） |
+| 3 | 生成失败（打印 `goxml` 真实 rc；或 rc=0 但产物缺失/为空） |
+| 4 | Go 构建失败（打印 `go` 真实 rc；或 rc=0 但产物缺失） |
+| 5 | 输出目录已存在（包括空目录、已有 marker 或重解析路径）（拒绝覆盖、不删用户文件、**不写运行日志**） |
+| 6 | 锁被他人持有（不等待、不删他人锁） |
+| 7 | 示例源材料缺失（源目录不存在、`.gxml` 不唯一、`vm.go`/`main.go.txt` 缺失） |
+| 8 | 子进程超时（`-TimeoutSec`，默认 900 秒） |
+| 99 | 未处理异常 |
+
+失败时**保留证据目录**（不删除），并只释放自己 token 的锁；清理成功不会吞掉原始失败码。运行日志只在**本轮创建的**目录里写（marker 的 `runId` + `markerToken` 同时匹配）。
+
+### 运行前提（不声称"全新机器零预置"）
+
+| 前提 | 说明 | 缺失时 |
+|---|---|---|
+| Go（本机实测 `go1.26.1 windows/amd64`） | 真实构建 CLI 与窗口入口；离线可用依赖**模块缓存已就绪**（脚本传 `GOPROXY=off`，不联网） | rc 2，提示用 `-GoExe` 指定 |
+| Python 3（锁助手用，只依赖标准库） | 只用于取/放锁；`-SkipLock` 时不需要 | rc 2，提示用 `-PythonExe` 指定；若解析到 Microsoft Store 的应用执行别名（`…\WindowsApps\…`）会在**执行前**拒绝，不弹商店、不静默绕锁 |
+| 锁助手 `scripts/verify-examples-lock.py` | 与本脚本同目录，随仓库提供 | rc 2，打印缺失助手的完整路径（只单独拷贝 `.ps1` 会走到这条） |
+| 仓库工作树（含 `examples/gxml/testdata/`） | 源材料与 `go.mod`/`go.sum` | rc 2 / rc 7 |
+
+**没有做到的承诺**：不保证"全新机器无需任何预置即可离线构建"——Go 与 Python 必须是本机已装好的，Go 依赖需要模块缓存里已有 `gioui.org` 等（脚本不联网、不安装、不升级依赖）。
+
+### 锁策略（可迁移默认 + 显式共用）
+
+- **默认**：`<仓库根>/tmp/verify-examples/heavy.lock`，由锁助手按**自身位置**推导，随 checkout 迁移；另一台机器不需要任何历史目录。
+- **共用夜间公共锁**：必须显式 `-LockPath D:\Codes\Goxml-night-reports\2026-10-27\heavy.lock`。默认值不会替代、也不得用来绕过公共锁——**本夜所有实际重负载都显式传了 `-LockPath`**。
+- 锁协议沿用夜间采集器的 `wcollector.proclock` 语义：原子排他创建（`O_CREAT|O_EXCL`）、只释放自己 token、**不按 mtime 删锁**、身份用真实 pid + 进程创建时间。仓库内实现只取协议本身，不含采集器的其它内容。
+
+### 每次调用的 runId 与输出目录所有权
+
+- `runId` = 时间戳 + PID + 随机段，**不只用 PID**：同一个 PowerShell 宿主连续两次调用，PID 相同但 runId 必须不同（实测两次调用 `pid` 相同、`runId` 与 `lockToken` 各自不同）。
+- 输出目录的 marker 里写入本次的 `runId` 与 `markerToken`。输出根必须由本轮独占新建；已有目录（含空目录、已有 marker）与重解析路径一律拒绝。写运行日志时仍要求两者**同时匹配**，失败日志写入不阻止解锁，也不掩盖原始失败码；日志失败且此前成功时返回 99。拒绝其它目录时（rc 5，目录零新增，原 marker 字节不变）。只看"marker 文件存在"会把上一次/他人留下的同名 marker 误认成自己的。
+
+本机实测（2026-10-31，Go `go1.26.1 windows/amd64`、PowerShell `5.1.26100.9711` Desktop）：两个示例 isolated 与 checkout 均 rc 0，`home_gen.go` 5545 字节、`tasks_gen.go` 9909 字节，窗口入口约 11.8 MB（starter 11824640、tasks 11849216）；非法绑定 `{Missing}` 判为 rc 3 并原样显示 `GXML-BIND-001`。
+
+**本脚本不证明**：窗口真的显示、点击链路可用、任何性能数据，也不替代上文的 `go test`（离屏语义断言）。它只证明"这套源材料能被真实 CLI 生成、并且生成物能被真实 Go 构建"。
+
+实现注意：`.ps1` 必须保存为 UTF-8 with BOM，以兼容 Windows PowerShell 5.1；子进程输出直通控制台，避免双流同步读取阻塞；starter 的页面文件名是 `home.gxml`，不能从示例目录名推导。
+
+## 宿主支持范围（双宿主实测，2026-10-31）
+
+`verify-examples.ps1` 在**本机已存在**的两个宿主上各跑过一遍，两个宿主都是系统自带/已装的，本轮**没有安装任何宿主或依赖**：
+
+| 宿主 | 可执行文件 | 实测版本 | 本轮结论 |
+|---|---|---|---|
+| Windows PowerShell 5.1 | `powershell.exe` → `C:\windows\system32\windowspowershell\v1.0\powershell.exe` | `5.1.26100.9711`，PSEdition `Desktop`，CLR `4.0.30319.42000`（.NET Framework 4.8.10008.0） | 实测通过 |
+| PowerShell 7 | `pwsh.exe` → `C:\Users\admin\AppData\Local\Microsoft\WindowsApps\pwsh.exe` | `7.6.9`，PSEdition `Core`，.NET `10.0.14`，OS `Microsoft Windows 10.0.26300` | 实测通过 |
+
+两个宿主下分别验证的内容（均为真实运行，不是推理）：
+
+- 成功路径 rc 0：`tasks_gen.go` **9909 字节**、窗口入口 **11849728 字节**、运行日志存在且是 UTF-8 **无 BOM**；
+- 失败路径 rc **3**：非法绑定（`{Summary}`→`{Missing}`）保留 `GXML-BIND-001`，退出码 3 不被日志写入或失败清理覆盖；
+- 真实子进程回读（Go 包装进程 `scripts/testdata/verify-process-probe`）：`argv` 与 `cwd` 与期望逐字一致（含空格 / 中文 / 单引号 / 结尾反斜杠的路径），子进程环境为 `CGO_ENABLED=0`、`GOMAXPROCS=2`、`GOPROXY=off`、`GOSUMDB=off`、`GOTOOLCHAIN=local`、`GOFLAGS=-mod=readonly`，且 `TMP`/`TEMP`/`HOME`/`PATH` 与**宿主自身**环境逐项相等。
+
+复现命令（本机）：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -File scripts\verify-examples.ps1
+pwsh.exe      -NoLogo -NoProfile -NonInteractive -File scripts\verify-examples.ps1
+```
+
+自动化双宿主验收（跑真实脚本 + 真实子进程，不模拟脚本内部函数）：
+
+```text
+python scripts/test-verify-examples-hosts.py --goxml-exe <已冻结的 goxml.exe> \
+  --output-root <交付>/work --raw-dir <交付>/raw \
+  --report <交付>/out/host-matrix.json --commands <交付>/commands.jsonl
+```
+
+报告里每个宿主都有 `status` 字段：`verified` / `failed` / `unverified-host-not-installed`；宿主不存在时**不会**被判成通过。
+
+**未验证 / 不支持范围（诚实标注）**：Linux 与 macOS 上的 PowerShell 未实测，跨平台结论不外推；Windows PowerShell 4.0 及更早版本未实测；PowerShell 7 从 Microsoft Store 应用执行别名启动时会在自己的 PATH 前追加别名目录（86 字符前缀），这是宿主行为、不是脚本污染，因此环境继承判据比较的是子进程与 PowerShell 宿主自身的环境。
+
+## 可迁移性验证（2026-11-01）
+
+`scripts/test-verify-examples-portable.py` 只跑与可迁移性/所有权**有关**的判据，不重跑上一批的 10 项、也不重复双宿主矩阵：
+
+```text
+python scripts/test-verify-examples-portable.py --goxml-exe <已冻结 goxml.exe> \
+  --output-root <交付>/work --raw-dir <交付>/raw \
+  --report <交付>/out/portable.json --commands <交付>/commands.jsonl
+```
+
+| 用例 | 判据 |
+|---|---|
+| 默认锁路径在仓库内 | 隔离布局（系统临时目录下、路径含空格与中文）里跑助手，默认路径必须是布局内的 `tmp/verify-examples/heavy.lock` |
+| 自己的 token 可取可放 | acquire→status→release，`released=True` 且文件确实消失 |
+| 错误 token 不释放 | rc 78、`released=False`、锁文件字节不变 |
+| 不导入历史目录 | `PYTHONVERBOSE=1` 跑助手，import 轨迹里无历史路径；两个随仓工具文件正文无历史目录字面量 |
+| 缺锁助手 / 缺 Python | rc 2 且信息明确（布局路径含空格与中文） |
+| 外来 marker / 无 marker 的已有目录 | rc 5 且目录**零新增**、原文件字节不变 |
+| 同宿主两次调用 | 两份 marker 的 `pid` 相同、`runId` 与 `lockToken` 各自不同 |
+| 隔离布局内成功一次 | 一个示例（tasks）+ 一个宿主（PS 5.1）+ 复用已冻结 CLI，rc 0（`tasks_gen.go` 9909 字节、入口已构建），重负载显式传公共锁 `-LockPath` |
+
+实测（runId `portable-20261101-012730-eed0cab3`）：10 项全 `verified`，`failures = []`。
