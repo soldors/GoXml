@@ -290,10 +290,14 @@ func (e *TypeEnv) ResolveViewModel(decl contracts.ViewModelDecl) (*ViewModelType
 		return nil, resolveErr("ViewModel %q: type %q not found in package %q",
 			decl.Value, expr.Name, importPath)
 	}
-	named, ok := obj.Type().(*types.Named)
+	// 类型别名（type A = Real）：Go1.22+ 的 obj.Type() 可能是 *types.Alias。
+	// 先 Unalias 取底层类型，再判定命名类型——别名应解析为其目标命名类型，
+	// 否则会把合法别名误报成 "not a named type"（R3 切片2 实测缺陷）。
+	resolved := types.Unalias(obj.Type())
+	named, ok := resolved.(*types.Named)
 	if !ok {
 		return nil, resolveErr("ViewModel %q: %q in package %q is not a named type (got %s)",
-			decl.Value, expr.Name, importPath, obj.Type().String())
+			decl.Value, expr.Name, importPath, resolved.String())
 	}
 
 	return &ViewModelType{Expr: expr, Named: named, ImportPath: importPath}, nil
@@ -347,7 +351,10 @@ func (e *TypeEnv) load(importPath string) (*packages.Package, error) {
 	}
 	p := pkgs[0]
 	if len(p.Errors) > 0 {
-		return nil, fmt.Errorf("package %q failed to load: %s", importPath, p.Errors[0].Msg)
+		// 保留错误码/原因/归属不变（ROOT-002 由上层包装），这里只把
+		// go/packages 的可靠位置（Error.Pos）结构化保留下来，避免丢失
+		// 可定位的文件:行:列。位置不可靠时不伪造（见 load_diagnostic.go）。
+		return nil, formatLoadFailure(importPath, e.cfg.ModuleRoot, p.Errors)
 	}
 	if p.Types == nil {
 		return nil, fmt.Errorf("package %q has no type information", importPath)

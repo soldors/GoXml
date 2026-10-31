@@ -309,7 +309,7 @@ func existingPackageSymbols(dir string, targets []NamingTarget) (map[string]stri
 		if err != nil {
 			return nil, fmt.Errorf("预检读取 %s: %w", full, err)
 		}
-		names, err := packageLevelNames(data)
+		names, err := packageLevelNames(e.Name(), data)
 		if err != nil {
 			return nil, fmt.Errorf("预检解析 %s: %w", full, err)
 		}
@@ -374,8 +374,12 @@ func generatedSourceOf(data []byte) string {
 }
 
 // packageLevelNames 解析 Go 源码，返回包级标识符集合（方法不计入）。
-func packageLevelNames(src []byte) (map[string]bool, error) {
-	f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, 0)
+//
+// filename 必须是**真实文件名**（调用方传入源文件的实际名字）：parser 用它
+// 构造错误位置（file:line:column）。此前硬编码 "x.go"，导致真实 bad.go 的
+// 语法错误被标成 x.go，与磁盘文件对不上（R3-E2E F1）。
+func packageLevelNames(filename string, src []byte) (map[string]bool, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), filename, src, 0)
 	if err != nil {
 		return nil, err
 	}
