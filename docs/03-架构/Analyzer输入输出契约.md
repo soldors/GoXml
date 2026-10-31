@@ -156,6 +156,8 @@ Ident     := Go 标识符
 | 包缓存 | `TypeEnv.loaded` 按导入路径缓存，同一 `TypeEnv` 内不重复加载 |
 | 加载成功判据 | **检查 `pkg.Errors`**，不看 `err`，也不看 `Types != nil`（见下） |
 
+编排层可为已确认属于本批工具输出、且旧 package 子句与当前构建上下文不符的文件提供只读 Go overlay。`TypeEnv` 构造时复制 map 与字节内容，只允许模块内绝对路径；传给同一 `packages.Load`，不删除或改写磁盘文件，也不忽略任何加载错误。CLI 必须先核验 Manifest、保护头及 Source 一致性；该内部输入不是用户可覆盖任意源码的 CLI 选项。失败仍不得发放 VerifiedDoc 或写产物。
+
 #### go/packages 的实际行为（实测，x/tools v0.52.0）
 
 | 情形 | `err` | `len(pkgs)` | `pkg.Errors` | `Types` |

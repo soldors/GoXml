@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Documentation and examples
+- 示例验证工具随仓提供标准库锁助手，支持显式公共锁、每次调用独立身份、输出根独占认领及失败时继续释放锁；PS5.1/PS7 参数传递与 tasks 构建已实测。
 - 新增可构建CLI入门工程与同源自动验证，覆盖重复生成、错误不覆盖旧文件、实际生成代码及窗口入口编译；更新文档/目录现状和并行开发流程。
 
 ### Fixed
-- CLI 提交期备份/检查/安装失败统一恢复本批已提交目标并如实报告残留；包加载保留真实 Go 错误位置，支持导出类型别名，命名预检不再使用伪文件名 x.go。GOFLAGS 配置切换修复仍在隔离候选中。
+- CLI 提交期备份/检查/安装失败统一恢复本批已提交目标并如实报告残留；包加载保留真实 Go 错误位置，支持导出类型别名，命名预检不再使用伪文件名 x.go。
+- 编译流水线为缺失来源的诊断补已知 GXML 文件名，保留消息中的 Go 文件位置；GOFLAGS 的标签选择与缓存上下文一致，过时自有生成物通过只读加载快照恢复，失败保留旧产物。
 - 修复For行事件/If守卫/Index的生成作用域及事件字符串内部逗号切分；覆盖生成Go编译与无窗口点击。
 - Provider冷报告与LastReport返回独立诊断，窗口事件泵结束后收口stop等待者。
 - Generate校验Manifest输出边界及Windows junction，局部clean保留仍有源页面，用户接管源码继续参与缓存指纹。
