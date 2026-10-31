@@ -16,6 +16,12 @@ func TestEventArgumentsKeepStringCommas(t *testing.T) {
 		{`Save('a,b', 'c,d')`, []string{`'a,b'`, `'c,d'`}},
 		{`Save('a\,b')`, []string{`'a\,b'`}},
 		{`Save('it's, fine')`, []string{`'it's, fine'`}},
+		// R2-zcode 补充边界：空串、串尾逗号、Unicode（多字节 UTF-8 不得被
+		// 按字节切分破坏，串内逗号不算分隔符）。
+		{`Save('')`, []string{`''`}},
+		{`Save('a,')`, []string{`'a,'`}},
+		{`Save('中文, 值')`, []string{`'中文, 值'`}},
+		{`Save('日本語', '中文')`, []string{`'日本語'`, `'中文'`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.value, func(t *testing.T) {
