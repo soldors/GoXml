@@ -1,0 +1,38 @@
+<!-- 列表 + 条件显示 + 行事件：For（Each/In/Index/Key）、If/Then/Else、带参行事件 -->
+<Goxml Version="1" ViewModel="ViewModel">
+  <Page Route="/tasks">
+    <Column Padding="24" Gap="12">
+      <If Condition="{ShowDone}">
+        <Then>
+          <Text Value="{Summary}"/>
+        </Then>
+        <Else>
+          <Text Value="统计已隐藏"/>
+        </Else>
+      </If>
+      <Button Text="显示/隐藏统计" Click="ToggleFilter"/>
+      <If Condition="{HasTasks}">
+        <Then>
+          <For Each="task" In="{Items}" Index="i" Key="{task.ID}">
+            <Row Gap="8" Align="Center">
+              <Text Value="{task.Title}" Width="Fill"/>
+              <If Condition="{task.Done}">
+                <Then>
+                  <Text Value="已完成"/>
+                </Then>
+                <Else>
+                  <Button Text="完成" Click="Toggle(task.ID)"/>
+                </Else>
+              </If>
+              <Button Text="删除" Click="RemoveAt(i)"/>
+            </Row>
+          </For>
+        </Then>
+        <Else>
+          <Text Value="暂无任务"/>
+        </Else>
+      </If>
+      <Button Text="新增" Click="Add"/>
+    </Column>
+  </Page>
+</Goxml>

@@ -2,7 +2,7 @@
 
 - 状态：**草案（待冻结）**
 - 日期：2026-10-20
-- 范围：**Codegen 侧的条���生成**；Parser/Expander/Analyzer 的既有校验不重复定义
+- 范围：**Codegen 侧的条件生成**；Parser/Expander/Analyzer 的既有校验不重复定义
 - 关联：`GXML语言规范.md` §6.1、`For列表输出契约.md`、`事件处理输出契约.md`、
   `代码生成输出契约.md`
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | Parser | `<If>` 结构：必须含且仅含一个 `<Then>`、最多一个 `<Else>`、不允许直接渲染子节点（SCOPE-002） | ✅ 已实现 |
 | Analyzer | `Condition` 必须为布尔绑定（BIND-004）；解析为 `ResolvedAttr{Target: PropBool}`；递归遍历 `Then`/`Else` 子树 | ✅ 已实现 |
-| **Codegen** | **分支渲染、分支内事件轮询守卫、动态判定** | ❌ **本契约** |
+| **Codegen** | **分支渲染、分支内事件轮询守卫、动态判定** | 已实现，2026-10-31 按代码与组合回归核对；本页草案状态不因此自动变为批准冻结 |
 
 关键事实：`Condition` **已经**是 `ResolvedAttr`（与普通属性同构），
 Codegen 用既有的 `lookupAttr(n, "Condition", facts)` 即可取到路径，

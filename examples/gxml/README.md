@@ -54,3 +54,83 @@ go test -v -run '^TestStarterProject$' ./examples/gxml
 ```
 
 测试使用同一份源材料，调用真实 CLI，检查两次生成字节一致；把绑定改为不存在的字段后要求 `GXML-BIND-001`，并核对旧生成文件和 Manifest 不变。最后用独立 Go 子进程编译实际生成代码和窗口 main，执行 nil ViewModel 拒绝与普通模型状态更新检查。它不运行 main，不证明原生窗口显示或点击链路，也不生成性能数据。
+
+---
+
+# 进阶：列表 + 条件显示 + 行事件（`testdata/tasks/`）
+
+`testdata/starter/` 只有一个按钮和一个文本框。当页面需要**列表**、**按条件切换显示**和**每行各自的按钮**时，用 `testdata/tasks/` 这份完整工程：
+
+- `vm.go` —— 手写 ViewModel：`Items []Task`、计算字段 `Summary`/`HasTasks`、`ShowDone`，以及四个事件处理器 `Toggle(id int)`、`RemoveAt(index int)`、`Add()`、`ToggleFilter()`。
+- `tasks.gxml` —— 只使用已批准语法：`<For Each In Index Key>`、`<If>/<Then>/<Else>`、带参行事件。
+- `main.go.txt` —— 窗口入口模板（复制到 `cmd/tasks/main.go`）。
+
+教程与自动测试**共用这三个文件**：下文命令和 `TestTasksProject` 用的是同一份源材料，不存在"教程里的示例"与"测试里的示例"两份副本。
+
+## 命令
+
+```powershell
+$env:CGO_ENABLED = '0'
+go build -o ./bin/goxml.exe ./cmd/goxml
+New-Item -ItemType Directory -Force ./tmp-tasks | Out-Null
+Copy-Item ./examples/gxml/testdata/tasks/vm.go ./tmp-tasks/vm.go
+Copy-Item ./examples/gxml/testdata/tasks/tasks.gxml ./tmp-tasks/tasks.gxml
+./bin/goxml.exe generate ./tmp-tasks/tasks.gxml --no-cache
+./bin/goxml.exe generate ./tmp-tasks/tasks.gxml          # 第二次：缓存命中
+New-Item -ItemType Directory -Force ./tmp-tasks/cmd/tasks | Out-Null
+Copy-Item ./examples/gxml/testdata/tasks/main.go.txt ./tmp-tasks/cmd/tasks/main.go
+# 模板面向独立 module；在当前 checkout 使用时改为本地包路径。
+$main = Get-Content ./tmp-tasks/cmd/tasks/main.go -Raw -Encoding utf8
+$main.Replace('example.com/goxml-tasks', 'github.com/goxml/goxml/tmp-tasks') |
+    Set-Content -Encoding utf8 ./tmp-tasks/cmd/tasks/main.go
+go build -o ./tmp-tasks/tasks-entry.exe ./tmp-tasks/cmd/tasks   # 只构建窗口入口
+```
+
+> 生成器需要真实 Go package，因此**先复制 ViewModel 再生成**；窗口入口反过来要在生成**之后**安装，否则生成期的 package 上下文会引用尚不存在的构造函数。
+
+与 starter 一样：**只生成和构建，不打开窗口**。要手工运行窗口才复制 `main.go.txt` 并执行产物，那属于人工交互步骤。
+
+## 每一步在保证什么
+
+| 写法 | 约束 | 来源 |
+|---|---|---|
+| `<For Each="task" In="{Items}" Index="i" Key="{task.ID}">` | `Key` 必须存在（循环体含 `<Button>`，缺 Key 由 Parser 以 `GXML-SCOPE-003` 拒绝）；`Key` 必须稳定可比较 | `GXML语言规范.md` §6.2、`For列表输出契约.md` §3 |
+| `Click="Toggle(task.ID)"` | 实参来自行内绑定；点第 N 行必须只切换第 N 行 | `For列表输出契约.md` §5/§9 |
+| `Click="RemoveAt(i)"` | `Index` 变量可作为事件实参（行索引） | `For列表输出契约.md` §5/§6.1 |
+| `<If Condition="{task.Done}">` | 分支内控件**只有在分支被渲染时**才轮询与命中 | `If条件渲染输出契约.md` |
+| 事件里改完字段再 `refresh()` | 显示串在事件处理器里准备，不在 Layout 内每帧拼接 | `性能预算与优化策略.md`、`AGENT.md` §2.5 |
+
+生成的 `tasks_gen.go` 里可以看到三处关键产物（**不要手改**）：
+
+- `rowClicks0 map[int]*widget.Clickable` 与惰性 `rowClick0(key)`：每行一份按钮状态，键是 `{task.ID}`；
+- Layout 顶部的数据驱动轮询：`rowItems := v.vm.Items` 与渲染同源同序，命中后调 `v.vm.Toggle(rowItem.ID)` 并 `gtx.Execute(op.InvalidateCmd{})`——这就是事件到重绘的失效接线；
+- 分支守卫：`if v.vm.HasTasks && !(rowItem.Done) { ... }`，已完成的行不会轮询"完成"按钮。
+
+`Invalidate` 的并发安全**不等于** ViewModel 字段读写的并发安全；后台 goroutine 改数据仍由调用方同步（另见 `状态更新契约.md` §2）。
+
+## 用户流程验证
+
+| 操作 | 期望 |
+|---|---|
+| 首次 `--no-cache` 生成 | rc 0，出现 `tasks_gen.go` 与 `.goxml/generate-manifest.json` |
+| 输入未变再生成（走缓存） | rc 0，字节相同**且 mtime 不变**（确实没重写文件） |
+| 显式 `--no-cache` 再生成 | rc 0，字节相同（这一次会重写，mtime 变化属正常） |
+| 改一个按钮文案（合法修改） | rc 0，产物字节**变化**——不是陈旧输出 |
+| 把 `{Summary}` 改 `{Missing}` | rc 2，报 `GXML-BIND-001`，旧 `tasks_gen.go` 与 Manifest 字节不变 |
+
+## 自动验证
+
+```powershell
+go test -v -run '^TestTasksProject$' ./examples/gxml
+```
+
+除上表的流程外，测试在临时 module 内编译真实生成物与窗口入口（`go build ./cmd/tasks`），并运行四个**离屏**语义断言（用 `input.Router` 合成指针事件，不创建原生窗口）：
+
+1. **行身份**：自上而下扫描，删除按钮必须依次命中第 1/2/3 行，且三个命中区互不重叠、顺序递增。
+2. **条件显示**：已完成的行（ID=1）在任何坐标都扫不到"完成"处理器——分支真的改变了控件集合。
+3. **页级 If**：`Items` 非空但 `HasTasks=false` 时，扫描网格内没有行事件；另验证空列表无行事件。这不单独证明 Else 文本已渲染。
+4. **键生命周期**：删行后行状态池 `rowClicks1` 从 3 收缩到 1（无界增长被关闭）。
+
+扫描断言**不硬编码像素坐标**：按钮尺寸随字体/主题变化，测试用实测网格确定命中区，避免猜坐标造成的脆断言与静默失真。本机一次实测（560×400、`PxPerDp=1`）的命中区为：`remove:1` y 84–120、`toggle:2` y 140–168 x 456–492、`remove:2` y 136–172 x 516–540、`toggle:3` y 188–220、`remove:3` y 188–224。
+
+**本测试不证明**：原生窗口真的显示出来、真实鼠标点击链路、以及任何性能数据。含 `<For>` 的页面按 `For列表输出契约.md` §7 不享有零分配保证。
