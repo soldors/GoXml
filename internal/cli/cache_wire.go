@@ -175,6 +175,7 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 		SourcePath:      r.sourcePath,
 		SourceHash:      r.sourceHash,
 		PackageName:     r.pkgName,
+		BuildFlags:      os.Getenv("GOFLAGS"),
 		CompilerVersion: codegen.GoxmlVersion,
 		PackageSources:  sources,
 	})

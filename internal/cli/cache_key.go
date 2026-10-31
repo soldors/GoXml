@@ -30,7 +30,7 @@ import (
 //
 // 键的构成本身变化（增减分量、改变规范化方式）必须提升它，
 // 否则旧缓存会被新算法当成命中——这正是「版本演进边界」要防的事。
-const cacheFormatVersion = 1
+const cacheFormatVersion = 2
 
 // cacheKeyInput 是缓存键的全部输入，均为**已解析的纯数据**。
 //
@@ -52,6 +52,9 @@ type cacheKeyInput struct {
 
 	// PackageName 是目标 Go package 的包名（解析结果，CLI 选项的效果），即 K5。
 	PackageName string
+	// BuildFlags includes the effective GOFLAGS environment. A tag can change
+	// model types without changing package names or any source-file bytes.
+	BuildFlags string
 
 	// CompilerVersion 是生成器版本，即 K4。
 	CompilerVersion string
@@ -95,6 +98,7 @@ func cacheKey(in cacheKeyInput) (string, error) {
 	writeKeyField(h, "sourcePath", in.SourcePath)
 	writeKeyField(h, "sourceHash", in.SourceHash)
 	writeKeyField(h, "packageName", in.PackageName)
+	writeKeyField(h, "buildFlags", in.BuildFlags)
 	writeKeyField(h, "compilerVersion", in.CompilerVersion)
 
 	srcs := make([]cachePackageSource, len(in.PackageSources))

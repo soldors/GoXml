@@ -5,7 +5,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"go/build"
 	"go/token"
 	"io"
 	"os"
@@ -145,7 +144,11 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	// preparedFE 缓存未命中输入的编译前端结果：预检要用它算 bindSlots，
 	// 阶段一要用它生成。跑两遍会让每次生成多花 ~285 ms/文件（实测，见 dev-log §6）。
 	preparedFE := make(map[*resolvedInput]*pipeline.Prepared, len(missResolved))
-	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr); err != nil {
+	goOverlay, err := staleGeneratedOverlay(moduleRoot, man, missResolved)
+	if err != nil {
+		return err
+	}
+	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay); err != nil {
 		return err
 	}
 
@@ -177,6 +180,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 				SourceDir:   d.r.in.sourceDir,
 				PackageName: d.r.pkgName,
 				SourcePath:  d.r.sourcePath,
+				GoOverlay:   goOverlay,
 			}, pipelineHooks)
 		}
 		res := pipeline.RunPrepared(prep, pipelineHooks)
@@ -325,7 +329,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 // 错误，预检不该抢在前面声称自己"确定"槽位数，更不能把语法错误伪装成命名冲突。
 //
 // 有诊断即返回 error：调用方（runPipeline）在阶段一之前调用，故磁盘零变更。
-func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer) error {
+func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer, goOverlay map[string][]byte) error {
 	if len(rs) == 0 {
 		return nil
 	}
@@ -336,6 +340,7 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			SourceDir:   r.in.sourceDir,
 			PackageName: r.pkgName,
 			SourcePath:  r.sourcePath,
+			GoOverlay:   goOverlay,
 		}
 		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
 		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)
@@ -420,6 +425,13 @@ func packageDirName(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读取目录 %s: %w", dir, err)
 	}
+	// 与 go build/go list/Analyzer 消费同一份 -tags：build.Default 不读
+	// GOFLAGS，直接用它会漏掉带 tag 的源文件，导致产物包名与真实包名不一致。
+	// GOFLAGS 非法时 fail-closed 报错，不降级到 build.Default 蒙混。
+	ctxt, err := buildContextFromGOFLAGS(os.Getenv("GOFLAGS"))
+	if err != nil {
+		return "", fmt.Errorf("确定包名失败: %w", err)
+	}
 	// 按 ReadDir 的文件名序收集，包名集合至多一个才可用；报错信息里的顺序也是确定的。
 	var name string
 	var others []string
@@ -431,7 +443,7 @@ func packageDirName(dir string) (string, error) {
 		}
 		// Match Go's build selection before collecting package declarations:
 		// generator scripts and files for other platforms are not this package.
-		match, err := build.Default.MatchFile(dir, name0)
+		match, err := ctxt.MatchFile(dir, name0)
 		if err != nil {
 			return "", fmt.Errorf("匹配 Go 构建文件 %s: %w", filepath.Join(dir, name0), err)
 		}
@@ -441,6 +453,17 @@ func packageDirName(dir string) (string, error) {
 		data, err := os.ReadFile(filepath.Join(dir, name0))
 		if err != nil {
 			continue
+		}
+		// A protection header alone is not ownership: an unregistered user file
+		// may carry the same text. Match the manifest as well before excluding it.
+		if codegen.HasProtectedHeader(data) {
+			owned, err := packageArtifactOwned(filepath.Join(dir, name0), data)
+			if err != nil {
+				return "", err
+			}
+			if owned {
+				continue
+			}
 		}
 		pkg, ok := parsePackageName(data)
 		if !ok || seen[pkg] {
@@ -461,6 +484,34 @@ func packageDirName(dir string) (string, error) {
 			dir, strings.Join(append([]string{name}, others...), " / "))
 	}
 	return name, nil
+}
+
+// packageArtifactOwned checks the same two ownership conditions as cleanup.
+// A directory outside a module cannot have a project manifest, so its source
+// remains part of package naming. Manifest errors remain visible to the caller.
+func packageArtifactOwned(path string, data []byte) (bool, error) {
+	root, err := findModuleRoot(filepath.Dir(path))
+	if err != nil {
+		return false, nil
+	}
+	m, err := loadManifest(manifestPath(root))
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range m.Entries {
+		same, err := sameProjectFile(root, e.Output, filepath.ToSlash(rel), os.Stat)
+		if err != nil {
+			return false, err
+		}
+		if same && headerSourceMatches(data, filepath.Base(filepath.FromSlash(e.Source))) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // parsePackageName 从 Go 源码提取 package 子句的名字。
