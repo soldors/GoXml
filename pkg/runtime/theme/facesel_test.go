@@ -492,8 +492,9 @@ func TestSelectionFreezeAndCopyIsolation(t *testing.T) {
 
 	// Faces() 返回副本：改返回值不影响内部。
 	out := got.Faces()
-	out[0] = out[1]
-	if first := got.Faces()[0]; first.Font.Weight == out[0].Font.Weight && first.Font.Weight != out[1].Font.Weight {
+	original := out[0]
+	out[0] = giofont.FontFace{}
+	if first := got.Faces()[0]; first != original {
 		t.Error("Faces() 未返回副本（改动传播回内部）")
 	}
 

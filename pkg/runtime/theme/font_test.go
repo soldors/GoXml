@@ -257,8 +257,19 @@ func TestFontProbeResolveCaching(t *testing.T) {
 	if !ok1 || !ok2 {
 		t.Fatal("缓存后的标识应能反查")
 	}
-	if len(f1) == 0 || &f1[0] != &f2[0] {
-		t.Error("两次反查必须指向同一份集合，不得重新解析出副本")
+	// 所有权契约：Faces 返回切片副本（与 SelectedFaces.Faces() 一致），
+	// 因此不再以“同一底层数组”作为缓存证据，改用行为证据：
+	// reads/Scans 已在上面断言为 1（未重新扫描/解析），这里再要求两次反查的
+	// 集合长度与字体元数据一致，且副本互不污染。
+	if len(f1) == 0 || len(f1) != len(f2) {
+		t.Fatalf("两次反查的集合长度不一致: %d vs %d", len(f1), len(f2))
+	}
+	if f1[0].Font != f2[0].Font || f1[0].Face == nil || f2[0].Face == nil {
+		t.Fatal("缓存命中应返回同一字体集合的等价副本")
+	}
+	again, _ := p.Faces(id1)
+	if &again[0] == &f1[0] {
+		t.Error("Faces 应每次返回独立副本（防止就地改写污染缓存）")
 	}
 }
 

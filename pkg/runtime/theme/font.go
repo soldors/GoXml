@@ -470,6 +470,10 @@ func embeddedID(name string) string {
 }
 
 // Faces 按标识反查已解析的字体集合（评审要点 1 的验证入口）。
+//
+// 所有权：返回切片的**独立副本**（浅拷贝元素，元素内 FontFace 仍按契约共享只读）。
+// 与 SelectedFaces.Faces() 一致——调用方不得通过改写返回切片反向污染 Provider 缓存，
+// 否则一次取出后就地改 faces[i] 会把污染带入后续 Lazy 的真主题构建。
 func (p *Provider) Faces(id string) ([]font.FontFace, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -477,7 +481,7 @@ func (p *Provider) Faces(id string) ([]font.FontFace, bool) {
 	if !ok {
 		return nil, false
 	}
-	return set.Faces, true
+	return append([]font.FontFace(nil), set.Faces...), true
 }
 
 // LastReport 返回最近一次探测的诊断报告的独立副本（未探测过时为 nil）。
