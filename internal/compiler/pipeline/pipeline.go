@@ -31,6 +31,15 @@ type Config struct {
 	SourceDir string
 	// PackageName 是生成文件的 package 子句。
 	PackageName string
+	// OutputDir 是产物所在包目录（绝对路径；空表示与 SourceDir 相同）。
+	//
+	// 用途（R4-A 片2）：`--out-dir` 把产物搬到与源不同的包时，需据此判断同包
+	// ViewModel 是否已不在产物包，从而决定 Codegen 是否要跨包 import。
+	OutputDir string
+	// ViewModelPackageName 是源目录（同包 ViewModel 所在包）的真实 Go 包名，
+	// 由调用方用 packageDirName 解析后填入（空则由 Codegen 回退目录名）。
+	// Codegen 不读盘，跨包引用需要它作为限定符/别名。
+	ViewModelPackageName string
 	// SourcePath 是 .gxml 相对目标包目录的路径。
 	SourcePath string
 	// GoOverlay is a read-only Go loading snapshot supplied by the orchestrator.
@@ -176,6 +185,15 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 		SourcePath:  p.cfg.SourcePath,
 		ModulePath:  p.modulePath,
 	}
+	// R4-A 片2：把「VM 所在包目录」与「产物所在包目录」（相对模块根）传给 Codegen，
+	// 供其判断同包 ViewModel 在 --out-dir 迁移后是否需要跨包 import。
+	opts.ViewModelPackageDir = relToModule(p.cfg.ModuleRoot, p.cfg.SourceDir)
+	outDir := p.cfg.OutputDir
+	if outDir == "" {
+		outDir = p.cfg.SourceDir
+	}
+	opts.OutputPackageDir = relToModule(p.cfg.ModuleRoot, outDir)
+	opts.ViewModelPackageName = p.cfg.ViewModelPackageName
 	gen := hooks.Generate
 	if gen == nil {
 		gen = codegen.Generate
@@ -205,6 +223,21 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 		OutputName:  outputName(p.cfg.SourcePath),
 	}
 	return res
+}
+
+// relToModule 返回 dir 相对 moduleRoot 的斜杠路径（"." 表示模块根）。
+// 任一为空或计算失败时返回 ""（Codegen 侧把空串视为「同包/未知」，保持既有行为）。
+func relToModule(moduleRoot, dir string) string {
+	if moduleRoot == "" || dir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(moduleRoot, dir)
+	if err != nil {
+		return ""
+	}
+	rel = filepath.ToSlash(rel)
+	// Keep module root distinct from the legacy unknown/omitted context.
+	return strings.Trim(rel, "/")
 }
 
 // withSourceFile 返回补齐了缺失 File 的诊断**副本**列表。

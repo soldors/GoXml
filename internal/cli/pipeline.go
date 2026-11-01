@@ -176,11 +176,13 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		prep, ok := preparedFE[d.r]
 		if !ok {
 			prep = pipeline.Prepare(d.r.sourcePath, d.r.source, pipeline.Config{
-				ModuleRoot:  moduleRoot,
-				SourceDir:   d.r.in.sourceDir,
-				PackageName: d.r.pkgName,
-				SourcePath:  d.r.sourcePath,
-				GoOverlay:   goOverlay,
+				ModuleRoot:           moduleRoot,
+				SourceDir:            d.r.in.sourceDir,
+				PackageName:          d.r.pkgName,
+				OutputDir:            d.r.targetDir,
+				ViewModelPackageName: d.r.srcPkgName,
+				SourcePath:           d.r.sourcePath,
+				GoOverlay:            goOverlay,
 			}, pipelineHooks)
 		}
 		res := pipeline.RunPrepared(prep, pipelineHooks)
@@ -336,11 +338,13 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 	targets := make([]codegen.NamingTarget, 0, len(rs))
 	for _, r := range rs {
 		cfg := pipeline.Config{
-			ModuleRoot:  moduleRoot,
-			SourceDir:   r.in.sourceDir,
-			PackageName: r.pkgName,
-			SourcePath:  r.sourcePath,
-			GoOverlay:   goOverlay,
+			ModuleRoot:           moduleRoot,
+			SourceDir:            r.in.sourceDir,
+			PackageName:          r.pkgName,
+			OutputDir:            r.targetDir,
+			ViewModelPackageName: r.srcPkgName,
+			SourcePath:           r.sourcePath,
+			GoOverlay:            goOverlay,
 		}
 		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
 		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)
@@ -420,6 +424,8 @@ func findModuleRoot(start string) (string, error) {
 // 这是任何「先写了外部测试文件、再生成页面」的普通工程都会踩到的形态，
 // 不是构造出来的边界。排除测试文件同时与 K3 指纹的口径对齐
 // （cache_wire.go 的 packageSourcesFingerprint 本来就不收 `_test.go`）。
+var errPackageUninitialized = errors.New("package directory is uninitialized")
+
 func packageDirName(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -477,7 +483,7 @@ func packageDirName(dir string) (string, error) {
 		others = append(others, pkg)
 	}
 	if name == "" {
-		return "", fmt.Errorf("目录 %s 中没有可定名的非测试 Go 源文件，无法确定包名；请先在该目录初始化目标 package", dir)
+		return "", fmt.Errorf("目录 %s 中没有可定名的非测试 Go 源文件，无法确定包名；请先在该目录初始化目标 package: %w", dir, errPackageUninitialized)
 	}
 	if len(others) > 0 {
 		return "", fmt.Errorf("目录 %s 存在多个非测试 package（%s），无法确定生成文件的包名（契约 §3.2）",

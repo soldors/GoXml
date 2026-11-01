@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    用真实 CLI 生成 + 真实 Go 构建来验证 examples/gxml 下的入门工程（starter / tasks）。
+    用真实 CLI 生成 + 真实 Go 构建来验证 examples/gxml 下的入门工程（starter / tasks / forms）。
 
 .DESCRIPTION
     本脚本面向"用户直接运行"：从任意当前目录都可调用，内部按 $PSScriptRoot 定位仓库根。
@@ -247,15 +247,18 @@ try {
     Write-Step "仓库根: $RepoRoot"
 
     # 2) 示例选择
+    #    示例名集中在一处：否则「all 的列表」与「单示例白名单」会各自漂移，
+    #    新示例只加到一边就会出现 -Example X 可用、-Example all 却漏掉。
+    $known = @('starter', 'tasks', 'forms')
     if ($Example -eq 'all') {
         if ($SourceDir -ne '') { Stop-Run 2 "-SourceDir 只能用于单个示例，不能与 -Example all 同时使用" }
-        $names = @('starter', 'tasks')
+        $names = $known
     }
-    elseif (@('starter', 'tasks') -contains $Example) {
+    elseif ($known -contains $Example) {
         $names = @($Example)
     }
     else {
-        Stop-Run 2 "未知示例 '$Example'（可选 starter / tasks / all）"
+        Stop-Run 2 ("未知示例 '$Example'（可选 " + ($known -join ' / ') + " / all）")
     }
     Write-Step ("示例: " + ($names -join ', ') + "；模块形态: $Mode")
 

@@ -135,16 +135,110 @@ go test -v -run '^TestTasksProject$' ./examples/gxml
 
 **本测试不证明**：原生窗口真的显示出来、真实鼠标点击链路、以及任何性能数据。含 `<For>` 的页面按 `For列表输出契约.md` §7 不享有零分配保证。
 
-## 一键验证脚本（用户直接运行）
+---
 
-上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把两个入门工程（starter、tasks）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。
+# 进阶：受控表单（`testdata/forms/`）
+
+starter 与 tasks 都没有**文本输入**。当页面需要让用户敲字、把输入回写到 ViewModel、并在回车时提交时，用 `testdata/forms/`：
+
+- `vm.go` —— 手写 ViewModel：外部值 `Text`、预览串 `Preview`、提交记录 `SubmitCount`/`LastSubmitted`/`Status`、条件显示开关 `HasStatus`，以及四个事件处理器 `OnTextChanged(value string)`、`OnSubmit(text string)`、`Clear()`、`HideStatus()`。
+- `forms.gxml` —— 只使用已批准控件：`<Input>`（受控外部值 + `ValueChanged` 回写 + `Submit` 回车提交）、`<Text>`、`<Button>`、`<If>/<Then>/<Else>`。
+- `main.go.txt` —— 窗口入口模板（复制到 `cmd/forms/main.go`）。
+
+教程、自动测试与一键脚本**共用这三个文件**，不存在"教程里的示例"与"测试里的示例"两份副本。
+
+## 命令
 
 ```powershell
-# 默认：starter + tasks，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
+$env:CGO_ENABLED = '0'
+go build -o ./bin/goxml.exe ./cmd/goxml
+New-Item -ItemType Directory -Force ./tmp-forms | Out-Null
+Copy-Item ./examples/gxml/testdata/forms/vm.go ./tmp-forms/vm.go
+Copy-Item ./examples/gxml/testdata/forms/forms.gxml ./tmp-forms/forms.gxml
+./bin/goxml.exe generate ./tmp-forms/forms.gxml --no-cache
+New-Item -ItemType Directory -Force ./tmp-forms/cmd/forms | Out-Null
+Copy-Item ./examples/gxml/testdata/forms/main.go.txt ./tmp-forms/cmd/forms/main.go
+# 模板面向独立 module；在当前 checkout 使用时改为本地包路径。
+$main = Get-Content ./tmp-forms/cmd/forms/main.go -Raw -Encoding utf8
+$main.Replace('example.com/goxml-forms', 'github.com/goxml/goxml/tmp-forms') |
+    Set-Content -Encoding utf8 ./tmp-forms/cmd/forms/main.go
+go build -o ./tmp-forms/forms-entry.exe ./tmp-forms/cmd/forms   # 只构建窗口入口
+```
+
+## 每一步在保证什么
+
+| 写法 | 约束 | 来源 |
+|---|---|---|
+| `Value="{Text}"` | 方向是 **vm → Editor** 的单向同步；回写只能经 `ValueChanged` / `Submit` 显式完成（v1 没有隐式双向绑定） | `Input输出契约.md` §3.1/§3.2 |
+| `Submit="OnSubmit"` | `Submit` **只有事件形式**，没有 bool 属性；声明它即启用回车提交 | `Input输出契约.md` §2.3/§4.3 |
+| `<Input>` 必须在 `<For>` 之外 | `<For>` 子树内出现 `<Input>` → Parser 报 `GXML-SCOPE-005` | `Input输出契约.md` §7 |
+| 预览串在 `OnTextChanged` 里准备 | 显示串在事件处理器里准备，不在 Layout 内每帧拼接 | `性能预算与优化策略.md`、`AGENT.md` §2.5 |
+| `Clear()` 恢复初始文本，保留提交记录，不碰编辑器 | 编辑器由下一帧的同步算法（V≠A → `SetText`）更新；工程代码里没有一处直接调用 `Editor.SetText` | `Input输出契约.md` §5.3 路径 1 |
+
+生成的 `forms_gen.go` 里可以看到四处关键产物（**不要手改**）：`input0 widget.Editor` 与 `applied0 string`（每个 Input 一份"最近一次外部应用"）、`ed.Submit = true`（声明了 `Submit` 事件的派生效果）、同步判据 `if cur := v.vm.Text; cur != v.applied0`（与 `ed.Text()` 比较会导致用户编辑被回冲）、以及分支守卫 `if v.vm.HasStatus`（`click1` 只在 Then 分支被轮询）。
+
+## 用户流程验证
+
+| 操作 | 期望 |
+|---|---|
+| 首次 `--no-cache` 生成 | rc 0，出现 `forms_gen.go` 与 `.goxml/generate-manifest.json` |
+| 输入未变再生成（走缓存） | rc 0，字节相同**且 mtime 不变** |
+| 改一个按钮文案（合法修改） | rc 0，产物字节**变化** |
+| 把 `{Preview}` 改 `{Missing}` | rc 2，报 `GXML-BIND-001`，旧产物与 Manifest 字节不变 |
+| 把 `<Input>` 放进 `<For>` | rc 2，报 `GXML-SCOPE-005`，且不留产物 |
+
+## 自动验证
+
+```powershell
+go test -v -run '^TestFormsProject$' ./examples/gxml
+```
+
+测试除上表流程外，还把一份**离屏**语义测试写进临时 module 并 `go test` 实跑（用 `input.Router` 与 `key.EditEvent` 合成输入，不创建原生窗口）：
+
+1. **输入回写**：焦点由真实指针点击获得，`EditEvent` 经 router 队列投递；一次输入恰好调用一次 `ValueChanged`，载荷等于编辑器当前文本，`vm.Text`、`applied0`、预览串随之更新。
+2. **回车提交**：`key.Event{NameReturn}` Press/Release 与输入**不同帧**；断言载荷、次数与处理器准备的提示串。
+3. **无回车负对照**：提交后再跑 3 帧，`SubmitCount` 不变。
+4. **清空往返**：真实点击「清空」→ 外部值改回 → 下一帧把编辑器、预览串、`applied0` 全部同步回来，且 `SubmitCount` **不变**（不重复提交）。
+5. **条件提示**：未提交时全网格扫不到「隐藏提示」；`HasStatus=true` 时能扫到并点掉；点掉后同一坐标不再命中。
+6. **两实例隔离**：A 输入后，B 的编辑器文本、外部值与 `applied0` 都不变。
+
+判据取**增量**而不是绝对值：外部值应用本身也会带来一次 `ChangeEvent`（见下）。焦点坐标用网格早停扫描实测，不硬编码像素。
+
+**本测试不证明**：原生窗口真的显示出来、真实键盘/鼠标链路、**IME 组合输入与物理焦点**（`Input输出契约.md` §9 场景 15 列为人工验收门槛，无法可靠自动化），以及任何性能数据。窗口入口只 `go build`，从不执行。
+
+## 运行入口（人工）
+
+```powershell
+go build -o ./tmp-forms/forms-entry.exe ./tmp-forms/cmd/forms
+./tmp-forms/forms-entry.exe        # 只在你想真的看窗口时才跑
+```
+
+人工验收清单（自动化没有覆盖）：窗口能显示；点一下输入框真的获得焦点、光标闪烁；中文输入法组合输入过程中不被打断、上屏后 `ValueChanged` 的载荷包含完整文本；回车后提示串出现、再点「隐藏提示」后消失。
+
+## 常见错误
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `<Input Enabled="...">` 报错 | v1 明确拒绝 `Enabled`（沿用 `<Button Enabled>` 裁决） | 删掉该属性 |
+| `<Input Text="...">` 报未知属性 | `Text` 与 `Value` 语义冲突，Gio 无此概念 | 用 `Value` |
+| 回车没有触发 `Submit` | 没声明 `Submit` 事件（`Editor.Submit` 不会自动为 true） | 加 `Submit="方法名"` |
+| 敲一个字却看到处理器被调用两次 | 外部值同步调用 `SetText` 后，Gio 的 Changed 标记可使 `Update` 产出 `ChangeEvent`；本例首帧同步与用户输入可能分别通知。此处记录现有行为，副作用是否符合产品预期仍待评估 | 处理器要幂等；不要用"调用次数"当作"用户敲了几个字" |
+| 处理器需要规范化文本（如转大写） | 处理器返回后生成器立即重新求值 V 并赋给 A，故下一帧 V==A 时不会再次 SetText；不能仅由 Changed 标记推出往复。规范化后的编辑器显示语义尚未在本例验证 | 本例只做同值回写；需要规范化时先验证模型、编辑器及光标行为 |
+| 页面四周没有内边距 | `Padding` 目前被 Codegen 忽略（已知缺口，`size_runtime_test.go` 已注明属 TASK-CODEGEN-001-21 范围） | 等该任务卡落地；不要据此认为 `Padding` 已生效 |
+
+## 一键验证脚本（用户直接运行）
+
+上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把三个入门工程（starter、tasks、forms）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。
+
+```powershell
+# 默认：starter + tasks + forms，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
 pwsh -File scripts/verify-examples.ps1
 
 # 单个示例 + 指定输出目录（支持空格与中文路径）
 scripts\verify-examples.ps1 -Example tasks -OutputRoot "D:\我的 构建\验证"
+
+# 只验证表单工程（本夜各宿主都显式传 -LockPath 共用公共锁）
+scripts\verify-examples.ps1 -Example forms -LockPath "D:\Codes\Goxml-night-reports\2026-10-27\heavy.lock"
 
 # checkout 形态：在仓库内子目录构建，自动把 main 模板的导入换成本地包路径
 scripts\verify-examples.ps1 -Mode checkout -OutputRoot "<仓库>\tmp\verify-examples\r3-checkout"
@@ -227,6 +321,19 @@ python scripts/test-verify-examples-hosts.py --goxml-exe <已冻结的 goxml.exe
 报告里每个宿主都有 `status` 字段：`verified` / `failed` / `unverified-host-not-installed`；宿主不存在时**不会**被判成通过。
 
 **未验证 / 不支持范围（诚实标注）**：Linux 与 macOS 上的 PowerShell 未实测，跨平台结论不外推；Windows PowerShell 4.0 及更早版本未实测；PowerShell 7 从 Microsoft Store 应用执行别名启动时会在自己的 PATH 前追加别名目录（86 字符前缀），这是宿主行为、不是脚本污染，因此环境继承判据比较的是子进程与 PowerShell 宿主自身的环境。
+
+### forms 示例的双宿主实测（2026-11-02）
+
+`-Example forms` 在两个宿主上**各跑一次**真实构建（不重跑旧全矩阵），均显式 `-LockPath` 指向公共 heavy.lock（日志回读：`已取得锁: D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock`）：
+
+| 宿主 | 实测版本 | rc | `forms_gen.go` | 窗口入口 |
+|---|---|---|---|---|
+| Windows PowerShell 5.1 | `5.1.26100.9711` Desktop | 0 | 7212 字节 | `forms-entry.exe` 11976704 字节 |
+| PowerShell 7 | `7.6.9` Core | 0 | 7212 字节 | `forms-entry.exe` 11976704 字节 |
+
+选择器专项（`scripts/test-verify-examples-forms.py`，持公共锁 + `-SkipLock`，判据见脚本头）：`-Example forms` 只出现 forms 子目录；`-Example all` 三个子目录齐全且各有生成物与入口产物；`-Example bogus` rc 2 且提示"未知示例 … starter / tasks / forms / all"；源材料缺 `vm.go` → rc 7；`-Example all` 与 `-SourceDir` 同用 → rc 2（既有规则未被破坏）。
+
+> 测试**自己重定向**子进程输出时会遇到**混合编码**：脚本自身的 `Write-Host` 是控制台代码页（简体中文环境 cp936），而 `go` / `goxml` 子进程的原样输出是 UTF-8，同一个缓冲区里两种编码并存。脚本正常运行时**不重定向**（输出直通控制台），因此这不是脚本的行为差异；写测试时请按行容错解码，不要假设单一编码。
 
 ## 可迁移性验证（2026-11-01）
 

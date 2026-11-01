@@ -15,6 +15,7 @@ package codegen
 import (
 	"fmt"
 	"go/format"
+	"go/token"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,6 +42,27 @@ type Options struct {
 	// SourcePath 是 .gxml 相对目标包目录的路径（如 "ui/dashboard.gxml"），
 	// 用于按契约 §4.2 推导符号名。
 	SourcePath string
+
+	// ViewModelPackageDir 是 ViewModel 实际所在包相对模块根的目录（`/` 分隔；
+	// 空串表示「与源 .gxml 同包」，即 analyzer.ViewModelRef.PkgDir 的同包语义）。
+	// 仅当 ViewModel 存在（动态页）时有意义。
+	//
+	// 用途（R4-A 片2）：`--out-dir` 把产物搬到与源不同的包时，「与 GXML 同包」的
+	// ViewModel 已**不在产物包**。Codegen 需知 VM 真实包目录以判断是否需要 import。
+	// 由调用方（内部 pipeline）从源目录 rel 填入；Codegen 自己**不读盘、不加载包**。
+	ViewModelPackageDir string
+	// OutputPackageDir 是产物所在包相对模块根的目录（`/` 分隔；空串表示「与源同目录」）。
+	// 当它 != ViewModelPackageDir 时，同包 ViewModel 必须跨包 import。
+	OutputPackageDir string
+	// ViewModelPackageName 是 ViewModel 所在包的真实 Go 包名（可选）。
+	//
+	// 用于两处：
+	//   - 生成 import 的**默认名/别名**：目录名不保证是合法标识符（如含 `-`），
+	//     且包名可能≠目录名；用真实包名作限定符与别名才与 Go 语义一致。
+	//   - 与 OutputPackageDir 判等（同包）时无需 import。
+	// 为空时回退到 filepath.Base(ViewModelPackageDir)（仅在为合法标识符时）。
+	// 由调用方（内部 pipeline，用 packageDirName 从源目录解析）填入；Codegen 不读盘。
+	ViewModelPackageName string
 }
 
 // GoxmlVersion 是保护头与 Manifest 共用的语言版本字段（契约 §3.1）。
@@ -993,17 +1015,73 @@ func (g *generator) vmTypeExpr() (string, error) {
 	if g.vmRef.Name == "" {
 		return "", fmt.Errorf("codegen: page is dynamic (binding or event) but no ViewModel type is available; add a ViewModel declaration")
 	}
-	if g.vmRef.PkgDir == "" {
+	// VM 实际所在包目录（相对模块根）：
+	//   - 显式跨包：vmRef.PkgDir 非空，直接用它。
+	//   - 同包声明（PkgDir==""）：VM 与**源 .gxml** 同包，源目录由 ViewModelPackageDir 给出。
+	//     `--out-dir` 搬到别的包（OutputPackageDir）后，与产物已不同包，必须 import 源目录。
+	vmPkgDir := g.vmRef.PkgDir
+	if vmPkgDir == "" {
+		vmPkgDir = g.opts.ViewModelPackageDir
+	}
+	normalize := func(p string) string { return strings.Trim(filepath.ToSlash(p), "/") }
+	sameAsOutput := normalize(vmPkgDir) == normalize(g.opts.OutputPackageDir)
+	if vmPkgDir == "" || sameAsOutput {
+		// 与产物同包（或 VM 目录未知且无可区分）：裸类型名，不需要 import。
 		return g.vmRef.Name, nil
 	}
 	if g.opts.ModulePath == "" {
 		return "", fmt.Errorf(
 			"codegen: ViewModel %s is in package %q but Options.ModulePath is empty",
-			g.vmRef.Name, g.vmRef.PkgDir)
+			g.vmRef.Name, vmPkgDir)
 	}
-	pkg := filepath.Base(g.vmRef.PkgDir)
-	g.imports.add(g.opts.ModulePath+"/"+g.vmRef.PkgDir, pkg)
-	return pkg + "." + g.vmRef.Name, nil
+	// 限定符/别名：优先用调用方提供的真实包名；否则回退目录名（仅当为合法标识符）。
+	alias := g.opts.ViewModelPackageName
+	if alias == "" {
+		base := filepath.Base(vmPkgDir)
+		if !isValidGoIdent(base) {
+			return "", fmt.Errorf(
+				"codegen: ViewModel 目录 %q 的目录名不是合法 Go 标识符且未提供 Options.ViewModelPackageName，无法确定限定符",
+				vmPkgDir)
+		}
+		alias = base
+	}
+	if !isValidGoIdent(alias) {
+		return "", fmt.Errorf("codegen: Options.ViewModelPackageName %q 不是合法 Go 标识符", alias)
+	}
+	// 强制写显式别名：Codegen 不读盘、不知目标包真实包名，显式写出 `alias "import/path"`
+	// 使限定符与别名绑定一致（无论真实包名如何）。别名=真实包名（由调用方提供）时
+	// 仍显式写出，纯为绑定确定性（与裸 import 语义等价）。
+	importPath := g.opts.ModulePath
+	if dir := normalize(vmPkgDir); dir != "." {
+		importPath += "/" + dir
+	}
+	// Render must not rename an already emitted Gio qualifier. Pick the VM's
+	// private alias before registering it, after body imports are collected.
+	if existing, ok := g.imports.byPath[importPath]; ok {
+		alias = existing
+	} else {
+		preferred := alias
+		for suffix := 2; ; suffix++ {
+			used := false
+			for _, n := range g.imports.byPath {
+				if n == alias {
+					used = true
+					break
+				}
+			}
+			if !used {
+				break
+			}
+			alias = fmt.Sprintf("%s_vm%d", preferred, suffix)
+		}
+	}
+	g.imports.addForcedAlias(importPath, alias)
+	return alias + "." + g.vmRef.Name, nil
+}
+
+// isValidGoIdent validates import qualifiers, including Unicode package names.
+func isValidGoIdent(s string) bool {
+	return s != "_" && token.IsIdentifier(s)
 }
 
 // renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。
@@ -1082,10 +1160,11 @@ func cacheFieldLines(view, keyType string) []string {
 // 冲突时按路径字典序分配 `pkg`、`pkg_2`……、输出前经过 go/format。
 type importSet struct {
 	byPath map[string]string // 路径 → 优先包名
+	forced map[string]bool   // 路径 → 是否强制写出别名（R4-A 片2）
 }
 
 func newImportSet() *importSet {
-	return &importSet{byPath: make(map[string]string)}
+	return &importSet{byPath: make(map[string]string), forced: make(map[string]bool)}
 }
 
 // add 记录一个需要的导入。path 为导入路径，pkgName 为该包的默认名。
@@ -1093,6 +1172,20 @@ func (s *importSet) add(path, pkgName string) {
 	if _, ok := s.byPath[path]; !ok {
 		s.byPath[path] = pkgName
 	}
+}
+
+// addForcedAlias 记录一个**强制使用别名**的导入（R4-A 片2）。
+//
+// 用途：`--out-dir` 跨包时，Codegen 只知道 VM 的**目录名**（`filepath.Base`），
+// 但该目录内 Go 包名可能与目录名不同（包名≠目录名）。若只写裸路径 import，
+// Go 会按真实包名（≠目录名）绑定默认名，而生成物却用目录名作限定符 → 不一致。
+// Codegen 不读盘、不加载包，无法得知真实包名；因此显式写出 `dir "import/path"`，
+// 使限定符与别名绑定一致（无论目标包真实包名是什么），编译期自洽。
+func (s *importSet) addForcedAlias(path, alias string) {
+	if _, ok := s.byPath[path]; !ok {
+		s.byPath[path] = alias
+	}
+	s.forced[path] = true
 }
 
 // render 生成 import 块。
@@ -1148,7 +1241,7 @@ func (s *importSet) render() string {
 	var b strings.Builder
 	b.WriteString("import (\n")
 	for _, e := range entries {
-		if e.name != e.orig {
+		if e.name != e.orig || s.forced[e.path] {
 			b.WriteString("\t" + e.name + " " + quote(e.path) + "\n")
 		} else {
 			b.WriteString("\t" + quote(e.path) + "\n")

@@ -1,0 +1,23 @@
+<!-- 表单入门：受控 Input（外部值 + ValueChanged 回写 + Submit 回车提交）、
+     预览与条件提示（If/Then/Else）、清空（外部值改回）。
+     只使用已批准控件：Input / Text / Button / If。
+     注意：<Input> 不得放进 <For>（v1 编译期拒绝，GXML-SCOPE-005）。 -->
+<Goxml Version="1" ViewModel="ViewModel">
+  <Page Route="/forms">
+    <Column Padding="24" Gap="12">
+      <Text Value="Goxml forms"/>
+      <Input Value="{Text}" Hint="输入后按回车提交" ValueChanged="OnTextChanged" Submit="OnSubmit"/>
+      <Text Value="{Preview}"/>
+      <Button Text="清空" Click="Clear"/>
+      <If Condition="{HasStatus}">
+        <Then>
+          <Text Value="{Status}"/>
+          <Button Text="隐藏提示" Click="HideStatus"/>
+        </Then>
+        <Else>
+          <Text Value="（提交后显示结果）"/>
+        </Else>
+      </If>
+    </Column>
+  </Page>
+</Goxml>

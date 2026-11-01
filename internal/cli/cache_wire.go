@@ -15,6 +15,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,9 +60,11 @@ func (r cacheMissReason) String() string { return string(r) }
 // resolvedInput 是一个输入的解析结果（尚未生成）。
 type resolvedInput struct {
 	in discovered
-	// pkgName 是目标包的包名（现行为：从**源目录**解析，保持既有语义）。
+	// pkgName 是**目标包**的包名（--out-dir 时按目标目录解析，见 resolveInput）。
 	pkgName string
-	source  []byte
+	// srcPkgName 是**源目录**（同包 ViewModel 所在包）的真实包名，供跨包 VM 限定符。
+	srcPkgName string
+	source     []byte
 	// sourceHash 是 .gxml 内容哈希（K1）。
 	sourceHash string
 	// targetDir 是产物所在目录（--out-dir 时与源目录不同）。
@@ -76,20 +79,51 @@ type resolvedInput struct {
 }
 
 // resolveInput 解析一个输入，不触碰磁盘写入。
+//
+// 包名归属（R4-A）：`PackageName` 应是**目标包**的包名（输出契约 §3.2/§4.1）。
+//   - 无 `--out-dir`：目标目录即源目录 → 包名取源目录（既有行为不变）。
+//   - 有 `--out-dir` 且目标目录**已初始化**（存在可定名的非测试 Go 源）：包名取
+//     目标目录——源目录的包名可能不同（把静态页搬进另一个已初始化的包），沿用
+//     源包名会写出 `package <源包>` 与目标目录既有 package 冲突（真实 CLI 复现：
+//     `found packages b (...) and a (...)`, 契约 §3.2）。目标目录存在多个生产
+//     package 属不可定名 → fail-closed（写盘前拒绝）。
+//   - 有 `--out-dir` 但目标目录**尚不存在或为空**（首次生成到新目录）：保留既有
+//     兼容行为，包名沿用源包名（不猜、不拒绝）——这是既有新输出目录测试守住的
+//     边界（TestGenerateCreatesOutDirOnSuccess）；不凭一句规范删掉该回归。
+//   - 同包 ViewModel 解析仍由 `Config.SourceDir` 承担（不因输出目录而改变语义）。
 func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, error) {
-	pkgName, err := packageDirName(in.sourceDir)
-	if err != nil {
-		return nil, err
+	targetDir := in.sourceDir
+	if outRoot != "" {
+		targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
 	}
+	// 包名来源：
+	//   无 --out-dir：源目录（==目标目录）。
+	//   有 --out-dir：目标目录已初始化则按目标目录定名；否则回退源包名（兼容首建新目录）。
+	pkgName, pkgErr := packageDirName(targetDir)
+	if pkgErr != nil && outRoot != "" {
+		// 目标目录未初始化（不存在/无 Go 源/多包）：
+		//   - 多生产包：无法定名 → fail-closed（下面的 err 分支已含「多个非测试 package」。
+		//   - 不存在/为空：回退源包名（既有兼容路径）。
+		if isUndeterminableBecauseUninitialized(pkgErr) {
+			srcPkg, sErr := packageDirName(in.sourceDir)
+			if sErr != nil {
+				return nil, fmt.Errorf("--out-dir 目标包定名失败（%s）: %w", targetDir, pkgErr)
+			}
+			pkgName = srcPkg
+		} else {
+			return nil, fmt.Errorf("--out-dir 目标包定名失败（%s）: %w", targetDir, pkgErr)
+		}
+	} else if pkgErr != nil {
+		return nil, pkgErr
+	}
+	// 源目录（同包 ViewModel 所在包）真实包名：供跨包 VM 限定符。解析失败不阻断
+	// （例如纯静态页无 VM）；仅在需要跨包引用时由 Codegen 使用。
+	srcPkgName, _ := packageDirName(in.sourceDir)
 	src, err := os.ReadFile(in.abs)
 	if err != nil {
 		return nil, fmt.Errorf("读取源文件: %w", err)
 	}
 
-	targetDir := in.sourceDir
-	if outRoot != "" {
-		targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
-	}
 	sourcePath := filepath.Base(in.abs)
 	outputName := strings.TrimSuffix(sourcePath, ".gxml") + "_gen.go"
 	target := filepath.Join(targetDir, outputName)
@@ -109,6 +143,7 @@ func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, er
 	return &resolvedInput{
 		in:         in,
 		pkgName:    pkgName,
+		srcPkgName: srcPkgName,
 		source:     src,
 		sourceHash: inputHashOf(src),
 		targetDir:  targetDir,
@@ -337,6 +372,16 @@ func newCacheRecordFor(r *resolvedInput, key string, artifact []byte) cacheRecor
 	rec := newCacheRecord(key, r.sourceRel, r.outputRel, r.sourceHash, inputHashOf(artifact))
 	rec.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	return rec
+}
+
+// isUndeterminableBecauseUninitialized 报告 packageDirName 的失败是否只是「目录未初始化
+// （不存在 / 无 Go 源）」——这类情况在 --out-dir 首建新目录时应回退源包名，而非拒绝。
+// 「多生产 package」不属此类（必须 fail-closed）。
+func isUndeterminableBecauseUninitialized(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, errPackageUninitialized) || errors.Is(err, os.ErrNotExist)
 }
 
 // manifestOutputPaths 返回仍带保护头的 Manifest 产物（用于 K3 排除集）。

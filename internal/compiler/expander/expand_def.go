@@ -320,7 +320,9 @@ func substituteVal(v contracts.BindingVal, env expandEnv) contracts.BindingVal {
 	}
 	// 调用方传入绑定时，拼接剩余路径：{Name.X} + {User.Name} -> {User.Name.X}。
 	if len(v.Segments) == 1 {
-		return repl
+		// 替换环境可被多个嵌套组件调用点复用；不能把共享后备数组重新
+		// 接入已经克隆的实例。
+		return cloneBindingVal(repl)
 	}
 	segs := make([]string, 0, len(repl.Segments)+len(v.Segments)-1)
 	segs = append(segs, repl.Segments...)
@@ -422,27 +424,60 @@ func (e *expander) replaceSlotList(list []*contracts.NodeIR, slotted []*contract
 	return out
 }
 
-// cloneNode 深拷贝节点，避免展开时修改 Def 定义本身。
+// cloneBindingVal 深拷贝绑定值：Segments 换新后备数组。
 //
-// 同一个 Def 可能被调用多次，若不克隆，第二次展开会看到已被替换的子树。
+// PRODUCT-R4-B 实测（def_isolation_probe_test.go）：cloneNode 此前对
+// For.In/Key、属性 Value、事件实参 Binding 只复制结构体，Segments 后备
+// 数组与模板共享——任一展开实例的原地元素修改会写穿模板与全部兄弟实例
+// （别名实锤，四断言全中）。节点子树本就深拷贝，缺的是值内切片。
+func cloneBindingVal(v contracts.BindingVal) contracts.BindingVal {
+	if len(v.Segments) > 0 {
+		v.Segments = append([]string(nil), v.Segments...)
+	}
+	return v
+}
+
+// cloneNode 深拷贝节点，避免展开时修改 Def 定义本身。
+// 同一个 Def 可被调用多次，各实例的可变值不能共享。
 func cloneNode(n *contracts.NodeIR) *contracts.NodeIR {
 	if n == nil {
 		return nil
 	}
 	cp := *n
 	cp.Span = n.Span
+	if n.Background != nil {
+		background := *n.Background
+		cp.Background = &background
+	}
 
 	if len(n.Columns) > 0 {
 		cp.Columns = append([]contracts.GridColumn(nil), n.Columns...)
 	}
 	if len(n.RawAttrs) > 0 {
-		cp.RawAttrs = append(contracts.RawAttrList(nil), n.RawAttrs...)
+		cp.RawAttrs = make(contracts.RawAttrList, len(n.RawAttrs))
+		for i, a := range n.RawAttrs {
+			cp.RawAttrs[i] = contracts.RawAttr{Name: a.Name, Value: cloneBindingVal(a.Value), Span: a.Span}
+		}
 	}
 	if len(n.Attrs) > 0 {
-		cp.Attrs = append(contracts.AttrList(nil), n.Attrs...)
+		cp.Attrs = make(contracts.AttrList, len(n.Attrs))
+		for i, a := range n.Attrs {
+			cp.Attrs[i] = contracts.Attr{Name: a.Name, Value: cloneBindingVal(a.Value), Span: a.Span}
+		}
 	}
 	if len(n.Events) > 0 {
-		cp.Events = append([]contracts.EventBinding(nil), n.Events...)
+		cp.Events = make([]contracts.EventBinding, len(n.Events))
+		for i, ev := range n.Events {
+			evc := ev
+			if len(ev.Args) > 0 {
+				evc.Args = make([]contracts.EventArg, len(ev.Args))
+				for j, a := range ev.Args {
+					a.Binding = cloneBindingVal(a.Binding)
+					evc.Args[j] = a
+				}
+			}
+			cp.Events[i] = evc
+		}
 	}
 	if len(n.Children) > 0 {
 		cp.Children = make([]*contracts.NodeIR, len(n.Children))
@@ -452,10 +487,13 @@ func cloneNode(n *contracts.NodeIR) *contracts.NodeIR {
 	}
 	if n.For != nil {
 		f := *n.For
+		f.In = cloneBindingVal(n.For.In)
+		f.Key = cloneBindingVal(n.For.Key)
 		cp.For = &f
 	}
 	if n.If != nil {
 		ic := *n.If
+		ic.Condition = cloneBindingVal(n.If.Condition)
 		ic.Then = cloneList(n.If.Then)
 		ic.Else = cloneList(n.If.Else)
 		cp.If = &ic
@@ -463,10 +501,17 @@ func cloneNode(n *contracts.NodeIR) *contracts.NodeIR {
 	if n.Def != nil {
 		dc := *n.Def
 		if len(n.Def.Props) > 0 {
-			dc.Props = append([]contracts.DefProp(nil), n.Def.Props...)
+			dc.Props = make([]contracts.DefProp, len(n.Def.Props))
+			for i, pr := range n.Def.Props {
+				pr.Default = cloneBindingVal(pr.Default)
+				dc.Props[i] = pr
+			}
 		}
 		if len(n.Def.Events) > 0 {
 			dc.Events = append([]contracts.EventSchema(nil), n.Def.Events...)
+			for i := range dc.Events {
+				dc.Events[i].Params = append([]contracts.EventParam(nil), n.Def.Events[i].Params...)
+			}
 		}
 		dc.Body = cloneNode(n.Def.Body)
 		cp.Def = &dc
