@@ -11,7 +11,7 @@ import (
 )
 
 // TestExamplesSelectorSingleSource 检查"示例名只在脚本里注册一处"这条约定，
-// 以及四个示例目录与注册表**互为全集**。
+// 以及五个示例目录与注册表**互为全集**。
 //
 // 它替代不了选择器的行为测试（那要真跑脚本，见 scripts/test-verify-examples-*.py），
 // 但能挡住最常见的漂移：往 testdata 里加了第五个示例却忘了注册，或者
@@ -44,7 +44,7 @@ func TestExamplesSelectorSingleSource(t *testing.T) {
 	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllSubmatch(all[0][1], -1) {
 		names = append(names, string(m[1]))
 	}
-	want := []string{"starter", "tasks", "forms", "workbench"}
+	want := []string{"starter", "tasks", "forms", "workbench", "preferences"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("$known 应为 %v（顺序也固定），实际 %v", want, names)
 	}

@@ -102,11 +102,12 @@ func TestTagsFromGOFLAGS(t *testing.T) {
 	}
 }
 
-func TestBuildContextFromGOFLAGSPreservesDefaults(t *testing.T) {
-	// 空 GOFLAGS：与 build.Default 一致（不新增 BuildTags、不吞平台约束）。
-	ctxt, err := buildContextFromGOFLAGS("")
+func TestBuildContextFromMeasuredPreservesDefaults(t *testing.T) {
+	// 空 GOFLAGS：GOOS/GOARCH 用实测值（为空时保留 build.Default），
+	// 不新增 BuildTags、不吞平台约束。
+	ctxt, err := buildContextFromMeasured(measuredContextValues{})
 	if err != nil {
-		t.Fatalf("空 GOFLAGS 不应报错: %v", err)
+		t.Fatalf("空实测值不应报错: %v", err)
 	}
 	if ctxt.GOOS != build.Default.GOOS || ctxt.GOARCH != build.Default.GOARCH {
 		t.Errorf("应继承 build.Default 的 GOOS/GOARCH: got %s/%s want %s/%s",
@@ -121,7 +122,7 @@ func TestBuildContextFromGOFLAGSPreservesDefaults(t *testing.T) {
 	}
 
 	// 带 tag：只额外设 BuildTags，其余保持默认。
-	ctxt2, err := buildContextFromGOFLAGS("-tags=alpha,beta")
+	ctxt2, err := buildContextFromMeasured(measuredContextValues{GOFLAGS: "-tags=alpha,beta"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestBuildContextFromGOFLAGSPreservesDefaults(t *testing.T) {
 	}
 
 	// 非法 GOFLAGS：返回 error，且返回的上下文是零值（绝不「假装成功」）。
-	if _, err := buildContextFromGOFLAGS("garbage"); err == nil {
+	if _, err := buildContextFromMeasured(measuredContextValues{GOFLAGS: "garbage"}); err == nil {
 		t.Fatal("非法 GOFLAGS 必须报错")
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/build"
 	"os"
 	"path/filepath"
 	"sort"
@@ -99,12 +100,15 @@ type resolvedInput struct {
 //     目标目录——源目录的包名可能不同（把静态页搬进另一个已初始化的包），沿用
 //     源包名会写出 `package <源包>` 与目标目录既有 package 冲突（真实 CLI 复现：
 //     `found packages b (...) and a (...)`, 契约 §3.2）。目标目录存在多个生产
-//     package 属不可定名 → fail-closed（写盘前拒绝）。
+//     package、或匹配文件读取/解析失败属不可定名 → fail-closed（写盘前拒绝）。
 //   - 有 `--out-dir` 但目标目录**尚不存在或为空**（首次生成到新目录）：保留既有
 //     兼容行为，包名沿用源包名（不猜、不拒绝）——这是既有新输出目录测试守住的
 //     边界（TestGenerateCreatesOutDirOnSuccess）；不凭一句规范删掉该回归。
 //   - 同包 ViewModel 解析仍由 `Config.SourceDir` 承担（不因输出目录而改变语义）。
-func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, error) {
+//
+// ctxt 是本批实测的有效构建上下文（R7-B B1：与 go list/Analyzer/K10 同源），
+// 由调用方测量一次、批内共享；packageDirName 不再自行读环境。
+func resolveInput(in discovered, moduleRoot, outRoot string, ctxt build.Context) (*resolvedInput, error) {
 	targetDir := in.sourceDir
 	if outRoot != "" {
 		targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
@@ -112,13 +116,13 @@ func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, er
 	// 包名来源：
 	//   无 --out-dir：源目录（==目标目录）。
 	//   有 --out-dir：目标目录已初始化则按目标目录定名；否则回退源包名（兼容首建新目录）。
-	pkgName, pkgErr := packageDirName(targetDir)
+	pkgName, pkgErr := packageDirName(targetDir, ctxt)
 	if pkgErr != nil && outRoot != "" {
 		// 目标目录未初始化（不存在/无 Go 源/多包）：
 		//   - 多生产包：无法定名 → fail-closed（下面的 err 分支已含「多个非测试 package」。
 		//   - 不存在/为空：回退源包名（既有兼容路径）。
 		if isUndeterminableBecauseUninitialized(pkgErr) {
-			srcPkg, sErr := packageDirName(in.sourceDir)
+			srcPkg, sErr := packageDirName(in.sourceDir, ctxt)
 			if sErr != nil {
 				return nil, fmt.Errorf("--out-dir 目标包定名失败（%s）: %w", targetDir, pkgErr)
 			}
@@ -131,7 +135,7 @@ func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, er
 	}
 	// 源目录（同包 ViewModel 所在包）真实包名：供跨包 VM 限定符。解析失败不阻断
 	// （例如纯静态页无 VM）；仅在需要跨包引用时由 Codegen 使用。
-	srcPkgName, _ := packageDirName(in.sourceDir)
+	srcPkgName, _ := packageDirName(in.sourceDir, ctxt)
 	src, err := os.ReadFile(in.abs)
 	if err != nil {
 		return nil, fmt.Errorf("读取源文件: %w", err)

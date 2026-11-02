@@ -33,11 +33,25 @@ import (
 // cacheContextTimeout 限制 `go env` 子进程时长；超时视为上下文不可测（保守 miss）。
 const cacheContextTimeout = 10 * time.Second
 
-// measuredCacheContext 返回 Go **实际生效**的构建上下文（确定性 JSON 串）。
+// measuredContextValues 是 `go env -json` 实测的有效构建上下文原始值。
+// 全部来自 Go 自己（含 GOENV 持久化与默认值），不是父进程环境变量的投影。
+type measuredContextValues struct {
+	GOOS        string
+	GOARCH      string
+	CGO_ENABLED string
+	GOFLAGS     string
+	GOWORK      string
+	GOVERSION   string
+	GOROOT      string
+}
+
+// measureContextValues 用受控子进程测量 Go 实际生效的构建上下文。
 //
-// goExe 为空时用 "go"（依赖 PATH）；cli 会传 -GoExe 或解析到的 Go 路径。
-// 返回 error 即「上下文不可测」，调用方必须保守 miss，不得用返回值当键。
-func measuredCacheContext(goExe string, moduleRoots ...string) (string, error) {
+// envOverrides 追加在继承环境**之后**（后者胜出），供测试把 GOENV 指到
+// 自有文件或显式 off；生产调用不传，让子进程看到与 go list/Analyzer
+// 相同的有效配置。返回 error 即「上下文不可测」，调用方必须 fail-closed
+// 或保守 miss，不得拿空值继续。
+func measureContextValues(goExe string, moduleRoot string, envOverrides ...string) (measuredContextValues, error) {
 	if goExe == "" {
 		goExe = "go"
 	}
@@ -45,38 +59,69 @@ func measuredCacheContext(goExe string, moduleRoots ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, goExe, "env", "-json",
 		"GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOWORK", "GOVERSION", "GOROOT")
-	if len(moduleRoots) > 0 {
-		cmd.Dir = moduleRoots[0]
+	if moduleRoot != "" {
+		cmd.Dir = moduleRoot
 	}
 	// 显式禁用网络类工具链拉动：只读本地 env，不触发下载。
 	cmd.Env = append(cmdEnvBase(), "GOTOOLCHAIN=local")
+	cmd.Env = append(cmd.Env, envOverrides...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("go env 超时（%s）", cacheContextTimeout)
+			return measuredContextValues{}, fmt.Errorf("go env 超时（%s）", cacheContextTimeout)
 		}
-		return "", fmt.Errorf("go env 失败: %w", err)
+		return measuredContextValues{}, fmt.Errorf("go env 失败: %w", err)
 	}
 	var values map[string]string
 	if err := json.Unmarshal(out, &values); err != nil {
-		return "", fmt.Errorf("解析 go env JSON: %w", err)
+		return measuredContextValues{}, fmt.Errorf("解析 go env JSON: %w", err)
 	}
 	if values["GOOS"] == "" || values["GOARCH"] == "" {
-		return "", fmt.Errorf("Go 构建上下文不完整（GOOS/GOARCH 为空）")
+		return measuredContextValues{}, fmt.Errorf("Go 构建上下文不完整（GOOS/GOARCH 为空）")
 	}
-	// go.work（多模块）当前单模块依赖快照无法完整建模：保守判不可测。
-	if w := values["GOWORK"]; w != "" && w != "off" {
-		return "", fmt.Errorf("检测到 go.work 工作区（%s），当前快照不支持跨模块建模", w)
+	// Workspace does not invalidate measured package-selection values.
+	// Its dependency closure is rejected separately by cacheString, not by generation.
+	return measuredContextValues{
+		GOOS:        values["GOOS"],
+		GOARCH:      values["GOARCH"],
+		CGO_ENABLED: values["CGO_ENABLED"],
+		GOFLAGS:     values["GOFLAGS"],
+		GOWORK:      values["GOWORK"],
+		GOVERSION:   values["GOVERSION"],
+		GOROOT:      values["GOROOT"],
+	}, nil
+}
+
+// measuredCacheContext 返回 Go **实际生效**的构建上下文（确定性 JSON 串）。
+//
+// goExe 为空时用 "go"（依赖 PATH）；cli 会传 -GoExe 或解析到的 Go 路径。
+// 返回 error 即「上下文不可测」，调用方必须保守 miss，不得用返回值当键。
+func measuredCacheContext(goExe string, moduleRoots ...string) (string, error) {
+	var root string
+	if len(moduleRoots) > 0 {
+		root = moduleRoots[0]
 	}
-	// 只取对「文件选择/类型口径」有影响的稳定项，确定性序列化（map 经 json.Marshal
-	// 键序确定）。GOVERSION 影响类型口径，纳入；GOFLAGS 影响 tag 选择，纳入。
+	m, err := measureContextValues(goExe, root)
+	if err != nil {
+		return "", err
+	}
+	return m.cacheString()
+}
+
+// cacheString 把实测值序列化为确定性的稳定子集 JSON（K10 的键分量）。
+// 只取对「文件选择/类型口径」有影响的项：GOOS/GOARCH/CGO_ENABLED/GOFLAGS/
+// GOVERSION/GOROOT。GOFLAGS 影响标签选择（含 GOENV 持久化值），纳入。
+func (m measuredContextValues) cacheString() (string, error) {
+	if m.GOWORK != "" && m.GOWORK != "off" {
+		return "", fmt.Errorf("检测到 go.work 工作区（%s），当前快照不支持跨模块建模", m.GOWORK)
+	}
 	stable := map[string]string{
-		"GOOS":        values["GOOS"],
-		"GOARCH":      values["GOARCH"],
-		"CGO_ENABLED": values["CGO_ENABLED"],
-		"GOFLAGS":     values["GOFLAGS"],
-		"GOVERSION":   values["GOVERSION"],
-		"GOROOT":      values["GOROOT"],
+		"GOOS":        m.GOOS,
+		"GOARCH":      m.GOARCH,
+		"CGO_ENABLED": m.CGO_ENABLED,
+		"GOFLAGS":     m.GOFLAGS,
+		"GOVERSION":   m.GOVERSION,
+		"GOROOT":      m.GOROOT,
 	}
 	b, err := json.Marshal(stable)
 	if err != nil {

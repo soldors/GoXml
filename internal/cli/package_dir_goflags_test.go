@@ -161,6 +161,24 @@ func packageDirNameLegacy(dir string) (string, error) {
 	return name, nil
 }
 
+// envBuildContext 为单元测试构造包名判定上下文（R7-B B1）：
+// 走与生产相同的实测路径（measureContextValues 子进程，继承 t.Setenv
+// 的 GOFLAGS 等），但显式 GOENV=off 隔离用户真实 GOENV 文件，保证
+// 未涉及 GOENV 的既有用例确定性不受宿主机配置影响。GOENV 专项用例
+// 不经此 helper，直接在端到端子进程里设 GOENV=<自有文件>。
+func envBuildContext(t *testing.T) build.Context {
+	t.Helper()
+	m, err := measureContextValues(goBinary(t), "", "GOENV=off")
+	if err != nil {
+		t.Fatalf("测量测试构建上下文: %v", err)
+	}
+	ctxt, err := buildContextFromMeasured(m)
+	if err != nil {
+		t.Fatalf("构造测试构建上下文: %v", err)
+	}
+	return ctxt
+}
+
 // TestPackageDirNameMatchesRealGoListUnderTag 是核心回归：CLI 算出的包名
 // 必须等于同一 GOFLAGS 下真实 go list 的包名（正例）。
 func TestPackageDirNameMatchesRealGoListUnderTag(t *testing.T) {
@@ -184,7 +202,7 @@ func TestPackageDirNameMatchesRealGoListUnderTag(t *testing.T) {
 			t.Fatalf("真实 go list 在 goflags=%q 下报 %q，期望 %q（对照物本身要成立）", c.goflags, authName, c.want)
 		}
 		t.Setenv("GOFLAGS", c.goflags)
-		got, err := packageDirName(dir)
+		got, err := packageDirName(dir, envBuildContext(t))
 		if err != nil {
 			t.Fatalf("packageDirName(goflags=%q) 报错: %v", c.goflags, err)
 		}
@@ -220,7 +238,7 @@ func TestPackageDirNameLegacyDivergesFromRealGoList(t *testing.T) {
 
 	// 新实现消除该分叉。
 	t.Setenv("GOFLAGS", goflags)
-	if got, err := packageDirName(dir); err != nil || got != authName {
+	if got, err := packageDirName(dir, envBuildContext(t)); err != nil || got != authName {
 		t.Fatalf("新实现应与 go list 一致：got=%q err=%v want=%q", got, err, authName)
 	}
 }
@@ -237,9 +255,16 @@ func TestPackageDirNameInvalidGOFLAGSFailsClosed(t *testing.T) {
 
 	for _, bad := range []string{"garbage", "-", "--", "---x", "-=v", "--=v", `"unterminated`, "-tags"} {
 		t.Setenv("GOFLAGS", bad)
-		got, err := packageDirName(dir)
+		// [R7-B] fail-closed 点上移：runPipeline 先构造有效上下文再定名，
+		// 非法 GOFLAGS 在 buildContextFromMeasured 处报错（包名判定收到的
+		// 上下文已保证合法）。这里按生产次序直接断言该点。
+		m, mErr := measureContextValues(goBinary(t), root, "GOENV=off")
+		if mErr != nil {
+			t.Fatalf("go env 应回显非法 GOFLAGS（只回显不校验）: %v", mErr)
+		}
+		got, err := buildContextFromMeasured(m)
 		if err == nil {
-			t.Errorf("非法 GOFLAGS %q 应报错，实际得包名 %q", bad, got)
+			t.Errorf("非法 GOFLAGS %q 应报错，实际得上下文 BuildTags=%q", bad, got.BuildTags)
 			continue
 		}
 		if !strings.Contains(err.Error(), "GOFLAGS") {
@@ -260,7 +285,7 @@ func TestTwoRealPackagesRejectedAndGoListAgrees(t *testing.T) {
 	writeGoFile(t, dir, "b_two.go", "package two\n")
 
 	t.Setenv("GOFLAGS", "")
-	_, err := packageDirName(dir)
+	_, err := packageDirName(dir, envBuildContext(t))
 	if err == nil {
 		t.Fatalf("两个真实生产包必须被拒")
 	}
@@ -288,7 +313,7 @@ func TestStaleGeneratedArtifactDoesNotBlockRename(t *testing.T) {
 	}
 
 	t.Setenv("GOFLAGS", "-tags=goxmlr3")
-	got, err := packageDirName(dir)
+	got, err := packageDirName(dir, envBuildContext(t))
 	if err != nil {
 		t.Fatalf("存在带保护头的旧错误产物时不应被卡死，实际报错: %v", err)
 	}
@@ -301,7 +326,7 @@ func TestStaleGeneratedArtifactDoesNotBlockRename(t *testing.T) {
 		[]byte("package stalepkg\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := packageDirName(dir); err == nil {
+	if _, err := packageDirName(dir, envBuildContext(t)); err == nil {
 		t.Errorf("去掉保护头后它就是第二个真实生产包，必须被拒")
 	}
 }

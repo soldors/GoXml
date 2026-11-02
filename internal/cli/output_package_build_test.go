@@ -23,7 +23,7 @@ func buildExcludedPackageFixture(t *testing.T, dir string) {
 func TestPackageDirNameIgnoresBuildExcludedFiles(t *testing.T) {
 	dir := t.TempDir()
 	buildExcludedPackageFixture(t, dir)
-	name, err := packageDirName(dir)
+	name, err := packageDirName(dir, envBuildContext(t))
 	if err != nil || name != "ui" {
 		t.Fatalf("one active production package must remain usable: name=%q err=%v", name, err)
 	}
@@ -48,7 +48,7 @@ func TestPackageDirNameReportsInvalidBuildConstraint(t *testing.T) {
 	dir := t.TempDir()
 	writeGoFile(t, dir, "a_view.go", "package ui\n")
 	writeGoFile(t, dir, "zz_bad.go", "//go:build (\n\npackage ignored\n")
-	_, err := packageDirName(dir)
+	_, err := packageDirName(dir, envBuildContext(t))
 	if err == nil || !strings.Contains(err.Error(), "zz_bad.go") {
 		t.Fatalf("bad build constraint must identify file: %v", err)
 	}

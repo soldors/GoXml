@@ -31,7 +31,7 @@ func TestResolveInputOutDirUsesTargetPackageName(t *testing.T) {
 	writeSrcFile(t, gxml, `<Goxml Version="1"><Page Route="/"><Column Padding="1"><Text Value="x"/></Column></Page></Goxml>`)
 
 	in := discovered{sourceDir: srcDir, abs: gxml, rel: "home.gxml"}
-	r, err := resolveInput(in, dir, outDir)
+	r, err := resolveInput(in, dir, outDir, envBuildContext(t))
 	if err != nil {
 		t.Fatalf("resolveInput: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestResolveInputSameDirKeepsSourcePackageName(t *testing.T) {
 	gxml := filepath.Join(ui, "home.gxml")
 	writeSrcFile(t, gxml, `<Goxml Version="1"><Page Route="/"><Column Padding="1"><Text Value="x"/></Column></Page></Goxml>`)
 	in := discovered{sourceDir: ui, abs: gxml, rel: "home.gxml"}
-	r, err := resolveInput(in, dir, "")
+	r, err := resolveInput(in, dir, "", envBuildContext(t))
 	if err != nil {
 		t.Fatalf("resolveInput: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestResolveInputOutDirEmptyTargetFallsBackToSourcePkg(t *testing.T) {
 	gxml := filepath.Join(srcDir, "home.gxml")
 	writeSrcFile(t, gxml, `<Goxml Version="1"><Page Route="/"><Column Padding="1"><Text Value="x"/></Column></Page></Goxml>`)
 	in := discovered{sourceDir: srcDir, abs: gxml, rel: "home.gxml"}
-	r, err := resolveInput(in, dir, outDir)
+	r, err := resolveInput(in, dir, outDir, envBuildContext(t))
 	if err != nil {
 		t.Fatalf("空目标目录应回退源包名而非拒绝（兼容首建新目录）: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolveInputOutDirMultiPackageFailsClosed(t *testing.T) {
 	gxml := filepath.Join(srcDir, "home.gxml")
 	writeSrcFile(t, gxml, `<Goxml Version="1"><Page Route="/"><Column Padding="1"><Text Value="x"/></Column></Page></Goxml>`)
 	in := discovered{sourceDir: srcDir, abs: gxml, rel: "home.gxml"}
-	if _, err := resolveInput(in, dir, outDir); err == nil {
+	if _, err := resolveInput(in, dir, outDir, envBuildContext(t)); err == nil {
 		t.Fatal("多包目标目录应 fail-closed")
 	}
 }

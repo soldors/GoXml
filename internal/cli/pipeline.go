@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"go/build"
 	"go/token"
 	"io"
 	"os"
@@ -74,11 +75,34 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	// 输出冲突检测：不同输入不得映射到同一目标文件。
 	seen := make(map[string]string, len(inputs))
 
+	// ---------- 阶段零前：测量一次有效 Go 构建上下文（R7-B B1）----------
+	//
+	// CLI 选择输出包名（packageDirName）、Analyzer 加载（go/packages 子进程）
+	// 与缓存指纹（K10）必须看到**同一份**有效构建上下文。唯一可信来源是
+	// go 自身（go env 含 GOENV 持久化值），每批测量一次、批内共享；
+	// 不做跨调用缓存——两次 generate 之间 GOENV 变化必须可见。
+	//
+	// 测量失败 fail-closed（保留 cause）：包名若退回 build.Default 的
+	// 环境投影，就是 R7-B 复现的静默分叉（GOENV 持久化 -tags/GOOS 下
+	// 产物包名与 go list 相反）；这里没有比报错更安全的回退。
+	// Analyzer 本就依赖 go 子进程（go/packages），该约束不新增环境要求。
+	goExe := resolveGoExe()
+	ctxValues, ctxErr := measureContextValues(goExe, moduleRoot)
+	if ctxErr != nil {
+		return fmt.Errorf("测量有效 Go 构建上下文失败（拒绝猜测包名/文件选择）: %w", ctxErr)
+	}
+	// A measurable workspace can still generate; only cache reuse is unsafe.
+	cacheCtx, cacheCtxErr := ctxValues.cacheString()
+	pkgCtxt, ctxErr := buildContextFromMeasured(ctxValues)
+	if ctxErr != nil {
+		return fmt.Errorf("解析有效 Go 构建上下文失败: %w", ctxErr)
+	}
+
 	// ---------- 阶段零：解析输入与目标（不写盘、不生成）----------
 	resolved := make([]*resolvedInput, 0, len(inputs))
 	targets := make([]string, 0, len(inputs))
 	for _, in := range inputs {
-		r, err := resolveInput(in, moduleRoot, outRoot)
+		r, err := resolveInput(in, moduleRoot, outRoot, pkgCtxt)
 		if err != nil {
 			return err
 		}
@@ -112,19 +136,13 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	exclude := fingerprintExclusion(manifestOutputPaths(moduleRoot, man), targets)
 	index := loadSourceIndex(moduleRoot)
 
-	// 非作者审修（片1）：每批只测一次有效构建上下文（不每源起 go env 进程）。
-	// 结果批内共享；测量失败则批内全部依赖/上下文标记不安全 → 保守 miss。
-	goExe := resolveGoExe()
-	cacheCtx, ctxErr := measuredCacheContext(goExe, moduleRoot)
+	// 有效构建上下文已在阶段零前测量（每批一次，见上）；此处只把它
+	// 绑定到本批每个输入，供 K10 与保守 miss 判定使用。
 	for _, r := range resolved {
 		r.goExe = goExe
+		r.cacheContext = cacheCtx
 		r.cacheContextReady = true
-		if ctxErr != nil {
-			r.dependencyUnsafe = true
-		} else {
-			r.cacheContext = cacheCtx
-			r.cacheContextReady = true
-		}
+		r.dependencyUnsafe = cacheCtxErr != nil
 	}
 
 	type decision struct {
@@ -418,9 +436,16 @@ func findModuleRoot(start string) (string, error) {
 	}
 }
 
+var errPackageUninitialized = errors.New("package directory is uninitialized")
+
+// readPackageFile 是包名判定读取 Go 源文件的入口（包级变量仅为测试注入，
+// 生产即 os.ReadFile）。R7-B B2：读取失败必须可消费，不得当作「文件不存在」
+// 跳过——那会把损坏/受限的包目录伪装成空目录，走源包名回退写出错误产物。
+var readPackageFile = os.ReadFile
+
 // packageDirName 读目录内**非测试** Go 源文件的 package 子句作为包名。
 //
-// 目录没有可定名的 Go 文件时报错——生成文件必须落在真实 Go 包里（契约 §3.2：
+// 目录没有可定名的 Go 源文件时报错——生成文件必须落在真实 Go 包里（契约 §3.2：
 // 输出目录必须能解析为明确的 Go package）。
 //
 // 两条契约依据（`代码生成输出契约.md` §3.2、§4.1）：
@@ -439,19 +464,16 @@ func findModuleRoot(start string) (string, error) {
 // 这是任何「先写了外部测试文件、再生成页面」的普通工程都会踩到的形态，
 // 不是构造出来的边界。排除测试文件同时与 K3 指纹的口径对齐
 // （cache_wire.go 的 packageSourcesFingerprint 本来就不收 `_test.go`）。
-var errPackageUninitialized = errors.New("package directory is uninitialized")
-
-func packageDirName(dir string) (string, error) {
+//
+// R7-B B2 边界冻结：只有**确实未初始化**（不存在/为空/只剩测试文件）的目录
+// 走 errPackageUninitialized 供 --out-dir 回退源包名；匹配到构建选择的文件
+// 读取失败、没有合法 package 子句、多包、上下文错误一律 fail-closed，
+// 保留 cause——被选中的文件在 go build 眼里必然参与编译，CLI 静默跳过
+// 等于把「坏包」当「空包」处理。
+func packageDirName(dir string, ctxt build.Context) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("读取目录 %s: %w", dir, err)
-	}
-	// 与 go build/go list/Analyzer 消费同一份 -tags：build.Default 不读
-	// GOFLAGS，直接用它会漏掉带 tag 的源文件，导致产物包名与真实包名不一致。
-	// GOFLAGS 非法时 fail-closed 报错，不降级到 build.Default 蒙混。
-	ctxt, err := buildContextFromGOFLAGS(os.Getenv("GOFLAGS"))
-	if err != nil {
-		return "", fmt.Errorf("确定包名失败: %w", err)
 	}
 	// 按 ReadDir 的文件名序收集，包名集合至多一个才可用；报错信息里的顺序也是确定的。
 	var name string
@@ -471,9 +493,12 @@ func packageDirName(dir string) (string, error) {
 		if !match {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, name0))
+		data, err := readPackageFile(filepath.Join(dir, name0))
 		if err != nil {
-			continue
+			// [R7-B B2] 读取失败不再 continue：该文件已通过构建选择，
+			// go build/go list 也会读它。吞掉错误会让唯一真实源缺席，
+			// 目录被误判为未初始化（--out-dir 下回退源包名 → 错误产物）。
+			return "", fmt.Errorf("读取包源码 %s: %w", filepath.Join(dir, name0), err)
 		}
 		// A protection header alone is not ownership: an unregistered user file
 		// may carry the same text. Match the manifest as well before excluding it.
@@ -487,7 +512,14 @@ func packageDirName(dir string) (string, error) {
 			}
 		}
 		pkg, ok := parsePackageName(data)
-		if !ok || seen[pkg] {
+		if !ok {
+			// [R7-B B2] 无合法 package 子句不再 continue：与 go 一致，
+			// 被构建选择命中的文件必须有 package 子句，否则该目录在
+			// go build 下本来就编译失败；静默跳过会把坏包当空包回退。
+			return "", fmt.Errorf("文件 %s 没有可识别的 package 子句（契约 §3.2，目标目录须是明确的 Go package）",
+				filepath.Join(dir, name0))
+		}
+		if seen[pkg] {
 			continue
 		}
 		seen[pkg] = true

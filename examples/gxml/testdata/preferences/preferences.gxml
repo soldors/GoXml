@@ -1,0 +1,42 @@
+<!-- 设置工程：两份独立草稿（名称 / 端口）→ 校验 → 审阅 → 提交或撤销。
+     只用已批准控件：Text / Button / Input / If。
+     - <Input> 不放进 <For>（v1 编译期拒绝，GXML-SCOPE-005）；本页没有 <For>。
+     - MaxLen / Filter 走 Gio 内置：被截断/过滤的字符**不会**产生 ValueChanged。
+     - 名称框声明了 Submit（回车也能进审阅）；端口框没有，用来对照"事件接线按控件各自独立"。
+     - 只读确认框也接了 ValueChanged，但它只计数不改状态（见 vm.go 注释）。
+     - 背景只用已发布的静态颜色（#RRGGBB），且只加在 Text / Button / Input 叶子上；
+       容器背景与 ThemeRef 不在已实现范围。 -->
+<Goxml Version="1" ViewModel="ViewModel">
+  <Page Route="/preferences">
+    <Column Padding="16" Gap="8">
+      <Text Value="Goxml preferences" Background="#EFEFEF" Padding="4"/>
+      <Text Value="{DirtyText}" Background="#F7F7F7" Padding="4"/>
+      <Input Value="{Name}" Hint="名称（最多 12 个字符，可含中文）" MaxLen="12"
+             ValueChanged="OnNameChanged" Submit="OnNameSubmit" Background="#FFF7E6" Padding="4"/>
+      <Input Value="{Port}" Hint="端口（仅数字，最多 5 位）" Filter="0123456789" MaxLen="5"
+             ValueChanged="OnPortChanged" Background="#EEF5FF" Padding="4"/>
+      <Input Value="{ConfirmText}" Hint="确认值（只读）" ReadOnly="true"
+             ValueChanged="OnConfirmChanged" Background="#F2F2F2" Padding="4"/>
+      <If Condition="{InReview}">
+        <Then>
+          <Text Value="{ReviewText}" Background="#FFFBE6" Padding="4"/>
+          <Button Text="确认提交" Click="Commit" Background="#E8F5E9" Padding="4"/>
+          <Button Text="取消" Click="CancelReview" Background="#F5F5F5" Padding="4"/>
+        </Then>
+        <Else>
+          <Button Text="提交审阅" Click="BeginReview" Background="#E3F2FD" Padding="4"/>
+        </Else>
+      </If>
+      <Button Text="重置" Click="Reset" Background="#FBE9E7" Padding="4"/>
+      <If Condition="{HasStatus}">
+        <Then>
+          <Text Value="{Status}" Background="#FFF1F0" Padding="4"/>
+          <Button Text="清除提示" Click="ClearStatus" Background="#F5F5F5" Padding="4"/>
+        </Then>
+        <Else>
+          <Text Value="（无提示）" Background="#FAFAFA" Padding="4"/>
+        </Else>
+      </If>
+    </Column>
+  </Page>
+</Goxml>

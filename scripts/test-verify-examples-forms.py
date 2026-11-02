@@ -7,8 +7,9 @@ r"""verify-examples.ps1 的 **forms 示例注册**专用选择测试。
 
 判据：
   F1 -Example forms         → rc 0，只出现 forms 的子目录（starter/tasks 未构建）
-  F2 -Example all           → rc 0，starter/tasks/forms/workbench 四个子目录都在
-                              （workbench 于 R5-C 接入 $known；此判据随注册点同步更新）
+  F2 -Example all           → rc 0，starter/tasks/forms/workbench/preferences 五个子目录都在
+                              （workbench 于 R5-C、preferences 于 R7-C 接入 $known；
+                                此判据随注册点同步更新，不是从被测结果反推的 expected）
   F3 -Example bogus         → rc 2，提示"未知示例"且列出 forms
   F4 -Example forms -SourceDir <缺 vm.go> → rc 7（源材料校验）
   F5 -Example all -SourceDir x            → rc 2（既有规则未被破坏）
@@ -152,13 +153,13 @@ def main():
                      and r['perExample'].get('forms', {}).get('entryBytes', 0) > 0)
         ok = ok and r['pass']
 
-        # F2 all：三个都在，且各自都有生成物与入口产物
+        # F2 all：五个都在，且各自都有生成物与入口产物
         r = run_case('F2', 0, ['-Example', 'all'])
         r['pass'] = (r['rc'] == 0
-                     and r['exampleDirs'] == ['forms', 'starter', 'tasks', 'workbench']
+                     and r['exampleDirs'] == ['forms', 'preferences', 'starter', 'tasks', 'workbench']
                      and all(r['perExample'].get(n, {}).get('genBytes', 0) > 0
                              and r['perExample'].get(n, {}).get('entryBytes', 0) > 0
-                             for n in ('forms', 'starter', 'tasks', 'workbench')))
+                             for n in ('forms', 'preferences', 'starter', 'tasks', 'workbench')))
         ok = ok and r['pass']
 
         # F3 未知示例：rc 2 且列出 forms

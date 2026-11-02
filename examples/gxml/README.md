@@ -348,9 +348,111 @@ go build -o ./tmp-workbench/workbench-entry.exe ./tmp-workbench/cmd/workbench
 
 输入处理器的幂等性不能单独保证编辑器与模型一致：例如转大写是幂等的，但当前同步算法仍可使编辑器保留 `abc`、模型变为 `ABC`。[有界实验记录](../../docs/05-开发/2026-11-02-D3-输入同步有界实验观察.md)区分了程序化通知、显示/模型分歧和未复现的往复；本工作台采用原样草稿回写，不据此修改公开输入语义。
 
+# 进阶：设置编辑 → 校验 → 审阅 → 提交/撤销（`testdata/preferences/`）
+
+starter 只有一个按钮、tasks 是列表、forms 是孤立输入框、workbench 是列表 + 一份草稿。当页面需要"**两份互不干扰的草稿**、先**校验**再**审阅**、最后确认才写入已保存值，还能一键撤销"时，用 `testdata/preferences/` 这份完整工程：
+
+- `vm.go` —— 手写 ViewModel：草稿 `Name` / `Port`、已保存值 `SavedName` / `SavedPort`、派生脏标记 `Dirty` / `DirtyText`、只读确认串 `ConfirmText`、审阅信息 `ReviewText`、提示 `Status` / `HasStatus`、编辑审阅开关 `InReview`，以及事件处理器 `OnNameChanged(value string)`、`OnPortChanged(value string)`、`OnConfirmChanged(value string)`、`OnNameSubmit(text string)`、`BeginReview()`、`Commit()`、`CancelReview()`、`Reset()`、`ClearStatus()`。
+- `preferences.gxml` —— 只使用已批准控件：三个 `<Input>`（名称 / 端口 / **只读确认**）、`<Text>`、`<Button>`、`<If>/<Then>/<Else>`；没有 `<For>`、没有 `Image` / `Router` / `ThemeRef` / `Expanded`。
+- `main.go.txt` —— 窗口入口模板（复制到 `cmd/preferences/main.go`）。
+
+教程、自动测试与一键脚本**共用这三个文件**，不存在"教程里的示例"与"测试里的示例"两份副本。
+
+## 命令
+
+```powershell
+$env:CGO_ENABLED = '0'
+go build -o ./bin/goxml.exe ./cmd/goxml
+New-Item -ItemType Directory -Force ./tmp-preferences | Out-Null
+Copy-Item ./examples/gxml/testdata/preferences/vm.go ./tmp-preferences/vm.go
+Copy-Item ./examples/gxml/testdata/preferences/preferences.gxml ./tmp-preferences/preferences.gxml
+./bin/goxml.exe generate ./tmp-preferences/preferences.gxml --no-cache
+New-Item -ItemType Directory -Force ./tmp-preferences/cmd/preferences | Out-Null
+Copy-Item ./examples/gxml/testdata/preferences/main.go.txt ./tmp-preferences/cmd/preferences/main.go
+# 模板面向独立 module；在当前 checkout 使用时改为本地包路径。
+$main = Get-Content ./tmp-preferences/cmd/preferences/main.go -Raw -Encoding utf8
+$main.Replace('example.com/goxml-preferences', 'github.com/goxml/goxml/tmp-preferences') |
+    Set-Content -Encoding utf8 ./tmp-preferences/cmd/preferences/main.go
+go build -o ./tmp-preferences/preferences-entry.exe ./tmp-preferences/cmd/preferences   # 只构建窗口入口
+```
+
+> 生成器需要真实 Go package，因此**先复制 ViewModel 再生成**；窗口入口反过来要在生成**之后**安装。
+
+与前面几份一样：**只生成和构建，不打开窗口**。
+
+## 每一步在保证什么
+
+| 写法 | 约束 | 来源 |
+|---|---|---|
+| 两个 `<Input>` 各自 `Value` + 各自 `ValueChanged` | 方向是 **vm → Editor** 单向；两份草稿互不串写 | `Input输出契约.md` §3.1/§3.2 |
+| `MaxLen="12"` | Gio 内置按 **rune** 截断（中文与 ASCII 同口径）；被截断的字符**不产生** `ValueChanged` | `Input输出契约.md` §9 场景 7；Gio `Editor.MaxLen` |
+| `Filter="0123456789"` | Gio 内置过滤；被过滤掉的字符**不产生** `ValueChanged` | `Input输出契约.md` §9 场景 8；Gio `Editor.Filter` |
+| `ReadOnly="true"` 的确认框 | 只读框**也接了** `ValueChanged`，但它只计数不改状态；真实 `EditEvent` 在只读框上被丢弃 | Gio `Editor.Update` 的 `key.EditEvent` 分支 |
+| 名称框 `Submit="OnNameSubmit"`、端口框**不声明** | 回车提交是**事件声明的派生效果**；事件接线按控件各自独立 | `Input输出契约.md` §2.3/§4.3 |
+| `Submit` 的处理器与 `Click` 的处理器**分成两个方法** | `Submit` 带一个 text 载荷、`Click` 不带，同签名无法两用（实测 `GXML-EVENT-004`） | `事件处理输出契约.md` |
+| 脏标记是**派生量** `Name != SavedName \|\| Port != SavedPort` | 多一个独立变量就多一处忘记清空的路径 | 与 workbench 同源的实测结论 |
+| 显示串在 `refresh()` 里算好 | 不在 Layout 热路径每帧拼接 | `性能预算与优化策略.md`、`AGENT.md` §2.5 |
+| 回写是**原样回写**（不 Trim / 不转大写） | 规范化本身幂等，但当前同步算法下会让编辑器显示与模型分歧；不把未验证的规范化写法藏进示例 | `docs/05-开发/2026-11-02-D3-输入同步有界实验观察.md` |
+| 背景只用叶子静态色 `Background="#RRGGBB"` | 容器/Page 背景与 `ThemeRef` **不在**已实现范围 | `GXML语言规范.md` §Background 覆盖范围（2026-11-02 裁决 B） |
+
+生成的 `preferences_gen.go`（**不要手改**）里有四处关键产物：`input0/1/2` 与 `applied0/1/2`（三个 Input 各自的"最近一次外部应用"）、`ed.MaxLen = 12` / `ed.Filter = "0123456789"` / `ed.ReadOnly = true`（静态属性透传）、`ed.Submit = true`（**只有**名称框声明了 `Submit`），以及两处分支守卫 `InReview` / `HasStatus`。
+
+## 用户流程验证（自动）
+
+```powershell
+go test -v -run '^TestPreferencesProject$' ./examples/gxml
+```
+
+生成侧沿用与 forms / workbench 相同的判据：首次 `--no-cache` 出现产物与 Manifest、**缓存命中 mtime 不变**、`--no-cache` 同内容重写、合法修改产物变化、非法绑定 `{ReviewText}`→`{Missing}` 报 `GXML-BIND-001` 且保留旧产物与 Manifest；另加一条编译期负例 `<Input MaxLen="-1">` 被拒（`non-negative integer`）。
+
+离屏语义测试写进临时 module 后 `go test` 实跑（真实 `input.Router` 的 pointer 事件、`key.EditEvent` 与分帧回车，不创建原生窗口），共 13 条：
+
+1. **两字段独立**：改名称不动端口（`Port` 与 `PortChanges` 都不变），确认串随之重算并写回 `applied2`。
+2. **MaxLen 按 rune 截断**：插入 16 个 ASCII 后草稿恰好 12 个 rune，编辑器与模型一致。
+3. **Filter 过滤**：插入 `a` 被丢弃且**不产生** `ChangeEvent`；再插入 `9` 才回写（端口达到 5 位上限）。
+4. **只读不改值**：只读确认框对真实 `EditEvent` 不改值（`ConfirmChanges` 基线 ≥ 1 证明接线存在，不是"压根没接"）。
+5. **校验失败不误提交**：端口被推到 98080 后点「提交审阅」→ 停在 `review-reject`，`Reviews=0`、`Commits=0`、`InReview=false`、已保存值不变。
+6. **全链路**：编辑 → 提交审阅 → **按当前几何重扫** → 确认提交 → 写回已保存值、退出审阅、不再脏。
+7. **Reset 往返**：真实点击「重置」把两份草稿恢复成已保存值，编辑器随之同步（不是停在中间态）。
+8. **脏标记四态逐字**：`无 → 有 → 无 → 有`，两态文案逐字比（都含"未保存"三字，子串判据永远不红）。
+9. **回车提交**：载荷 = 回车瞬间的编辑器文本、次数取 `Submits`；**无回车**跑 3 帧的负对照。
+10. **端口框回车无效果**：端口框未声明 `Submit`，`Editor.Submit` 为假，回车不进审阅。
+11. **两实例隔离**：A 输入后 B 的编辑器文本、外部值与 `applied0` 都不变。
+12. **nil ViewModel 拒绝**：构造期报错。
+13. **小画布可达性（记录）**：640×520 与 480×360 上「提交审阅」「重置」都可达；360×300 只可达「提交审阅」；360×240 两者都不可达。**本工程没有滚动**，画布装不下就是点不到。
+
+三条纪律：**坐标全部实测扫描**（不硬编码像素，状态变化后重扫）、**判据取增量**（外部值应用本身会带一次 `ChangeEvent`，调用次数 ≠ 按键次数）、**每个交互用例的主链路 ≤ 8 帧**（实测 3–7 帧）。
+
+另有三条**可编译变异红**（只改 `vm.go` 副本，原字节按 SHA-256 复核未变）：`Reset` 不恢复名称 / 脏标记恒为不脏 / 提交不写 `SavedName`，对应的三条业务判据分别变红。
+
+**本测试不证明**：原生窗口真的显示、真实键盘/鼠标链路、**IME 组合输入与物理焦点**（`Input输出契约.md` §9 场景 15 列为人工验收门槛），以及任何性能数据。窗口入口只 `go build`，从不执行。
+
+## 运行入口（人工）
+
+```powershell
+go build -o ./tmp-preferences/preferences-entry.exe ./tmp-preferences/cmd/preferences
+./tmp-preferences/preferences-entry.exe        # 只在你想真的看窗口时才跑
+```
+
+人工验收清单（自动化**没有**覆盖，不要当成已通过）：窗口能显示；点名称框真的获得焦点、光标闪烁；中文输入法组合输入过程中不被打断、上屏后名称包含完整文本（名称上限 12 个**字符**，中文按字符计数）；端口框里敲字母确实敲不进去；只读确认框点上去有光标但敲字无效；回车后进入审阅、点「确认提交」后提示串出现、「重置」后草稿回到已保存值。
+
+## 常见错误
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 敲一个字却看到处理器被调用两次（或基线不是 0） | 外部值应用调用 `SetText` 后 Gio 的 Changed 标记会让紧随的 `Update` 再产出一次 `ChangeEvent` | 处理器要幂等；断言取**增量**；不要用"调用次数"当作"用户敲了几个字" |
+| 输入框里追加的字符出现在**开头** | 程序化 `SetText` 会把光标移到行首（`Editor.SetText` 行为），后续 `EditEvent` 从行首插入 | 这是既有行为记录；真实用户点击后光标位置由点击决定，本例未验证真实点击后的光标落点 |
+| 端口框敲字母没反应 | `Filter="0123456789"` 生效，非法字符连 `ChangeEvent` 都不产生 | 符合预期；需要别的字符集就改 `Filter` |
+| 输入 16 个字符只留下 12 个 | `MaxLen=12` 按 rune 截断 | 符合预期 |
+| 「提交审阅」点了没进审阅 | 校验没过（名称空 / 端口空 / 端口含非数字 / 端口不在 1-65535） | 看提示串里的具体原因 |
+| 提示"有未保存的修改"，点「重置」后消失了，但保存值没变 | 设计如此：只有「确认提交」才写已保存值，「重置」把草稿**拉回**已保存值 | 想写入就走 提交审阅 → 确认提交 |
+| 用 `strings.Contains(文案, "未保存")` 判断脏标记 | 两态文案都含"未保存"三字，这个判据**永远不红** | 逐字断言两态文案，或直接断言 `Dirty` 布尔值 |
+| `Submit` 与 `Click` 想共用一个方法，报 `GXML-EVENT-004` | `Submit` 带一个 text 载荷、`Click` 不带，签名不同 | 拆成两个方法，共用一段内部实现 |
+| 页面四周没有内边距 / 容器背景没生效 | 容器/Page 背景与 `ThemeRef` 不在本轮已实现范围 | 叶子（`Text`/`Button`/`Input`）的 `Padding` 与静态 `Background` 已生效 |
+
 ## 一键验证脚本（用户直接运行）
 
-上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把四个入门工程（starter、tasks、forms、workbench）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。示例名只在脚本里**注册一处**（`$known`），`all` 的列表与 `-Example` 的白名单共用它，不会出现"-Example X 可用但 all 漏掉"。
+上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把五个入门工程（starter、tasks、forms、workbench、preferences）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。示例名只在脚本里**注册一处**（`$known`），`all` 的列表与 `-Example` 的白名单共用它，不会出现"-Example X 可用但 all 漏掉"。
 
 ```powershell
 # 默认：starter + tasks + forms + workbench，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
@@ -474,6 +576,21 @@ python scripts/test-verify-examples-hosts.py --goxml-exe <已冻结的 goxml.exe
 两次运行的日志里都能读到"已取得锁: `D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock`，run id …"与"已释放自己的锁（token …）"，两个 run id 不同、token 不同。
 
 选择器专项（`scripts/test-verify-examples-workbench.py`，持公共锁 + `-SkipLock`，判据见脚本头）5/5 PASS：`-Example workbench` 只出现 workbench 子目录；`-Example all` 四个示例齐全且各有生成物与入口产物（`forms_gen.go` 7212 字节与上一轮 forms 实测一致，可作跨轮一致性旁证）；`-Example bogus` rc 2 且列出 workbench；源材料缺 `vm.go` → rc 7；`-Example all` 与 `-SourceDir` 同用 → rc 2（既有规则未被破坏）。
+
+### preferences 示例的双宿主实测（2026-11-02）
+
+`-Example preferences` 在两个宿主上**各跑一次**（不重跑旧全矩阵），均显式 `-LockPath` 指向公共 heavy.lock：
+
+| 宿主 | 实测版本 | rc | `preferences_gen.go` | 窗口入口 |
+|---|---|---|---|---|
+| Windows PowerShell 5.1 | `5.1.26100.9711` Desktop | 0 | 17889 字节 | `preferences-entry.exe` 12024320 字节 |
+| PowerShell 7 | `7.6.9` Core | 0 | 17889 字节 | `preferences-entry.exe` 12024320 字节 |
+
+选择器专项（`scripts/test-verify-examples-preferences.py`，持公共锁 + `-SkipLock`，判据见脚本头）5/5 PASS：`-Example preferences` 只出现 preferences 子目录；`-Example all` 五个子目录齐全且各有生成物与入口产物；`-Example bogus` rc 2 且提示"未知示例 … starter / tasks / forms / workbench / preferences / all"；源材料缺 `vm.go` → rc 7；`-Example all` 与 `-SourceDir` 同用 → rc 2（既有规则未被破坏）。
+
+`all` 五示例**只在最终组合阶段、在 PS 5.1 上验证一次**（不在两宿主重复全矩阵），产物字节：`home_gen.go` 5719、`tasks_gen.go` 10136、`forms_gen.go` 7429、`workbench_gen.go` 11807、`preferences_gen.go` 17889。
+
+> 同轮测到的 `forms_gen.go` 7429 / `workbench_gen.go` 11807 与本页前文记录的 7212 / 11541 **不同**：前文数字是**另一棵更早的树**上的测量，跨树比较字节没有意义；看差异要先对齐基线。
 
 ## C线冻结时的组合验收清单（历史记录）
 

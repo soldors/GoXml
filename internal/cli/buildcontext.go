@@ -144,13 +144,42 @@ func parseTagValue(value string) ([]string, error) {
 	return out, nil
 }
 
-// buildContextFromGOFLAGS 返回与 go build/go list/Analyzer 一致的构建上下文：
-// 以 build.Default 为基础（继承 GOOS/GOARCH/ToolTags/ReleaseTags/CGO 等），
-// 只额外把 GOFLAGS 里的 `-tags` 合并进 BuildTags。GOFLAGS 非法时返回 error，
-// 绝不返回一个「假装成功」的上下文。
-func buildContextFromGOFLAGS(goflags string) (build.Context, error) {
+// buildContextFromMeasured 从 go env **实测值**构造与 go build/go list/
+// Analyzer 一致的构建上下文（R7-B B1：最小统一 helper）。
+//
+// 为什么不能再用 buildContextFromGOFLAGS(os.Getenv("GOFLAGS"))（已删除）：
+// 它以 build.Default 为基础、只读**进程环境**的 GOFLAGS/GOOS/GOARCH。
+// 而 go 自身还消费 **GOENV 持久化值**（`go env -w` 写入的文件）——
+// 真实复现（night-product-r7/zcode/raw/repro-b1）：GOENV 文件写
+// `GOFLAGS=-tags=goxmlr3` 时 `go list` 选 pkgtag，CLI 却生成
+// `package pkgbase`（rc=0 静默分叉）；GOENV 写 `GOOS=linux` 时同理
+// （go list=pkglinux，CLI=package pkgwin）。缓存侧 K10（dependency_context.go）
+// 早在 R5 就用 go env 实测——同一有效上下文，两条实现两个视图。
+//
+// 本函数与 K10 同源：输入是 measureContextValues 的实测值，
+// GOOS/GOARCH/CGO_ENABLED 直接采用（不再信 build.Default 的环境投影），
+// 仅把 GOFLAGS 里的 -tags 合并进 BuildTags（复用 tagsFromGOFLAGS，
+// 引号/重复/非法语义不变）。GOFLAGS 非法时返回 error，绝不返回
+// 一个「假装成功」的上下文。
+//
+// ReleaseTags/ToolTags 沿用 build.Default：文件选择用到的 go1.x 版本
+// 标签由本进程 Go 版本决定，与子进程是同一工具链（goExe 解析自本机），
+// GOVERSION 差异已由 K10 入键兜底。
+func buildContextFromMeasured(m measuredContextValues) (build.Context, error) {
 	ctxt := build.Default
-	tags, err := tagsFromGOFLAGS(goflags)
+	if m.GOOS != "" {
+		ctxt.GOOS = m.GOOS
+	}
+	if m.GOARCH != "" {
+		ctxt.GOARCH = m.GOARCH
+	}
+	switch m.CGO_ENABLED {
+	case "0":
+		ctxt.CgoEnabled = false
+	case "1":
+		ctxt.CgoEnabled = true
+	}
+	tags, err := tagsFromGOFLAGS(m.GOFLAGS)
 	if err != nil {
 		return build.Context{}, err
 	}

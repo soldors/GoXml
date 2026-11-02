@@ -156,13 +156,13 @@ def main():
                      and r['perExample'].get('workbench', {}).get('entryBytes', 0) > 0)
         ok = ok and r['pass']
 
-        # W2 all：四个都在，且各自都有生成物与入口产物
+        # W2 all：五个都在，且各自都有生成物与入口产物
         r = run_case('W2', 0, ['-Example', 'all'])
         r['pass'] = (r['rc'] == 0
-                     and r['exampleDirs'] == ['forms', 'starter', 'tasks', 'workbench']
+                     and r['exampleDirs'] == ['forms', 'preferences', 'starter', 'tasks', 'workbench']
                      and all(r['perExample'].get(n, {}).get('genBytes', 0) > 0
                              and r['perExample'].get(n, {}).get('entryBytes', 0) > 0
-                             for n in ('forms', 'starter', 'tasks', 'workbench')))
+                             for n in ('forms', 'preferences', 'starter', 'tasks', 'workbench')))
         ok = ok and r['pass']
 
         # W3 未知示例：rc 2 且列出 workbench

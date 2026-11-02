@@ -51,7 +51,7 @@ func TestPackageDirNameIgnoresTestFiles(t *testing.T) {
 	writeGoFile(t, dir, "a_home_test.go", "package ui_test\n\nimport \"testing\"\n\nfunc TestHome(*testing.T) {}\n")
 	writeGoFile(t, dir, "b_view.go", "package ui\n\ntype VM struct{ Title string }\n")
 
-	got, err := packageDirName(dir)
+	got, err := packageDirName(dir, envBuildContext(t))
 	if err != nil {
 		t.Fatalf("有明确非测试包时应成功: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestPackageDirNameRejectsMultipleNonTestPackages(t *testing.T) {
 	writeGoFile(t, dir, "a_one.go", "package one\n")
 	writeGoFile(t, dir, "b_two.go", "package two\n")
 
-	_, err := packageDirName(dir)
+	_, err := packageDirName(dir, envBuildContext(t))
 	if err == nil {
 		t.Fatalf("多个非测试 package 必须报错，实际成功")
 	}
@@ -86,7 +86,7 @@ func TestPackageDirNameRejectsMultipleNonTestPackages(t *testing.T) {
 		t.Errorf("诊断不应把无关内容拼进来: %s", msg)
 	}
 	// 确定性：同一目录重复调用给出同一串（诊断顺序也是契约的一部分）。
-	_, err2 := packageDirName(dir)
+	_, err2 := packageDirName(dir, envBuildContext(t))
 	if err2 == nil || err2.Error() != msg {
 		t.Errorf("重复调用的诊断必须一致: %v vs %v", err, err2)
 	}
@@ -97,7 +97,7 @@ func TestPackageDirNameRejectsTestOnlyDir(t *testing.T) {
 	dir := t.TempDir()
 	writeGoFile(t, dir, "home_test.go", "package ui_test\n")
 
-	_, err := packageDirName(dir)
+	_, err := packageDirName(dir, envBuildContext(t))
 	if err == nil {
 		t.Fatalf("目录没有可定名的非测试源文件时必须报错")
 	}
@@ -112,7 +112,7 @@ func TestPackageDirNameDeduplicatesSamePackage(t *testing.T) {
 	for _, n := range []string{"a_view.go", "b_vm.go", "c_page.go"} {
 		writeGoFile(t, dir, n, "package ui\n")
 	}
-	got, err := packageDirName(dir)
+	got, err := packageDirName(dir, envBuildContext(t))
 	if err != nil {
 		t.Fatalf("同包多文件不应冲突: %v", err)
 	}
