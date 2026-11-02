@@ -519,9 +519,10 @@ func TestProbeSpacerFixed(t *testing.T) {
 //   - <Column> 内 Width="Fill" Height="24" 的 <Text> 只有交叉轴 Fill → 1 处有界检查；
 //   - Width="80.5" 必须以解析后的十进制字面量出现在 gtx.Dp(...) 内。
 //
-// 已知缺口（本测试不覆盖、也不假装覆盖）：示例里 <Column Padding="16"> 的
-// Padding 目前被 Codegen 忽略（属 TASK-CODEGEN-001-21 范围），因此这里只验证
-// 尺寸映射与可编译性，不验证示例的整体视觉。
+// 说明：示例里 <Column Padding="16"> 的 Padding **现已由 Codegen 生成真实
+// layout.Inset**（R5-A 片A1 起接通，属 TASK-CODEGEN-001-21）；但本测试只验证
+// 尺寸映射与可编译性，Padding 的内容原点/尺寸另由 padding_runtime_test.go 的
+// 离屏几何用例（TestPaddingColumnContentOriginRuntime 等）判别，不在此重复。
 func TestSizesExampleGeneratesSizedChildren(t *testing.T) {
 	path := filepath.Join(repoRootOf(t), "examples", "gxml", "valid", "sizes.gxml")
 	raw, err := os.ReadFile(path)

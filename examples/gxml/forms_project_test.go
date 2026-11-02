@@ -214,6 +214,7 @@ const formsInForSource = `<Goxml Version="1" ViewModel="ViewModel">
 // 输入事件的投递路径（与 Input 输出契约 §5.3 一致）：
 //   - 文本：key.EditEvent 经 router 队列 → 编辑器自持消费 → ChangeEvent；
 //   - 回车：key.Event{NameReturn} Press/Release，**与输入不同帧**。
+//
 // 直接调用 ViewModel 方法只用于**布置前置状态**，不作为任何一条验收判据。
 const formsSemSource = `package forms
 

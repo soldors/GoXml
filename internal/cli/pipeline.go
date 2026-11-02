@@ -112,6 +112,21 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	exclude := fingerprintExclusion(manifestOutputPaths(moduleRoot, man), targets)
 	index := loadSourceIndex(moduleRoot)
 
+	// 非作者审修（片1）：每批只测一次有效构建上下文（不每源起 go env 进程）。
+	// 结果批内共享；测量失败则批内全部依赖/上下文标记不安全 → 保守 miss。
+	goExe := resolveGoExe()
+	cacheCtx, ctxErr := measuredCacheContext(goExe, moduleRoot)
+	for _, r := range resolved {
+		r.goExe = goExe
+		r.cacheContextReady = true
+		if ctxErr != nil {
+			r.dependencyUnsafe = true
+		} else {
+			r.cacheContext = cacheCtx
+			r.cacheContextReady = true
+		}
+	}
+
 	type decision struct {
 		r      *resolvedInput
 		key    string

@@ -283,6 +283,21 @@ func updateManifestAfterGenerate(moduleRoot string, es []entry) error {
 // 返回 (删除列表, 跳过列表, 错误)。
 // 跳过原因：文件不存在 / 保护头不符（用户接管）/ 未登记（不归本工具管）。
 func cleanOrphans(moduleRoot string, keepSources map[string]bool) ([]string, []string, error) {
+	return cleanOrphansOps(moduleRoot, keepSources, realCleanOps)
+}
+
+// cleanOrphansOps 是孤儿清理的实现，ops 注入文件操作（切片 2）。
+//
+// 删除判据（切片 1 收紧，三条同时成立才删除）：
+//  1. 登记源已消失（既有）；
+//  2. 产物保护头 `// Source:` 与该条登记的源基名一致（歧义 → 用户侧跳过）；
+//  3. 没有其它源仍存在的登记声称同一输出（存活源争议 → 跳过）。
+//
+// 失败记账（切片 2）：删除失败不再丢弃已完成事实——返回
+// *cleanFailure{deleted, skipped, failed, pending, cause}，Unwrap 保留原因；
+// Manifest 保存失败同样携带已删除事实（磁盘上文件已删、登记未更新——
+// 重跑 --clean 是安全的：源仍消失、文件已不在，登记按不存在跳过）。
+func cleanOrphansOps(moduleRoot string, keepSources map[string]bool, ops cleanOps) ([]string, []string, error) {
 	path := manifestPath(moduleRoot)
 	m, err := loadManifest(path)
 	if err != nil {
@@ -292,8 +307,54 @@ func cleanOrphans(moduleRoot string, keepSources map[string]bool) ([]string, []s
 		return nil, nil, err
 	}
 
-	var deleted, skipped []string
+	// 预扫描：output → 声称它的登记（含源存活状态）。同一输出被多个登记
+	// 声称时，只要有一个登记的源仍存在，该输出就受存活源保护。
+	type claim struct {
+		source      string
+		sourceAlive bool
+	}
+	claims := make(map[string][]claim, len(m.Entries))
+	alive := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(moduleRoot, filepath.FromSlash(rel)))
+		return err == nil
+	}
+	if debugClean := os.Getenv("GOXML_DEBUG_CLEAN"); debugClean != "" {
+		fmt.Printf("DEBUG cleanOrphansOps: %d entries, moduleRoot=%s\n", len(m.Entries), moduleRoot)
+		for i, e := range m.Entries {
+			fmt.Printf("  entry[%d]: source=%q output=%q alive=%v\n", i, e.Source, e.Output, alive(e.Source))
+		}
+	}
 	for _, e := range m.Entries {
+		claims[e.Output] = append(claims[e.Output], claim{source: e.Source, sourceAlive: alive(e.Source)})
+	}
+
+	var deleted, skipped []string
+	var failed, pending []string
+	// 片2 非作者审修：逐项保留失败原因（多个 remove 失败时全部可 errors.Is/As）。
+	var causes []error
+	var firstFailedPath string
+	// 纯路径集合用于 pending 判定（skipped/failed/deleted 里存的是「路径 (原因)」文本，
+	// 不能直接与纯路径相等比较，否则已跳过项会误入 pending）。
+	skipSet := map[string]bool{}
+	failSet := map[string]bool{}
+	delSet := map[string]bool{}
+	failedOnce := false
+	stop := func(op, failedPath string, cause error, next int) error {
+		var rest []string
+		seen := map[string]bool{}
+		for _, e := range m.Entries[next:] {
+			if keepSources[e.Source] || delSet[e.Output] || failSet[e.Output] || skipSet[e.Output] || seen[e.Output] {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(moduleRoot, filepath.FromSlash(e.Source))); err == nil {
+				continue
+			}
+			rest = append(rest, e.Output)
+			seen[e.Output] = true
+		}
+		return &cleanFailure{op: op, path: failedPath, causes: append(causes, cause), deleted: deleted, skipped: skipped, failed: failed, pending: rest}
+	}
+	for i, e := range m.Entries {
 		if keepSources[e.Source] {
 			continue // 本轮生成中还在用的不删
 		}
@@ -302,26 +363,92 @@ func cleanOrphans(moduleRoot string, keepSources map[string]bool) ([]string, []s
 		if _, err := os.Stat(filepath.Join(moduleRoot, filepath.FromSlash(e.Source))); err == nil {
 			continue
 		} else if !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("检查源文件 %s: %w", e.Source, err)
+			// 片2 非作者审修：源状态检查失败也不丢弃此前已删除/已跳过事实。
+			return deleted, skipped, stop("检查源文件", e.Source, fmt.Errorf("检查源文件 %s: %w", e.Source, err), i)
 		}
 		target := filepath.Join(moduleRoot, filepath.FromSlash(e.Output))
-		data, err := os.ReadFile(target)
+		data, err := ops.readFile(target)
 		if err != nil {
 			if os.IsNotExist(err) {
 				skipped = append(skipped, e.Output+" (不存在)")
+				skipSet[e.Output] = true
 				continue
 			}
-			return nil, nil, fmt.Errorf("读取 %s: %w", target, err)
+			// 片2 非作者审修：读取失败不丢弃此前已删除/已跳过事实。
+			return deleted, skipped, stop("读取", target, fmt.Errorf("读取 %s: %w", target, err), i)
 		}
 		if !codegen.HasProtectedHeader(data) {
 			// 保护头不符 → 用户接管所有权，绝不删除（安全锁 1）。
 			skipped = append(skipped, e.Output+" (保护头不符，视为用户文件)")
+			skipSet[e.Output] = true
 			continue
 		}
-		if err := os.Remove(target); err != nil {
-			return nil, nil, fmt.Errorf("删除 %s: %w", target, err)
+		// 切片 1 新增：保护头存在但 `// Source:` 与登记的源基名不符——
+		// 该文件的归属存在歧义（可能来自其他同名源），绝不删除（安全锁 2）。
+		if !headerSourceMatches(data, filepath.Base(e.Source)) {
+			skipped = append(skipped, e.Output+" (保护头 Source 与登记不符，归属歧义)")
+			skipSet[e.Output] = true
+			continue
+		}
+		// 切片 1 新增：同一输出被其它源仍存在的登记声称——所有权争议，
+		// 绝不删除共享产物（安全锁 3）。
+		contested := ""
+		for _, c := range claims[e.Output] {
+			if c.source != e.Source && c.sourceAlive {
+				contested = c.source
+				break
+			}
+		}
+		if contested != "" {
+			skipped = append(skipped, fmt.Sprintf("%s (输出仍被存活源 %s 登记，所有权争议)", e.Output, contested))
+			skipSet[e.Output] = true
+			continue
+		}
+
+		if err := ops.remove(target); err != nil {
+			// 切片 2：删除失败不再丢弃已完成事实；片2 修：逐项累积全部原因。
+			failedOnce = true
+			failed = append(failed, e.Output)
+			failSet[e.Output] = true
+			if firstFailedPath == "" {
+				firstFailedPath = target
+			}
+			causes = append(causes, fmt.Errorf("删除 %s: %w", target, err))
+			continue
 		}
 		deleted = append(deleted, e.Output)
+		delSet[e.Output] = true
+	}
+	if debugClean := os.Getenv("GOXML_DEBUG_CLEAN"); debugClean != "" {
+		fmt.Printf("DEBUG after loop: deleted=%v skipped=%v failed=%v\n", deleted, skipped, failed)
+	}
+	if failedOnce {
+		// 收集尚未尝试的孤儿（失败项之后的孤儿条目）。
+		seenFailed := make(map[string]bool, len(failed))
+		for _, f := range failed {
+			seenFailed[f] = true
+		}
+		for _, e := range m.Entries {
+			if keepSources[e.Source] {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(moduleRoot, filepath.FromSlash(e.Source))); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				continue
+			}
+			target := filepath.Join(moduleRoot, filepath.FromSlash(e.Output))
+			if _, err := os.Stat(target); err != nil {
+				continue
+			}
+			if !seenFailed[e.Output] && !delSet[e.Output] && !failSet[e.Output] && !skipSet[e.Output] {
+				pending = append(pending, e.Output)
+			}
+		}
+		return deleted, skipped, &cleanFailure{
+			op: "删除", path: firstFailedPath, causes: causes,
+			deleted: deleted, skipped: skipped, failed: failed, pending: pending,
+		}
 	}
 
 	// 清理后保存 Manifest（删除的条目移除）。
@@ -337,9 +464,23 @@ func cleanOrphans(moduleRoot string, keepSources map[string]bool) ([]string, []s
 			}
 		}
 		m.Entries = remaining
-		if err := saveManifest(path, m); err != nil {
-			return deleted, skipped, fmt.Errorf("更新 Manifest: %w", err)
+		if err := ops.saveManifest(path, m); err != nil {
+			// 切片 2：保存失败不丢弃已删除事实——磁盘上文件已删、登记未更新。
+			// 重跑 --clean 安全：源仍消失、目标已不在 → 按不存在跳过。
+			return deleted, skipped, &cleanFailure{
+				op: "保存 Manifest", path: path, causes: []error{err},
+				deleted: deleted, skipped: skipped,
+			}
 		}
 	}
 	return deleted, skipped, nil
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

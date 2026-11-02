@@ -226,12 +226,134 @@ go build -o ./tmp-forms/forms-entry.exe ./tmp-forms/cmd/forms
 | 处理器需要规范化文本（如转大写） | 处理器返回后生成器立即重新求值 V 并赋给 A，故下一帧 V==A 时不会再次 SetText；不能仅由 Changed 标记推出往复。规范化后的编辑器显示语义尚未在本例验证 | 本例只做同值回写；需要规范化时先验证模型、编辑器及光标行为 |
 | 页面四周没有内边距 | `Padding` 目前被 Codegen 忽略（已知缺口，`size_runtime_test.go` 已注明属 TASK-CODEGEN-001-21 范围） | 等该任务卡落地；不要据此认为 `Padding` 已生效 |
 
-## 一键验证脚本（用户直接运行）
+# 进阶：可编辑列表与表单联动（`testdata/workbench/`）
 
-上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把三个入门工程（starter、tasks、forms）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。
+`tasks` 的列表行只有按钮、没有编辑；`forms` 只有一个孤立输入框、没有列表。当页面需要"一份**带稳定 ID** 的列表，点中某一行后在**列表之外**编辑它、保存写回列表，还能新增与删除"时，用 `testdata/workbench/`：
+
+- `vm.go` —— 手写 ViewModel：`Item{ID, Title}` 列表、`SelectedID`（`0` 表示未选中）、草稿 `Draft`、选中行文案 `Selection`、结果提示 `Status`/`HasStatus`、空态开关 `HasItems`，以及事件处理器 `Select(id int)`、`OnDraftChanged(value string)`、`SaveSubmit(text string)`、`Save()`、`Add()`、`Remove(id int)`、`ClearStatus()`。
+- `workbench.gxml` —— 只用已批准控件：`<For>` + 行内 `<Button>`（**传 `item.ID`**）、`<Text>`、`<If>/<Then>/<Else>`，以及**在 `<For>` 之外**的唯一 `<Input>`（草稿编辑器）。
+- `main.go.txt` —— 窗口入口模板（复制到 `cmd/workbench/main.go`）。
+
+教程、自动测试与一键脚本**共用这三个文件**，不存在"教程里的示例"与"测试里的示例"两份副本。
+
+## 命令
 
 ```powershell
-# 默认：starter + tasks + forms，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
+$env:CGO_ENABLED = '0'
+go build -o ./bin/goxml.exe ./cmd/goxml
+New-Item -ItemType Directory -Force ./tmp-workbench | Out-Null
+Copy-Item ./examples/gxml/testdata/workbench/vm.go ./tmp-workbench/vm.go
+Copy-Item ./examples/gxml/testdata/workbench/workbench.gxml ./tmp-workbench/workbench.gxml
+./bin/goxml.exe generate ./tmp-workbench/workbench.gxml --no-cache
+New-Item -ItemType Directory -Force ./tmp-workbench/cmd/workbench | Out-Null
+Copy-Item ./examples/gxml/testdata/workbench/main.go.txt ./tmp-workbench/cmd/workbench/main.go
+# 模板面向独立 module；在当前 checkout 使用时改为本地包路径。
+$main = Get-Content ./tmp-workbench/cmd/workbench/main.go -Raw -Encoding utf8
+$main.Replace('example.com/goxml-workbench', 'github.com/goxml/goxml/tmp-workbench') |
+    Set-Content -Encoding utf8 ./tmp-workbench/cmd/workbench/main.go
+go build -o ./tmp-workbench/workbench-entry.exe ./tmp-workbench/cmd/workbench   # 只构建窗口入口
+```
+
+## 每一步在保证什么
+
+| 写法 | 约束 | 来源 |
+|---|---|---|
+| `<For … Key="{item.ID}">` | 行状态按**稳定业务键**复用；`<For>` 子树里的 `<Button>` 必须有 `Key`，否则 Parser 报 `GXML-SCOPE-003` | `GXML语言规范.md` / Parser 诊断 |
+| `Click="Select(item.ID)"` | 行事件传 **ID 而不是下标**：删除中间一行后下标会变，ID 不会 | 本例实测（删除他行后选中仍为 `#1`，剩余 ID 1 / 3） |
+| `<Input>` 必须在 `<For>` 之外 | `<For>` 子树内出现 `<Input>` → Parser 报 `GXML-SCOPE-005`。所以草稿编辑器只有一份、放在列表下方 | `Input输出契约.md` §7 |
+| `ValueChanged="OnDraftChanged"` 只写草稿 | **输入不改列表**：只有 `Save()` / `Submit` 才把 `Draft` 写进 `Items[i].Title` 并递增 `Saves` | 本例 `save()` 负面对照 |
+| 保存使用**重新求值的 `Draft`** | `SaveSubmit(text)` / `Save()` 都不使用事件实参，而是按 `Input输出契约.md` §5.3 路径 2 在处理器返回后重新求值 V | `Input输出契约.md` §5.3 |
+| 校验失败只写 `Status` | 未选中 → "未选择任何行，未保存"；草稿仅空白 → "草稿为空，未保存 #N"；两者都**不动列表、不递增 `Saves`** | 本例实测 |
+| 空态走 `HasItems` 的 Else | 列表为空时显示"列表为空，先点新增"，不让草稿区看起来"可以保存" | 本例实测 |
+| 计数是**派生量**，不是计数器 | `CountText = "共 N 项"` 在 `refresh()` 里由 `len(Items)` 重算，不随事件累加 —— 不存在"某条路径忘了 +1" | 本例实测（初始 3 → 新增 4 → 删除 3 → 空 0） |
+| 脏标记也是**派生量** | `Dirty = 已选择 && 草稿 != 该行标题`，`DirtyText` 是它的显示串。多一个独立变量就多一处忘记清空的路径 | 本例实测（选中不脏 → 输入脏 → 保存不脏 → 删除选中项不脏） |
+
+生成的 `workbench_gen.go` 里可以看到（**不要手改**）：行按钮的两份状态池 `rowClicks0`（选择）/`rowClicks1`（删除）与按 key 的回收逻辑、`input0` + `applied0`（唯一 Input 的"最近一次外部应用"）、`ed.Submit = true`（声明了 `Submit` 事件）、以及三处分支守卫 `HasItems` / `HasSelection` / `HasStatus`。
+
+## 用户流程验证（自动）
+
+```powershell
+go test -v -run '^TestWorkbenchProject$' ./examples/gxml
+```
+
+生成侧沿用与 forms 相同的判据（首次生成出现产物、缓存命中 mtime 不变、合法修改产物变化、非法绑定 `GXML-BIND-001` 保留旧产物、`<Input>` 放进 `<For>` → `GXML-SCOPE-005` 且不留产物）。
+
+此外把一份**离屏**语义测试写进临时 module 并 `go test` 实跑（用 `input.Router` 的 pointer 事件、`key.EditEvent` 与分帧 `key.NameReturn`，不创建原生窗口），共 12 条：一条完整链、五条负面对照，以及空态恢复、两实例隔离、计数、脏标记、多画布定位与重复执行：
+
+1. **全链路**：真实点击某行的「选择」→ 焦点由真实指针点击获得 → `EditEvent` 输入 → 回车（Press/Release 分帧）→ 标题写回列表 → 再点该行「删除」→ 列表少一项、**编辑器被清空**（选中项已不存在）。
+2. **保存按钮链路**：不按回车、改点「保存」，同样写回列表。
+3. **不保存不改列表**（负对照）：只输入不回车/不点保存，列表标题与 `Saves` 都不变。
+4. **空草稿被拒**（负对照）：草稿仅空白时保存 → `Status="草稿为空，未保存 #2"`、`Saves=0`。
+5. **删除他行 ID 不串**（负对照）：删掉另一行后，当前选中仍是 `#1`，剩余 ID 为 1 / 3。
+6. **删除后行状态池清理**：池大小 3→2，被删 key 已回收（不泄漏、不复用错位）。
+7. **空列表 → 新增**：删空后 Else 分支生效；点「新增」得到新 ID=4、池=1。
+8. **两实例隔离**：A 选中 `#1` 后，B 的 `SelectedID` 仍为 0、B 的编辑器文本为空。
+9. **计数跟随真实点击**：初始"共 3 项" → 点「新增」"共 4 项" → 点「删除」"共 3 项" → 空列表"共 0 项"。
+10. **脏标记生命周期**：未选择不脏 → 刚选中不脏（草稿==标题）→ 真实输入后脏 → 回车保存后不脏 → 删除选中项后不脏。
+11. **换画布尺寸仍能定位**：720×480 / 480×360 / 1024×768 三套尺寸各自全网格扫描，六个行事件（`select:1..3`、`remove:1..3`）在**三套尺寸下都命中**，且命中坐标互不相同（`remove:3` 的 x 分别为 672 / 432 / 976）——证明用例测的是布局语义，不是几个魔数。
+12. **完整链重复 5 次**：同一条"选择 → 输入 → 回车保存"跑 5 遍，每遍草稿、写回结果、行数都一致。
+
+    这条**证明的不是"不 flaky"**：该链路没有并发、随机或时间依赖，是完全确定性的，重复多少次都不会翻出新的失败模式。它真正覆盖的是**跨轮之间共享缓存不污染**——扫描命中点（`baseHits`）与焦点坐标（`focusPos`）是包级缓存，一轮跑完再跑一轮，若某处把状态写进了共享变量就会在这里暴露。需要证明"不 flaky"的用例必须靠 N 次重跑，但不要把确定性用例的重复说成稳定性证据。
+
+判据取**增量**而不是绝对值：所有按钮定位都用网格早停扫描实测坐标（不硬编码像素），且断言落到**不可被覆盖的计数器**（`Selects/LastSelectID`、`Removes/LastRemoveID`、`Saves`、`Adds/LastAddID`、`StatusClears`）——外部值应用本身也会带来一次 `ChangeEvent`，会把"最近一次动作"这类字段重写成 `change`（见 forms 的常见错误）。
+
+**直接调用 VM 方法不算事件验收**：上面每一条都经 router 队列投递真实事件，没有任何一条是靠 `vm.Select(1)` 之类直调达成的。
+
+## 删除后再新增（复核补充，独立 5 条）
+
+上一节 12 条走的是"选择 → 编辑 → 保存"与单点删除。复核补充另外固化了 5 条，专门走**删除 → 新增 → 选择 → 编辑 → 保存/回车**这条顺序——先删后增，不是把顺序调成"先增后删"来回避布局位移：
+
+```powershell
+go test -v -run '^TestWorkbenchSemReview' ./examples/gxml
+```
+
+| 用例 | 判据 | 本条实测观察 |
+|---|---|---|
+| 删除后按**当前**几何重扫，再新增/选择/编辑/保存 | 删除后底部多出一行状态提示、页级按钮整体上移，删除前缓存的坐标不再命中——必须重扫，不能靠调换顺序绕开 | 用删除前的坐标点 `add:4` 命中空串（`动作=""`，未触发任何事件），重扫后才命中 |
+| 删除选中项清空草稿与编辑器 | `SelectedID==0`、`Draft==""`、编辑器文本为空、计数回到"共 2 项"、不脏 | 五项逐项相等 |
+| ID 不复用、行 Key 跟随数据 | 删除后新增拿到的是**新** ID（不回收旧号），行 Key 集合始终等于 ID 集合 | `[1 2 3]` → 删#2 `[1 3]` → 增 `[1 3 4]` → 删#1 → 增 `[3 4 5]` |
+| 两实例隔离（当前几何） | A 选中 `#1` 后，B 的 `SelectedID==0`、`Draft==""`、B 的编辑器为空 | 逐项相等 |
+| `DirtyText` 两态**逐字**相等 | 四态文案必须逐字等于 `（无未保存修改）` 或 `（草稿有未保存的修改）`，不接受子串判据 | `无 → 无 → 有 → 无` |
+
+**证据边界（三条都要连着读）**：
+
+- 这 5 条与上面 12 条**并列、不重复计数**：12 条是上一轮已交付的成果，本轮只在改动文件上窄测 `-run '^TestWorkbenchSemReview'`，没有把 12 条重跑一遍再当作新结论。
+- 本节观察全部来自**离屏**测试（真实生成物 + 真实 router 事件 + 分帧 `key.NameReturn`），**不含**窗口显示、IME 组合输入、光标与任何性能数据；那些仍在"运行入口（人工）"的清单里，状态是**未通过（未执行）**。
+- 作者自测**不等于**非作者复核：用例与观察由本 lane 产出，外部复核状态仍是**待独立复核**，不要读成"已复核通过"。
+
+## 运行入口（人工）
+
+```powershell
+go build -o ./tmp-workbench/workbench-entry.exe ./tmp-workbench/cmd/workbench
+./tmp-workbench/workbench-entry.exe        # 只在你想真的看窗口时才跑
+```
+
+人工验收清单（自动化**没有**覆盖，不要当成已通过）：窗口能显示；点某一行的「选择」后草稿区出现该行标题、并真的获得焦点且光标闪烁；中文输入法组合输入过程中不被打断、上屏后草稿包含完整文本；回车后列表标题更新且提示串出现；删除后列表立刻少一行、草稿区回到未选中；窗口缩放后行布局不重叠。
+
+## 常见错误
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `<Input>` 放进 `<For>` 报 `GXML-SCOPE-005` | 契约禁止（每个迭代一份编辑器，状态无法按 key 收敛） | 草稿编辑器放到 `<For>` 之外，用"选中行 + 一份编辑器"模型 |
+| `<For>` 里的 `<Button>` 报 `GXML-SCOPE-003` | 行内交互控件缺 `Key` | 加 `Key="{item.ID}"` |
+| 删掉中间一行后"保存到了别的行" | 行事件传下标，下标在删除后串位 | 传 `item.ID`，按 ID 定位 |
+| 输入了但列表没变 | 设计如此：`ValueChanged` 只写草稿，写回列表只发生在 `Save()` / `Submit` | 回车或点「保存」 |
+| 提示"草稿为空，未保存" | 草稿去除空白后为空；这是校验，不是失败 | 输入内容再保存 |
+| 输入一次却看到处理器被调用两次 | 同 forms：外部值同步调用 `SetText` 后 Gio 的 Changed 标记可使 `Update` 产出 `ChangeEvent`；首帧同步与用户输入可能分别通知。本例只测到"调用次数多于按键次数"这一现象，IME 与真实按键的分帧细节未测 | 处理器要幂等；不要用"调用次数"当作"用户敲了几个字" |
+| 页面四周没有内边距 | `Padding` 目前被 Codegen 忽略（已知缺口，属 TASK-CODEGEN-001-21 范围） | 等该任务卡落地；不要据此认为 `Padding` 已生效 |
+| "未保存"标记点了保存还不消失 | 多半是把脏标记做成了**独立变量**，在保存/删除/选择某条路径里忘了清空 | 改成派生量：`已选择 && 草稿 != 该行标题`，一处重算即可 |
+| 自己写离屏测试时点击"没反应" | 缓存的命中坐标只在**缓存时那套布局**下有效：本页删除后底部会多出一行状态提示，页级按钮整体上移，旧坐标就不再命中（本轮自伤 7） | 布局变了就重扫；或把用例顺序安排成不触发布局位移 |
+| 提示"有未保存的修改"，点保存却说"草稿为空" | 草稿里只有空格时确实与列表不同（所以判脏），但保存按"去除空白后为空"拒绝——是刻意的：不让一行被写成空白标题 | 输入可见内容再保存 |
+| 用 `strings.Contains(文案, "未保存")` 判断脏标记 | 两态文案是"（草稿**有**未保存的修改）"与"（**无**未保存修改）"，"未保存"三字在两态里都有，这个判据**永远不红** | 逐字断言两态文案，或直接断言 `Dirty` 布尔值 |
+
+输入处理器的幂等性不能单独保证编辑器与模型一致：例如转大写是幂等的，但当前同步算法仍可使编辑器保留 `abc`、模型变为 `ABC`。[有界实验记录](../../docs/05-开发/2026-11-02-D3-输入同步有界实验观察.md)区分了程序化通知、显示/模型分歧和未复现的往复；本工作台采用原样草稿回写，不据此修改公开输入语义。
+
+## 一键验证脚本（用户直接运行）
+
+上面每一步都要手敲命令，容易漏掉"先复制 ViewModel 再生成"这类前置条件。`scripts/verify-examples.ps1` 把四个入门工程（starter、tasks、forms、workbench）的完整流程固化成一条命令：从任意当前目录都能调用，脚本按自身位置定位仓库根。示例名只在脚本里**注册一处**（`$known`），`all` 的列表与 `-Example` 的白名单共用它，不会出现"-Example X 可用但 all 漏掉"。
+
+```powershell
+# 默认：starter + tasks + forms + workbench，隔离模块，输出到 <仓库>/tmp/verify-examples/<时间戳>
 pwsh -File scripts/verify-examples.ps1
 
 # 单个示例 + 指定输出目录（支持空格与中文路径）
@@ -239,6 +361,9 @@ scripts\verify-examples.ps1 -Example tasks -OutputRoot "D:\我的 构建\验证"
 
 # 只验证表单工程（本夜各宿主都显式传 -LockPath 共用公共锁）
 scripts\verify-examples.ps1 -Example forms -LockPath "D:\Codes\Goxml-night-reports\2026-10-27\heavy.lock"
+
+# 只验证列表工作台工程
+scripts\verify-examples.ps1 -Example workbench -LockPath "D:\Codes\Goxml-night-reports\2026-10-27\heavy.lock"
 
 # checkout 形态：在仓库内子目录构建，自动把 main 模板的导入换成本地包路径
 scripts\verify-examples.ps1 -Mode checkout -OutputRoot "<仓库>\tmp\verify-examples\r3-checkout"
@@ -333,7 +458,45 @@ python scripts/test-verify-examples-hosts.py --goxml-exe <已冻结的 goxml.exe
 
 选择器专项（`scripts/test-verify-examples-forms.py`，持公共锁 + `-SkipLock`，判据见脚本头）：`-Example forms` 只出现 forms 子目录；`-Example all` 三个子目录齐全且各有生成物与入口产物；`-Example bogus` rc 2 且提示"未知示例 … starter / tasks / forms / all"；源材料缺 `vm.go` → rc 7；`-Example all` 与 `-SourceDir` 同用 → rc 2（既有规则未被破坏）。
 
-> 测试**自己重定向**子进程输出时会遇到**混合编码**：脚本自身的 `Write-Host` 是控制台代码页（简体中文环境 cp936），而 `go` / `goxml` 子进程的原样输出是 UTF-8，同一个缓冲区里两种编码并存。脚本正常运行时**不重定向**（输出直通控制台），因此这不是脚本的行为差异；写测试时请按行容错解码，不要假设单一编码。
+> 测试**自己重定向**子进程输出时会遇到**混合编码**：脚本自身的 `Write-Host` 是控制台代码页（简体中文环境 cp936），而 `go` / `goxml` 子进程的原样输出是 UTF-8，同一个缓冲区里两种编码并存。脚本正常运行时**不重定向**（输出直通控制台），因此这不是脚本的行为差异；写测试时请按行容错解码，不要假设单一编码。若判据要检索日志里的**中文串**（如"已取得锁"），请在**字节层面**比对两种编码的目标串——按某一种编码 decode 后再检索会漏判（本夜 workbench 双宿主测量就踩过一次，判据修正后按已留档的原始字节重算，未重跑构建）。
+
+### workbench 示例的双宿主实测（2026-11-02）
+
+`-Example workbench` 在两个宿主上**各跑一次**真实生成 + 入口构建（不重跑旧全矩阵），均显式 `-LockPath` 指向公共 heavy.lock：
+
+| 宿主 | 实测版本 | rc | `workbench_gen.go` | 窗口入口 |
+|---|---|---|---|---|
+| Windows PowerShell 5.1 | `5.1.26100.9711` Desktop | 0 | 11541 字节 | `workbench-entry.exe` 12005376 字节 |
+| PowerShell 7 | `7.6.9` Core | 0 | 11541 字节 | `workbench-entry.exe` 12005376 字节 |
+
+（切片 C4 给页面加了计数与脏标记两个派生字段后**重测**过一遍：产物从 11056 / 12001792 变为 11541 / 12005376。材料一变就重测，避免文档里的数字失真。）
+
+两次运行的日志里都能读到"已取得锁: `D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock`，run id …"与"已释放自己的锁（token …）"，两个 run id 不同、token 不同。
+
+选择器专项（`scripts/test-verify-examples-workbench.py`，持公共锁 + `-SkipLock`，判据见脚本头）5/5 PASS：`-Example workbench` 只出现 workbench 子目录；`-Example all` 四个示例齐全且各有生成物与入口产物（`forms_gen.go` 7212 字节与上一轮 forms 实测一致，可作跨轮一致性旁证）；`-Example bogus` rc 2 且列出 workbench；源材料缺 `vm.go` → rc 7；`-Example all` 与 `-SourceDir` 同用 → rc 2（既有规则未被破坏）。
+
+## C线冻结时的组合验收清单（历史记录）
+
+上面的数字都是**在本树**（基线 `1e210c4` + 本线提交）上实测的，不能直接当成合并树（B→A→C）的结论：
+
+| 项 | 本树状态 | 组合后谁复验 |
+|---|---|---|
+| G2 缓存命中（字节相同**且 mtime 不变**） | 通过（`TestWorkbenchProject` 的 G2） | B 线改的是缓存键（`internal/cli/`），合入后必须重跑 |
+| G3 `--no-cache` 强制生成（字节相同） | 通过（G3） | 同上 |
+| G5 生成失败保留旧产物与 Manifest 字节 | 通过（G5 用例） | 同上 |
+| `Padding` 真的生效 | **本基线不生效**（Codegen 忽略，`size_runtime_test.go` 已注明属 TASK-CODEGEN-001-21 范围） | A 线落地后重跑；在那之前本树的留白与溢出**不代表**组合树 |
+| 四示例选择器 | W1–W5 / F1–F5 通过（本树） | 用 `--repo <组合树>` 指向组合树重跑，判据不改 |
+| 小画布可达控件 / 溢出 | 仅**记录**（见 `docs/05-开发/dev-log/2026-11-02-r5-followup-workbuddy.md` 片 3），不是通过项 | 同上 |
+
+选择器测试接受任意树路径，因此组合树**不需要改脚本**：
+
+```text
+python scripts/test-verify-examples-workbench.py --repo <组合树> --out <目录> --lock-path <公共锁>
+```
+
+原C线交付时不填写组合SHA；随后协调者出具的组合身份见下方R5组合说明。本线只提供"能指向任意树"的入口，
+以及在本树上实测过的判据。示例名的单一来源是 `.ps1` 里的 `$known`，`TestExamplesSelectorSingleSource`
+会把"注册表 ↔ `testdata/` 目录"的集合差和"示例名在脚本里重复出现"都判红。
 
 ## 可迁移性验证（2026-11-01）
 
@@ -357,3 +520,11 @@ python scripts/test-verify-examples-portable.py --goxml-exe <已冻结 goxml.exe
 | 隔离布局内成功一次 | 一个示例（tasks）+ 一个宿主（PS 5.1）+ 复用已冻结 CLI，rc 0（`tasks_gen.go` 9909 字节、入口已构建），重负载显式传公共锁 `-LockPath` |
 
 实测（runId `portable-20261101-012730-eed0cab3`）：10 项全 `verified`，`failures = []`。
+
+### 2026-11-02 R5 组合后的说明
+
+本页C线历史测量基线尚未包含Padding实现；接纳组合已接通容器和叶子Padding，旧画布高度/坐标只保留为当时记录。最终组合用实际layout重新测量、复验事件流和缓存G2/G3/G4；具体结果见[R5组合验证](../../docs/06-测试/2026-11-02-R5组合验证.md)。360×240等小画布仍可能溢出，本工程没有新增滚动，不能把能编译或部分控件可点读成所有画布可用。Background仍隔离，Input回调语义未改。
+
+编号以TestWorkbenchProject源码为准：G2缓存命中（含mtime）、G3强制重生成、G4合法输入变更、G5非法绑定失败保留旧生成物和Manifest。原清单把最后一项标题记为G4，已更正；组合包四项均实际执行。
+
+组合实测补充：同探针内容高度430；360×240可达4/7（缺新增与第3行选择/删除）、480×360可达6/7（缺新增）、720×480可达7/7。无滚动，建议先使用能容纳页面的画布。两个选择器在组合树均5/5，all包含四示例，只编译入口。原始测量条件与边界见上述R5组合验证。

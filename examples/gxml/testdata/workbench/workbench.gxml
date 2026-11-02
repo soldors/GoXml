@@ -1,0 +1,51 @@
+<!-- 工作台：可编辑列表 + 独立表单。
+     只用已批准控件：Text / Button / Input / For / If。
+     <Input> 固定在 <For> 之外（v1 行内 Editor 生命周期未定义，
+     Input 输出契约 §7），它只写草稿，写回列表由「保存」按钮或回车提交完成。 -->
+<Goxml Version="1" ViewModel="ViewModel">
+  <Page Route="/workbench">
+    <Column Padding="24" Gap="12">
+      <Row Gap="8" Align="Center">
+        <Text Value="Goxml workbench"/>
+        <Text Value="{CountText}" Width="Fill"/>
+      </Row>
+      <If Condition="{HasItems}">
+        <Then>
+          <For Each="item" In="{Items}" Key="{item.ID}">
+            <Row Gap="8" Align="Center">
+              <Button Text="选择" Click="Select(item.ID)"/>
+              <Text Value="{item.Title}" Width="Fill"/>
+              <Button Text="删除" Click="Remove(item.ID)"/>
+            </Row>
+          </For>
+        </Then>
+        <Else>
+          <Text Value="（列表为空，先点新增）"/>
+        </Else>
+      </If>
+      <Text Value="{Selection}"/>
+      <!-- 脏标记是**派生量**：文本在处理器里准备好（两态都写在 DirtyText 里），
+           这里不再加 If/Else——条件显示在本页已由 HasItems/HasSelection/HasStatus 演示。 -->
+      <Text Value="{DirtyText}"/>
+      <Input Value="{Draft}" Hint="选中一行后编辑，回车保存" ValueChanged="OnDraftChanged" Submit="SaveSubmit"/>
+      <If Condition="{HasSelection}">
+        <Then>
+          <Button Text="保存" Click="Save"/>
+        </Then>
+        <Else>
+          <Text Value="（未选择）"/>
+        </Else>
+      </If>
+      <Button Text="新增" Click="Add"/>
+      <If Condition="{HasStatus}">
+        <Then>
+          <Text Value="{Status}"/>
+          <Button Text="清除提示" Click="ClearStatus"/>
+        </Then>
+        <Else>
+          <Text Value="（无提示）"/>
+        </Else>
+      </If>
+    </Column>
+  </Page>
+</Goxml>

@@ -76,6 +76,19 @@ type resolvedInput struct {
 	// sourceRel / outputRel 是项目相对路径（`/` 分隔），用于键与输出。
 	sourceRel string
 	outputRel string
+	// PRODUCT-R5-B：依赖闭包指纹（K8）需要的三项上下文。
+	moduleRoot string
+	sourceDir  string
+	modulePath string
+	// goExe 是 Go 可执行路径（-GoExe 或默认 "go"），用于测量有效构建上下文。
+	goExe string
+
+	// PRODUCT-R5-B 非作者审修（片1）：真实有效构建上下文（K10）与保守标记。
+	// dependencyUnsafe 为真表示「依赖闭包或构建上下文不可完整/可靠测量」——
+	// 此时必须保守 miss（走正常 Analyzer），绝不用可能不完整的键假命中。
+	cacheContext      string // go env 实测的有效上下文（确定性 JSON）
+	cacheContextReady bool   // 是否已在本批测量并填入 cacheContext
+	dependencyUnsafe  bool   // 依赖/上下文不可测 -> 强制 miss
 }
 
 // resolveInput 解析一个输入，不触碰磁盘写入。
@@ -140,10 +153,17 @@ func resolveInput(in discovered, moduleRoot, outRoot string) (*resolvedInput, er
 		return nil, err
 	}
 
+	modPath, mpErr := readModulePath(moduleRoot)
+	if mpErr != nil {
+		return nil, fmt.Errorf("解析模块路径: %w", mpErr)
+	}
 	return &resolvedInput{
 		in:         in,
 		pkgName:    pkgName,
 		srcPkgName: srcPkgName,
+		moduleRoot: moduleRoot,
+		sourceDir:  in.sourceDir,
+		modulePath: modPath,
 		source:     src,
 		sourceHash: inputHashOf(src),
 		targetDir:  targetDir,
@@ -204,15 +224,37 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// K8（PRODUCT-R5-B）：源 VM 类型所在包及其本模块传递闭包的指纹。
+	// 跨包输出时 K3 只看目标包，源 VM 变化不可见——假命中的根因。
+	// 非作者审修：依赖收集失败不能直接返回错误（会让整个 generate 失败），
+	// 而是标记 dependencyUnsafe，由 decideCacheHit 保守 miss，让正常 Analyzer 兜底。
+	deps, err := collectDependencySources(r, r.modulePath, exclude)
+	if err != nil {
+		r.dependencyUnsafe = true
+		deps = nil
+	}
+	// K10（非作者审修）：真实有效构建上下文。优先用本批已测量的 cacheContext；
+	// 未就绪则现场测量（单源调用路径）；测量失败标 dependencyUnsafe 保守 miss。
+	buildCtx := r.cacheContext
+	if !r.cacheContextReady {
+		measured, mErr := measuredCacheContext(r.goExe, r.moduleRoot)
+		if mErr != nil {
+			r.dependencyUnsafe = true
+		} else {
+			buildCtx = measured
+		}
+	}
 	return cacheKey(cacheKeyInput{
-		SourceRel:       r.sourceRel,
-		OutputRel:       r.outputRel,
-		SourcePath:      r.sourcePath,
-		SourceHash:      r.sourceHash,
-		PackageName:     r.pkgName,
-		BuildFlags:      os.Getenv("GOFLAGS"),
-		CompilerVersion: codegen.GoxmlVersion,
-		PackageSources:  sources,
+		SourceRel:         r.sourceRel,
+		OutputRel:         r.outputRel,
+		SourcePath:        r.sourcePath,
+		SourceHash:        r.sourceHash,
+		PackageName:       r.pkgName,
+		BuildFlags:        os.Getenv("GOFLAGS"),
+		CompilerVersion:   codegen.GoxmlVersion,
+		PackageSources:    sources,
+		DependencySources: deps,
+		BuildContext:      buildCtx,
 	})
 }
 
@@ -310,6 +352,11 @@ func decideCacheHit(moduleRoot string, r *resolvedInput, key string, man *manife
 
 	if noCache {
 		return false, reasonBypassed, nil
+	}
+	// Unknown dependencies never authorize reuse. Explicit --no-cache already
+	// bypasses reuse and retains its existing silent-bypass reason.
+	if r.dependencyUnsafe {
+		return false, reasonPackageSourcesChanged, nil
 	}
 
 	// H1：Manifest 登记必须与本次一致。

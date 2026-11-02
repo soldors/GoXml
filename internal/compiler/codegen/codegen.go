@@ -598,38 +598,45 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		//
 		// 绑定判定与「是否占槽」走**同一条规则** textBindSlot（slots.go），
 		// 预检的 CountBindSlots 用的也是它——不允许在这里另写一份条件。
+		var inner string
 		if ra, isBinding, takesSlot := textBindSlot(n, g.facts, g.inFor); isBinding {
 			expr, err := bindingExpr(ra, "v.vm")
 			if err != nil {
 				return "", err
 			}
 			g.usesVM = true
-			// 循环体内**不**分配显示缓存槽位：槽位按节点分配，
-			// N 行复用同一槽位会在同一帧内互相覆写，命中率恒为 0
-			// （<For> 列表契约 §6.2）。直接布局。
 			if !takesSlot {
-				g.imports.add("gioui.org/widget/material", "material")
-				return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr), nil
+				inner = fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr)
+			} else {
+				// 分配显示缓存槽位；闭包内通过 v.n<i> 读写缓存。
+				slot := g.bindSlots
+				g.bindSlots++
+				inner = fmt.Sprintf("v.bindText(gtx, th, %d, %s)", slot, expr)
 			}
-			// 分配显示缓存槽位；闭包内通过 v.n<i> 读写缓存。
-			slot := g.bindSlots
-			g.bindSlots++
-			return fmt.Sprintf(
-				"v.bindText(gtx, th, %d, %s)", slot, expr), nil
+		} else {
+			value, ok := staticAttr(n, "Value")
+			if !ok {
+				return "", fmt.Errorf(
+					"codegen: <Text> needs a static Value; data binding is not supported in this slice")
+			}
+			inner = fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value))
 		}
-
-		value, ok := staticAttr(n, "Value")
-		if !ok {
-			return "", fmt.Errorf(
-				"codegen: <Text> needs a static Value; data binding is not supported in this slice")
-		}
-		return fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value)), nil
+		// 叶子装饰（Padding 子集）：静态 Padding 包 layout.Inset。
+		return leafDecorationExpr(n, g.imports, inner), nil
 
 	case "Button":
-		return g.buttonExpr(n)
+		inner, err := g.buttonExpr(n)
+		if err != nil {
+			return "", err
+		}
+		return leafDecorationExpr(n, g.imports, inner), nil
 
 	case "Input":
-		return g.inputExpr(n)
+		inner, err := g.inputExpr(n)
+		if err != nil {
+			return "", err
+		}
+		return leafDecorationExpr(n, g.imports, inner), nil
 
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
@@ -637,18 +644,30 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return g.containerExpr(n.Children, false, "gtx", fields)
+		inner, err := g.containerExpr(n.Children, false, "gtx", fields)
+		if err != nil {
+			return "", err
+		}
+		return paddingInsetExpr(n, g.imports, inner), nil
 
 	case "Row":
 		fields, err := flexFieldsExpr(n.Tag, n)
 		if err != nil {
 			return "", err
 		}
-		return g.containerExpr(n.Children, true, "gtx", fields)
+		inner, err := g.containerExpr(n.Children, true, "gtx", fields)
+		if err != nil {
+			return "", err
+		}
+		return paddingInsetExpr(n, g.imports, inner), nil
 
 	case "Grid":
 		// 列定义见 Contracts.GridColumn；生成形态与规范推演见 grid.go 文件头。
-		return g.gridExpr(n)
+		inner, err := g.gridExpr(n)
+		if err != nil {
+			return "", err
+		}
+		return paddingInsetExpr(n, g.imports, inner), nil
 
 	case "Spacer":
 		return g.spacerExpr(n)

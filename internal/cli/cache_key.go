@@ -30,7 +30,15 @@ import (
 //
 // 键的构成本身变化（增减分量、改变规范化方式）必须提升它，
 // 否则旧缓存会被新算法当成命中——这正是「版本演进边界」要防的事。
-const cacheFormatVersion = 2
+//
+// v3（PRODUCT-R5-B）：新增 K8 依赖闭包指纹（DependencySources）——
+// 跨包输出的源 VM 包及其本模块传递闭包此前完全不在键内，改坏源 VM
+// 会假命中（实测 repro-b1）。v2 旧记录因键变化自然失效（安全 miss），
+// 无需迁移。
+//
+// v4（R5-FOLLOWUP-B 非作者审修）：K10 构建上下文从 os.Getenv 改为 go env 实测
+// 的**真实有效上下文**（含 GOENV 持久化值），键含义变化 -> 升版使旧记录安全 miss。
+const cacheFormatVersion = 4
 
 // cacheKeyInput 是缓存键的全部输入，均为**已解析的纯数据**。
 //
@@ -62,6 +70,18 @@ type cacheKeyInput struct {
 	// PackageSources 是目标包的相关 Go 源码指纹，即 K3。
 	// 顺序不敏感：cacheKey 内部排序后写入。
 	PackageSources []cachePackageSource
+
+	// DependencySources 是源 VM 类型所在包及其本模块传递闭包的源码指纹，
+	// 加模块身份（go.mod/go.sum），即 K8（PRODUCT-R5-B 新增）。
+	// 跨包输出时源 VM 不在目标包内，K3 看不见它的变化——没有 K8 就会假命中。
+	// 顺序不敏感：cacheKey 内部排序后写入。
+	DependencySources []cachePackageSource
+
+	// BuildContext 是有效构建上下文（GOOS/GOARCH/CGO_ENABLED 的取值，
+	// 空串=宿主默认），即 K10（PRODUCT-R5-B 切片 B3）。
+	// go list 对同一包目录的选择文件随这三项变化（build 标签）——
+	// 键不含它们时，跨上下文的类型/文件选择变化会被旧记录假命中。
+	BuildContext string
 }
 
 // cachePackageSource 是一个参与 K3 的 Go 源文件指纹。
@@ -111,6 +131,19 @@ func cacheKey(in cacheKeyInput) (string, error) {
 		writeKeyField(h, "packageSourceRel", s.Rel)
 		writeKeyField(h, "packageSourceHash", s.Hash)
 	}
+
+	// K8 依赖闭包（PRODUCT-R5-B）：与 K3 同构写入（数量 + 逐条）。
+	deps := make([]cachePackageSource, len(in.DependencySources))
+	copy(deps, in.DependencySources)
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Rel < deps[j].Rel })
+	writeKeyField(h, "dependencySourceCount", strconv.Itoa(len(deps)))
+	for _, s := range deps {
+		writeKeyField(h, "dependencySourceRel", s.Rel)
+		writeKeyField(h, "dependencySourceHash", s.Hash)
+	}
+	// K10 构建上下文（切片 B3）：GOOS/GOARCH/CGO_ENABLED 影响包内文件选择
+	// 与类型口径（build 标签），入键防跨上下文假命中。
+	writeKeyField(h, "buildContext", in.BuildContext)
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -151,6 +184,14 @@ func validateKeyInput(in cacheKeyInput) error {
 	}
 	if in.CompilerVersion == "" {
 		return fmt.Errorf("cacheKey: CompilerVersion 为空（K4 缺失会让生成逻辑变化后仍命中）")
+	}
+	for _, s := range in.DependencySources {
+		if s.Rel == "" || s.Hash == "" {
+			return fmt.Errorf("cacheKey: 依赖闭包条目 Rel/Hash 为空")
+		}
+		if err := validateRelativePath("DependencySources.Rel", s.Rel); err != nil {
+			return err
+		}
 	}
 	for _, s := range in.PackageSources {
 		if s.Rel == "" {
