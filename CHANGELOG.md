@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- R6：按负责人裁决，Text/Button/Input静态Background覆盖含Padding外框，维持内容内缩和事件命中；内部缓存升5以失效旧的背景缺失生成物。Input新同步算法未合入。
+
 - R5: 接通容器与叶子静态Padding；缓存纳入跨包依赖与有效Go上下文，不可靠依赖保守miss；清理保留多cause与部分失败事实；新增可编辑工作台教程、真实离屏事件流与输入同步有界观察。Background区域与输入回调语义不在本次变更中，详见`docs/05-开发/dev-log/2026-11-02-r5-closeout.md`。
 
 - R4: 修复跨包输出的目标包与 ViewModel 引用、Def/Slot 展开绑定切片隔离；新增 forms 输入/提交教程与可构建验证入口。独立复审与正式接纳状态见 `docs/05-开发/dev-log/2026-11-01-r4-closeout.md`。

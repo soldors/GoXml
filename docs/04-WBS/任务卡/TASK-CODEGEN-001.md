@@ -11,6 +11,10 @@
 
 本轮接通Row/Column/Grid、Text/Button/Input的静态Padding，按已解析EdgeInsets生成Inset；零Padding不新增包装。Background覆盖区域未获裁决，候选隔离；Page既有规则、ThemeRef、Expanded与其它候选不变。真实离屏事件/几何、稳定帧守卫与组合边界见[R5验证记录](../../06-测试/2026-11-02-R5组合验证.md)。这是局部实现接纳，不升级本卡完整验收或性能达标。
 
+## 2026-11-02 R6 Background 裁决补充
+
+负责人选择B：背景包含Padding外框。当前接通Text/Button/Input静态颜色，内容保持内缩、绘制不扩大事件命中，精确alpha与跨帧/邻居状态另有回归；容器/Page背景、ThemeRef未搭车。不是本卡完整验收或原生/性能验收，Input新算法仍隔离。
+
 ## 1. 目标
 
 把 Expander 输出的 `DocumentIR` 翻译为**可直接编译的 Go 源码**，调用 Gio 的

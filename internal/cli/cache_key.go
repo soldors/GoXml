@@ -38,7 +38,9 @@ import (
 //
 // v4（R5-FOLLOWUP-B 非作者审修）：K10 构建上下文从 os.Getenv 改为 go env 实测
 // 的**真实有效上下文**（含 GOENV 持久化值），键含义变化 -> 升版使旧记录安全 miss。
-const cacheFormatVersion = 4
+// v5（R6 Background）：新生成器开始绘制叶子静态背景，拒绝复用旧版忽略背景的产物。
+// GXML语言版本仍为1，只有内部缓存标识演进。
+const cacheFormatVersion = 5
 
 // cacheKeyInput 是缓存键的全部输入，均为**已解析的纯数据**。
 //
