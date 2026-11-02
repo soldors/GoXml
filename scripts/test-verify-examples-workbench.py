@@ -37,6 +37,15 @@ def load_lock_helper(repo):
     return mod, path
 
 
+def load_selcase(repo):
+    """从**被测树**加载单 case 执行器：测试的就是这棵树里的实现。"""
+    path = os.path.join(repo, 'scripts', 'verify_examples_selcase.py')
+    spec = importlib.util.spec_from_file_location('verify_examples_selcase', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def decode_console(raw):
     """PS 5.1 重定向出来的控制台是 GBK，不是 UTF-8（踩坑-PORTABLE-WORKBUDDY-01）。
 
@@ -65,11 +74,29 @@ def main():
     ap.add_argument('--go-exe', default='C:\\Program Files\\Go\\bin\\go.exe')
     ap.add_argument('--agent', default='workbuddy-r5c')
     ap.add_argument('--task', default='R5-C workbench selector')
+    # R6-C：raw 落到独立日志目录；默认放在 --out 同级的 raw/<runId>，绝不覆盖历史。
+    ap.add_argument('--log-dir', default='')
+    ap.add_argument('--containment', default='win-job', choices=['win-job', 'auto', 'none'])
+    ap.add_argument('--keep-output', action='store_true', help='保留本次构建输出根（默认只留日志）')
+    ap.add_argument('--case-timeout', type=float, default=1800.0,
+                    help='单个 case 的有界超时（秒）；<=0 会在启动前被拒绝')
+    # 仅用于验证"上层是否真的消费故障"；正常门禁保持 none。
+    ap.add_argument('--inject-fault', default='none',
+                    choices=['none', 'assign-fail', 'terminate-fail'])
+    ap.add_argument('--ps-exe', default='',
+                    help='PowerShell 宿主；默认 5.1（系统 powershell），可传 7.x 的 pwsh 验证')
     args = ap.parse_args()
+
+    if os.path.lexists(os.path.abspath(args.out)):
+        print('报告路径已存在，拒绝覆盖: %s' % os.path.abspath(args.out))
+        return 2
 
     repo = os.path.abspath(args.repo)
     script = os.path.join(repo, 'scripts', 'verify-examples.ps1')
-    ps = shutil.which('powershell.exe')
+    ps = args.ps_exe or shutil.which('powershell.exe')
+    if ps and not (os.path.isfile(ps) or shutil.which(ps)):
+        print('指定的 PowerShell 宿主不存在: %s' % ps)
+        return 2
     if not ps:
         print('找不到 powershell.exe')
         return 2
@@ -78,9 +105,15 @@ def main():
         return 2
 
     lockmod, locksrc = load_lock_helper(repo)
+    selcase = load_selcase(repo)
     run_id = 'workbench-selector-' + time.strftime('%Y%m%d-%H%M%S') + '-p' + str(os.getpid())
+    out_abs = os.path.abspath(args.out)
+    log_dir = (os.path.abspath(args.log_dir) if args.log_dir
+               else os.path.join(os.path.dirname(out_abs), 'raw', run_id))
     report = {'runId': run_id, 'repo': repo, 'script': script, 'host': ps,
-              'lockImpl': locksrc, 'started': utc(), 'criteria': []}
+              'lockImpl': locksrc, 'selcaseImpl': os.path.join(repo, 'scripts',
+                                                              'verify_examples_selcase.py'),
+              'started': utc(), 'criteria': []}
 
     lock = lockmod.Lock(args.lock_path)
     try:
@@ -94,49 +127,23 @@ def main():
 
     ok = False
     try:
+        runner = selcase.Runner(repo=repo, ps=ps, script=script, log_dir=log_dir,
+                                python_exe=args.python_exe, go_exe=args.go_exe,
+                                containment=args.containment, keep_output=args.keep_output,
+                                case_timeout=args.case_timeout,
+                                fault=(None if args.inject_fault == 'none'
+                                       else {args.inject_fault.replace('-', '_'): True}))
+        report['logDir'] = log_dir
+        report['containment'] = args.containment
+        report['host'] = ps
+        report['caseTimeoutSec'] = args.case_timeout
+        report['injectedFault'] = args.inject_fault
+        report['containmentAvailable'] = runner.proc.tree_available()
+
         def run_case(cid, expect_rc, extra):
-            # 输出根必须**不存在**：脚本对已有目录（含空目录）一律 rc 5。
-            base = tempfile.mkdtemp(prefix='goxml-workbench-sel-' + cid + '-')
-            out_root = os.path.join(base, cid)
-            argv = [ps, '-NoProfile', '-File', script,
-                    '-RepoRoot', repo, '-OutputRoot', out_root, '-SkipLock',
-                    '-PythonExe', args.python_exe, '-GoExe', args.go_exe] + extra
-            t0 = time.time()
-            try:
-                p = subprocess.run(argv, cwd=repo, timeout=1800,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                rc, so, se = p.returncode, p.stdout, p.stderr
-            except subprocess.TimeoutExpired as exc:
-                rc, so, se = 8, (exc.stdout or b''), (exc.stderr or b'')
-            elapsed = round(time.time() - t0, 2)
-            text, enc = decode_console((so or b'') + (se or b''))
-            kids = sorted(os.listdir(out_root)) if os.path.isdir(out_root) else []
-            # 示例子目录：排除脚本自己的 bin/ 与根层的 marker/日志/入口产物。
-            exdirs = sorted(d for d in kids
-                            if os.path.isdir(os.path.join(out_root, d)) and d != 'bin')
-            # 产物名不按目录名推导：starter 的页面是 home.gxml（生成 home_gen.go），
-            # 窗口入口则是根层的 <示例>-entry.exe。
-            entry = {}
-            for name in exdirs:
-                pth = os.path.join(out_root, name)
-                gens = [f for f in os.listdir(pth) if f.endswith('_gen.go')] if os.path.isdir(pth) else []
-                gen = os.path.join(pth, gens[0]) if gens else ''
-                exe = os.path.join(out_root, name + '-entry.exe')
-                entry[name] = {
-                    'genFiles': gens,
-                    'genBytes': os.path.getsize(gen) if gen and os.path.isfile(gen) else 0,
-                    'entryExists': os.path.isfile(exe),
-                    'entryBytes': os.path.getsize(exe) if os.path.isfile(exe) else 0,
-                }
-            row = {'id': cid, 'argv': argv, 'rc': rc, 'expectRc': expect_rc,
-                   'elapsedSec': elapsed, 'stdoutEncoding': enc,
-                   'outputRootEntries': kids, 'exampleDirs': exdirs, 'perExample': entry,
-                   'outTail': text[-1200:]}
+            row = runner.run_case(cid, extra)
+            row['expectRc'] = expect_rc
             report['criteria'].append(row)
-            try:
-                shutil.rmtree(base, ignore_errors=True)
-            except OSError:
-                pass
             return row
 
         ok = True
@@ -151,7 +158,8 @@ def main():
 
         # W2 all：四个都在，且各自都有生成物与入口产物
         r = run_case('W2', 0, ['-Example', 'all'])
-        r['pass'] = (r['rc'] == 0 and r['exampleDirs'] == ['forms', 'starter', 'tasks', 'workbench']
+        r['pass'] = (r['rc'] == 0
+                     and r['exampleDirs'] == ['forms', 'starter', 'tasks', 'workbench']
                      and all(r['perExample'].get(n, {}).get('genBytes', 0) > 0
                              and r['perExample'].get(n, {}).get('entryBytes', 0) > 0
                              for n in ('forms', 'starter', 'tasks', 'workbench')))
@@ -159,7 +167,8 @@ def main():
 
         # W3 未知示例：rc 2 且列出 workbench
         r = run_case('W3', 2, ['-Example', 'bogus'])
-        r['pass'] = (r['rc'] == 2 and ('未知示例' in r['outTail']) and ('workbench' in r['outTail']))
+        r['pass'] = (r['rc'] == 2
+                     and ('未知示例' in r['outTail']) and ('workbench' in r['outTail']))
         ok = ok and r['pass']
 
         # W4 源材料缺失：rc 7
@@ -181,6 +190,13 @@ def main():
         ok = ok and r['pass']
         shutil.rmtree(good, ignore_errors=True)
 
+        # 基础设施门**只在这里**施加一次：业务判据先算出来，再与 infraOk 合成。
+        report['infraFailures'] = [c['id'] for c in report['criteria'] if not c['infraOk']]
+        for c in report['criteria']:
+            c['businessPass'] = c['pass']
+            c['pass'] = selcase.case_passed(c, c['pass'])
+            if not c['pass']:
+                ok = False
         report['status'] = 'PASS' if ok else 'FAIL'
         report['ended'] = utc()
 
@@ -205,7 +221,7 @@ def main():
     report['ended'] = utc()
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, 'w', encoding='utf-8', newline='\n') as f:
+    with open(out_path, 'x', encoding='utf-8', newline='\n') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     print(json.dumps({c['id']: ('PASS' if c['pass'] else 'FAIL') + ' rc=%s' % c['rc']
                       for c in report['criteria']}, ensure_ascii=False))

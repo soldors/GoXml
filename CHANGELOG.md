@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - R4: 修复跨包输出的目标包与 ViewModel 引用、Def/Slot 展开绑定切片隔离；新增 forms 输入/提交教程与可构建验证入口。独立复审与正式接纳状态见 `docs/05-开发/dev-log/2026-11-01-r4-closeout.md`。
 
 ### Documentation and examples
+- 示例选择器保留每例完整 stdout/stderr 原始字节、SHA 和实际退出/清理记录；Windows Job 收口覆盖父退子活与超时，基础设施异常不算业务通过；已有报告拒绝覆盖。
 - 示例验证工具随仓提供标准库锁助手，支持显式公共锁、每次调用独立身份、输出根独占认领及失败时继续释放锁；PS5.1/PS7 参数传递与 tasks 构建已实测。
 - 新增可构建CLI入门工程与同源自动验证，覆盖重复生成、错误不覆盖旧文件、实际生成代码及窗口入口编译；更新文档/目录现状和并行开发流程。
 
