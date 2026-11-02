@@ -22,7 +22,7 @@ import (
 // 与 TestFormsProject / TestWorkbenchProject 的差异（刻意不重复）：
 //   - 两条**互相独立**的草稿：改名称不动端口、改端口不动名称，各自的 MaxLen / Filter 分别生效；
 //   - 提交是**两段**的：先过校验进审阅，再确认才写已保存值；校验失败既不进审阅也不提交；
-//   - 只读 <Input> 接了 ValueChanged，用它证明「值没变」来自 ReadOnly，而不是没接线；
+//   - 只读框的事件生成接线必须存在；程序化通知静默，真实编辑不改值；
 //   - 名称框声明了 Submit（回车可进审阅），端口框没有——回车在端口框必须什么也不做；
 //   - 另加一条编译期负例：<Input MaxLen="-1"> 必须被拒绝。
 //
@@ -107,6 +107,10 @@ func TestPreferencesProject(t *testing.T) {
 		t.Fatal("Manifest 未生成")
 	}
 	t.Logf("OBS preferences_gen.go %d 字节，sha256=%s", len(first), sha(first))
+	// 接线正证据独立于回显次数；同页Name输入的真实Edit另证Router→处理器通路。
+	if !bytes.Contains(first, []byte("v.vm.OnConfirmChanged(ed.Text())")) {
+		t.Fatal("只读确认框必须保留ValueChanged生成接线，不能把无回调误当ReadOnly有效")
+	}
 
 	// G2 输入未变时的缓存命中：字节相同**且 mtime 不变**（确实没重写）。
 	generate(cli.ExitOK)
@@ -648,18 +652,16 @@ func TestPrefSemPortFilterDropsNonDigits(t *testing.T) {
 	t.Logf("OBS Filter：插入 'a' 被丢弃（Port 仍 %q），再插入 '9' 后 Port=%q", portBefore, h.vm.Port)
 }
 
-// TestPrefSemReadOnlyConfirmIgnoresRealEdit 只读确认框对真实 EditEvent 不改值。
-//
-// 它**接了** ValueChanged（ConfirmChanges 基线 >= 1 就是接线证据：首帧外部值应用
-// 经 SetText 触发了一次 ChangeEvent），所以"值没变"只能归因于 ReadOnly。
+// TestPrefSemReadOnlyConfirmIgnoresRealEdit：程序化应用静默，真实Edit被只读拒绝。
+// 外层另断言生成代码确有OnConfirmChanged(ed.Text())接线；同页可编辑输入
+// 的真实Edit在TestPrefSemTwoDraftsIndependent中必须使NameChanges精确+1。
 func TestPrefSemReadOnlyConfirmIgnoresRealEdit(t *testing.T) {
 	h := newFocused(t, 2, nil)
 	if !h.v.input2.ReadOnly {
 		t.Fatal("生成物应透传 ReadOnly=true")
 	}
-	if h.vm.ConfirmChanges < 1 {
-		t.Fatalf("只读框的 ValueChanged 没有被调用过（ConfirmChanges=%d）——无法区分"+
-			"「ReadOnly 生效」与「压根没接线」", h.vm.ConfirmChanges)
+	if h.vm.ConfirmChanges != 0 {
+		t.Fatalf("只读框程序化应用应静默，ConfirmChanges=%d", h.vm.ConfirmChanges)
 	}
 	before := h.vm.ConfirmChanges
 	confirmBefore := h.vm.ConfirmText
@@ -680,7 +682,7 @@ func TestPrefSemReadOnlyConfirmIgnoresRealEdit(t *testing.T) {
 		t.Fatalf("下一帧仍不应有任何变化: changes=%d editor=%q", h.vm.ConfirmChanges, h.v.input2.Text())
 	}
 	checkFrames(t, h, "只读不改值")
-	t.Logf("OBS 只读：ReadOnly=true，接线证据 ConfirmChanges=%d，EditEvent 后仍 %d，文本 %q",
+	t.Logf("OBS 只读：ReadOnly=true，程序化静默 ConfirmChanges=%d，EditEvent 后仍 %d，文本 %q",
 		before, h.vm.ConfirmChanges, h.v.input2.Text())
 }
 

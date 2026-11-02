@@ -1,7 +1,7 @@
 # Input 输出契约
 
 - 版本：**v1（冻结）**
-- 冻结日期：2026-10-20
+- 冻结日期：2026-10-20；同步规则修订：2026-11-02（负责人明确批准用户编辑优先完整方案）
 - 状态：**契约 v1 已冻结**——冻结范围见 §10。Schema/Analyzer/Codegen 已实现，
   已有自动化验证；D5-F 原生窗口/真实焦点/IME 人工验收未完成，不得据此标记正式验收通过。
   实现与验收范围以 [TASK-INPUT-001](../04-WBS/任务卡/TASK-INPUT-001.md) 为准。
@@ -153,52 +153,45 @@ Expander 的分类器按固定顺序判定：
 |---|---|---|---|
 | `E` | Editor 当前文本 | `widget.Editor` | 用户实际看到的文本（含未回写的编辑） |
 | `V` | 绑定值 | ViewModel 侧 | `Value="{Path}"` 在本帧的求值结果 |
-| `A` | `lastApplied` | View（每个 Input 一个字段） | 最近一次**外部应用**到 Editor 的文本 |
+| `A` | `lastApplied` | View（每个 Input 一个字段） | 同步镜像：外部应用后为原始V，处理器后为事件后Editor文本 |
 
-### 5.2 两条**不同**的 `A` 更新路径（必须区分，不得合并）
+### 5.2 两条 A 更新路径（2026-11-02 负责人批准）
 
-| 路径 | 触发 | 更新为什么 | 说明 |
-|---|---|---|---|
-| **路径 1：外部应用** | 渲染时 `V != A` → `SetText(V)` **成功之后** | `A = V` | 只有 SetText 成功才更新；失败则 `A` 不变 |
-| **路径 2：用户回写** | `ChangeEvent`/`SubmitEvent` 调用处理器**之后** | **重新求值 `V`**，然后 `A = V` | 不能用回写方法的实参 |
+路径1：事件循环结束后求值 V；若 V != A，则 SetText(V) 成功后 A=V。
+路径2：真实 Change/Submit 处理器执行后，A=Editor.Text()（事件后的实际编辑器文本）。
+不可使用用户企图输入的原始实参替代编辑器实际文本；MaxLen/Filter 可能已投影。
+处理器若把模型归一化或不回写 Value，事件处理末尾的路径1让显示追随模型。
+模型不可表示时 A 保存原始 V，Editor 显示 Gio 的可表示投影，quiet 帧不反复追赶。
 
-**为什么路径 2 不能直接用实参**（反例，MaxLen 截断）：
-
-```text
-MaxLen=5，A="abcde"，E="abcde"（已达上限）
-用户输入第 6 个字符 → Gio 先截断 → E 仍为 "abcde"，不产生 ChangeEvent
-若此时若因其它原因产生回写且把实参（"abcdeX"）当作 A：
-  外部值 V="abcde" != A="abcdeX" → 触发 SetText → 光标被打回开头
-```
-
-实参是"用户想输入的"，`E` 才是"实际进入 Editor 的"。`A` 必须与 `E`
-保持"最近一次外部应用"的关系，因此路径 2 只能重求值 `V`。
-
-### 5.3 逐帧执行顺序（固定，不可调换）
+### 5.3 逐帧执行顺序（固定）
 
 ```text
 渲染到该 Input 时：
-  ① V = 求值 Value 绑定
-  ② if V != A {
-         Editor.SetText(V)     // 外部应用
-         A = V                 // 路径 1：仅成功之后
-     }
-  ③ Editor.Update(gtx)        // 控件自持事件消费（见 §6）
-  ④ 布局 material.Editor(...).Layout(gtx)
-  ⑤ 消费事件：
-       ChangeEvent 且声明了 ValueChanged → v.vm.M(Editor.Text())
-                                           → 重求值 V；A = V   // 路径 2
-       SubmitEvent 且声明了 Submit       → v.vm.S(SubmitEvent.Text)
-                                           → 重求值 V；A = V   // 路径 2
+  ① 循环 Editor.Update(gtx) 至无事件
+  ② ChangeEvent 且声明 ValueChanged → M(Editor.Text())；A=Editor.Text()
+     SubmitEvent 且声明 Submit → S(SubmitEvent.Text)；A=Editor.Text()
+  ③ 求值 V；若 V != A：Editor.SetText(V)；成功后 A=V
+  ④ material.Editor(...).Layout(gtx)
 ```
 
-### 5.4 同帧冲突（显式规则）
+Gio v0.10.3 的 Editor.Layout 内部排空③产生的程序化回显；初始/外部应用
+**不触发 ValueChanged**，ReadOnly/Disabled 也保持静默。升级 Gio 须复核该行为。
+不以文本相等推断事件来源，不使用跨帧门控，不丢弃整帧真实事件。
 
-- ② 在 ⑤ 之前：**外部值先应用，事件后消费**。
-- 若同帧内既有外部值变化、又有用户输入：**外部值覆盖本地编辑**（②先执行）。
-  用户那一刻的输入会丢失。这是 v1 的**已知且接受**的行为——
-  v1 不做编辑冲突合并、不做延迟同步。实现不得"改进"为保留本地编辑。
-- 该行为必须有回归测试（见 §9 场景 6）。
+### 5.4 同帧冲突、提交时点与多控件收敛
+
+同帧外部值变化和真实用户编辑冲突时，**用户编辑优先**。例如已有 OLD，
+外部改 NEW 并队列插入 X，恒等处理器得到 XOLD；外部 NEW 可被覆盖。
+处理器归一化后，本次 Layout 事件消费之后、Gio 布局之前显示追随模型；
+SetText 可能复位光标。原生 IME/物理焦点仍须人工验收。
+
+Submit 载荷为确认事件产生时的编辑器原文，不保证等于帧末归一化模型：
+同帧 Edit abc + UpperText + Return 时 payload=abc，而帧末 E/V=ABC；
+下一帧再 Return 则可提交 ABC。
+
+共享字段的 Input 按布局顺序处理：后渲染控件改变模型时，先渲染控件在
+下一帧收敛；不保证每帧末所有 Editor==V。稳定模型在下一帧逐控件收敛。
+无 ValueChanged 处理器时，用户未回写的 draft 保留；它不属于投影例外。
 
 ### 5.5 光标/选区/IME 保留（显式规则）
 
@@ -209,7 +202,7 @@ MaxLen=5，A="abcde"，E="abcde"（已达上限）
 
 ### 5.6 非受控形态
 
-未声明 `Value` 时：`V` 视为不存在，§5.3 的 ①② 跳过；Editor 自持文本。
+未声明 `Value` 时：`V` 视为不存在，§5.3 的③跳过；Editor 自持文本。
 此时 `A` 不参与；回写事件仍可声明（值由 `Editor.Text()` 取得）。
 
 ---
@@ -291,11 +284,11 @@ Codegen 对 `<Input>` 的既有拒绝（default 分支）**保留为防御层**�
 | # | 场景 | 期望 | 层级 |
 |---|---|---|---|
 | 1 | 初始外部值 `"x"` | `SetText("x")`，`A="x"` | 状态机 |
-| 2 | 用户输入 `"xy"`（声明 ValueChanged） | `M("xy")` 调用；重求值后 `A=V` | 状态机 |
+| 2 | 用户输入 `"xy"`（声明 ValueChanged） | `M("xy")` 调用；事件后 `A=E`，布局末尾按需追随模型 | 状态机 |
 | 3 | 回写后的下一帧（`V` 已等于 `E`） | **不 SetText**（光标保留） | 状态机 |
 | 4 | 外部改值 `V="z"` | `SetText("z")`，`A="z"` | 状态机 |
 | 5 | 外部改回 `V="xy"` | `SetText("xy")`，`A="xy"` | 状态机 |
-| 6 | 同帧外部改值 + 用户输入 | 外部覆盖本地；不崩溃 | 状态机 |
+| 6 | 同帧外部改值 + 用户输入 | 用户编辑优先；显示/模型按处理器结果收敛 | 状态机 |
 | 7 | MaxLen 截断（`MaxLen=3`，输入第 4 字符） | 无 ChangeEvent；`A` 不变 | 状态机 |
 | 8 | Filter 过滤（非法字符） | 无 ChangeEvent；`A` 不变 | 状态机 |
 | 9 | 只声明 `Submit`，回车 | `S(text)` 调用；无 ChangeEvent 回写 | 状态机 |

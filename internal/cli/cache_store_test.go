@@ -120,6 +120,21 @@ func TestCacheStoreVersionMismatchIsCorrupt(t *testing.T) {
 	}
 }
 
+// 旧v5即使出现在当前查找键下，也必须失效，不能沿用旧Input事件顺序。
+func TestCacheStorePreInputV5IsMiss(t *testing.T) {
+	root := cacheTestRoot(t)
+	key := cacheTestKey()
+	rec := mustSaveRecord(t, root, key)
+	rec.Version = 5
+	if err := saveCacheRecord(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	got, status, err := loadCacheRecord(root, key)
+	if err != nil || got != nil || status != cacheCorrupt {
+		t.Fatalf("旧v5不得命中: got=%v status=%v err=%v", got, status, err)
+	}
+}
+
 // TestCacheStoreKeyMismatchIsCorrupt：文件名与内容键不符 → 记录不属于本次输入。
 //
 // 构造方式：先以键 b 正常保存（文件名 b.json、内容 KeyHash=b），

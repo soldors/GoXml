@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- R8：新增随仓命令记录与只读证据核验，保留历史raw哈希及未知启动状态，普通错误也释放自有锁。按负责人批准更新Input：事件先行、程序化同步静默、用户编辑优先、显示追随归一化、Submit保留确认原文；内部缓存格式升6使旧算法产物失效。CPU特性/实验标签候选未合入。
+
 - R7：CLI包名选择统一消费Go有效GOENV/平台/tags；匹配源读取/解析失败不回退，合法go.work继续生成并保持缓存保守miss。新增preferences双字段设置、校验、审阅、提交/撤销同源工程及构建选择器；Input同步新候选仍隔离。
 
 - R6：按负责人裁决，Text/Button/Input静态Background覆盖含Padding外框，维持内容内缩和事件命中；内部缓存升5以失效旧的背景缺失生成物。Input新同步算法未合入。

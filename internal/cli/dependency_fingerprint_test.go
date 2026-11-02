@@ -177,11 +177,11 @@ func TestCacheKeyDependencySourcesChangeKey(t *testing.T) {
 	}
 }
 
-// 格式版本演进锚点：v5使R6静态背景生成行为升级后不复用旧v4产物。
-// v4仍是R5有效上下文升级的历史版本；语言版本没有改变。
+// v6失效旧v5 Input生成物；v5仍是R6静态背景升级的历史版本。
+// 本轮v6来自已批准Input规则，与未接纳CPU特性候选的v6原因不同。
 func TestFormatVersionEvolution(t *testing.T) {
-	if cacheFormatVersion != 5 {
-		t.Fatalf("Background生成升级应使用格式版本 5, got %d", cacheFormatVersion)
+	if cacheFormatVersion != 6 {
+		t.Fatalf("Input生成升级应使用格式版本 6, got %d", cacheFormatVersion)
 	}
 }
 

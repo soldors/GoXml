@@ -170,19 +170,9 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 		b.WriteString("\t\t\t\t" + s + "\n")
 	}
 
-	// ---- 外部值同步（契约 §5.3 步骤 ①②，路径 1）----
-	//
-	// 只有绑定形态才同步：V 来自 ViewModel，A 是上次应用值。
-	// 判据是 V != A（不是 V != ed.Text()）——后者会被用户回写触发重置。
-	// 临时变量名用 cur 而不是 v：生成的 View receiver 就叫 v，
-	// 用 `if v := ...` 会在条件右侧就遮蔽 receiver，且 v.applied0 编译失败。
-	if slot.valueExpr != "" {
-		idx := fmt.Sprint(slot.index)
-		b.WriteString("\t\t\t\tif cur := " + slot.valueExpr + "; cur != v.applied" + idx + " {\n")
-		b.WriteString("\t\t\t\t\ted.SetText(cur)\n")
-		b.WriteString("\t\t\t\t\tv.applied" + idx + " = cur\n")
-		b.WriteString("\t\t\t\t}\n")
-	}
+	// 负责人于2026-11-02批准事件先行：真实编辑优先于本帧外部应用。
+	// Gio v0.10.3 Editor.Layout 会排空末尾 SetText 的程序化回显；不加跨帧标志。
+	// 处理器后 A=Editor.Text()，末尾同步追随模型；Submit 保留确认事件原文。
 	if slot.change != "" || slot.submit != "" {
 		b.WriteString("\t\t\t\tfor {\n")
 		b.WriteString("\t\t\t\t\tev, ok := ed.Update(gtx)\n")
@@ -194,22 +184,40 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 		} else {
 			b.WriteString("\t\t\t\t\tswitch ev.(type) {\n")
 		}
-		// 路径 2（契约 §5.2）：处理器执行后**重新求值 V** 并令 A = V。
-		// 不能用事件实参——MaxLen 截断/Filter 过滤下实参 != 编辑器实际文本。
 		idx := fmt.Sprint(slot.index)
-		reapply := ""
+		// 路径 2（契约 §5.2）：A = 事件后编辑器实际文本。不能用事件实参
+		// （MaxLen 截断/Filter 过滤下实参 != 编辑器实际文本——§5.2 反例
+		// 仍然成立）；也不再重求值 V（那会让 A 跳到模型值、阻断本次布局末尾
+		// 的显示追随 SetText）。
+		reflectE := ""
 		if slot.valueExpr != "" {
-			reapply = "\n\t\t\t\t\t\tv.applied" + idx + " = " + slot.valueExpr
+			reflectE = "\n\t\t\t\t\t\tv.applied" + idx + " = ed.Text()"
 		}
 		if slot.change != "" {
 			b.WriteString("\t\t\t\t\tcase widget.ChangeEvent:\n")
-			b.WriteString("\t\t\t\t\t\t" + slot.change + reapply + "\n")
+			b.WriteString("\t\t\t\t\t\t" + slot.change + reflectE + "\n")
 		}
 		if slot.submit != "" {
 			b.WriteString("\t\t\t\t\tcase widget.SubmitEvent:\n")
-			b.WriteString("\t\t\t\t\t\t" + slot.submit + reapply + "\n")
+			b.WriteString("\t\t\t\t\t\t" + slot.submit + reflectE + "\n")
 		}
 		b.WriteString("\t\t\t\t\t}\n")
+		b.WriteString("\t\t\t\t}\n")
+	}
+
+	// ---- 外部值同步（路径 1；契约 §5.3：移到事件消费之后）----
+	//
+	// 只有绑定形态才同步：V 来自 ViewModel，A 是"编辑器内容已反映的值"。
+	// 判据仍是 V != A（不是 V != ed.Text()——那会逐帧分配且把用户未回写
+	// 的编辑当外部变化）。此时本帧用户事件已全部消费并派发，SetText 的
+	// 回显只会落到下方 material.Layout 的内部排空里。
+	// 临时变量名用 cur 而不是 v：生成的 View receiver 就叫 v，
+	// 用 `if v := ...` 会在条件右侧就遮蔽 receiver，且 v.applied0 编译失败。
+	if slot.valueExpr != "" {
+		idx := fmt.Sprint(slot.index)
+		b.WriteString("\t\t\t\tif cur := " + slot.valueExpr + "; cur != v.applied" + idx + " {\n")
+		b.WriteString("\t\t\t\t\ted.SetText(cur)\n")
+		b.WriteString("\t\t\t\t\tv.applied" + idx + " = cur\n")
 		b.WriteString("\t\t\t\t}\n")
 	}
 	b.WriteString(fmt.Sprintf("\t\t\t\treturn material.Editor(th, ed, %s).Layout(gtx)\n", slot.hint))

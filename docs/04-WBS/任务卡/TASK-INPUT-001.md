@@ -203,3 +203,9 @@ Expander 的分类顺序是固定的：
 | TestInputSchemaUnknownAttrStillRejected | 扩属性后未知名称仍拒绝（`Placeholder` 不是属性） |
 | **TestSubmitEventParsesAsEvent** | `Submit="OnSubmit"` 端到端走事件路径，且不出现在 Attrs |
 | TestInputAllPropsParse | 6 个属性全部被正确分类 |
+## 2026-11-02 R8 同步规则修订
+
+负责人批准用户编辑优先完整方案；正式算法以Input输出契约§5及ADR-0011修订为准。
+历史D4/候选277e6fd的全包rc1、10条旧断言红保留为当时规则差异证据；
+本轮在批准后同步旧断言并新增真实Router边界回归，最终结果见协调者R8接纳记录。
+D5-F人工验收保持未执行，未新增原生窗口/IME完成声明。

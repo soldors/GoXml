@@ -14,23 +14,10 @@ import (
 	"github.com/goxml/goxml/internal/cli"
 )
 
-// TestInputSyncWriteBackProbe 是 D-3 的**有界** headless 实验（见
-// docs/05-开发/2026-11-02-D3-输入同步有界实验观察.md）。
-//
-// 它只做观察，不改生产语义：fixture（页面 + ViewModel）与断言都放在本文件里，
-// 不新增 testdata 目录、不动 CLI / Codegen / runtime / contracts。
-//
-// 链路：真实 CLI 生成 → 独立 module 编译生成物 → 真实 input.Router 驱动帧，
-// 记录"外部改值 → 帧内 SetText → ChangeEvent → ValueChanged → 回写"的逐帧四元组
-// （编辑器文本 / 外部值 / applied 记账 / 回调次数），帧数硬上限 8。
-//
-// 结论口径（本测试只证明其中前两条，第三条靠人工产品流验收）：
-//   - 事件机制：外部应用**确实**会产生一次 ChangeEvent（带一次 ValueChanged）；
-//   - 可复现往复：生成代码在回调后把 applied 重贴到 vm，因此三种回写都在 2 帧内静默，
-//     包括故意非幂等的那种——本实验**没有**复现出往复；
-//   - 典型产品流："程序化同步也通知"与"改写载荷后的编辑器/模型分歧"是可观察后果，
-//     其中 upper 是幂等函数，故幂等性不足以保证编辑器与模型一致；
-//     是否算缺陷由协调者裁决，本测试不下结论。
+// TestInputSyncWriteBackProbe 经真实CLI→生成Go→Router验证R8批准后的同步规则。
+// 程序化外部写静默，三种处理器均不被调用，模型/Editor保持abc。
+// 真实用户Edit仍恰好一次回调。手写机制对照仅保留为历史D3算法的反事实，
+// 不代表当前生成算法；原始历史观察文档不回改。
 func TestInputSyncWriteBackProbe(t *testing.T) {
 	repo, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -133,12 +120,12 @@ func TestInputSyncWriteBackProbe(t *testing.T) {
 		}
 	}
 
-	// 3) 生成代码路径的三条末帧（当前行为基线）：值写在这里是**故意**的——
+	// 3) 生成代码路径的三条末帧（R8批准后行为）：值写在这里是**故意**的——
 	//    将来若 Codegen 改成抑制程序化同步事件，这三行会变红，逼着文档同步更新。
 	for _, want := range []string{
-		`OBS mode=verbatim frames=2 last=editor="abc" vm="abc" applied="abc" changes=1`,
-		`OBS mode=upper frames=2 last=editor="abc" vm="ABC" applied="ABC" changes=1`,
-		`OBS mode=append frames=2 last=editor="abc" vm="abc!" applied="abc!" changes=1`,
+		`OBS mode=verbatim frames=2 last=editor="abc" vm="abc" applied="abc" changes=0`,
+		`OBS mode=upper frames=2 last=editor="abc" vm="abc" applied="abc" changes=0`,
+		`OBS mode=append frames=2 last=editor="abc" vm="abc" applied="abc" changes=0`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("生成代码路径的末帧与记录不一致，缺少 %q\n%s", want, text)
@@ -306,9 +293,9 @@ func (p *probe) drive(t *testing.T, tag string, frames int) ([]state, bool) {
 
 func TestInputSyncExternalWriteBack(t *testing.T) {
 	want := map[string]string{
-		"verbatim": "editor=\"abc\" vm=\"abc\" applied=\"abc\" changes=1",
-		"upper":    "editor=\"abc\" vm=\"ABC\" applied=\"ABC\" changes=1",
-		"append":   "editor=\"abc\" vm=\"abc!\" applied=\"abc!\" changes=1",
+		"verbatim": "editor=\"abc\" vm=\"abc\" applied=\"abc\" changes=0",
+		"upper":    "editor=\"abc\" vm=\"abc\" applied=\"abc\" changes=0",
+		"append":   "editor=\"abc\" vm=\"abc\" applied=\"abc\" changes=0",
 	}
 	for _, mode := range []string{ModeVerbatim, ModeUpper, ModeAppend} {
 		mode := mode
@@ -359,7 +346,7 @@ func TestInputSyncUserTypingIsolated(t *testing.T) {
 	}
 }
 
-// --- 机制探针：复刻生成代码的同步块，只在 applied 记账上做反事实对照 ---
+// --- 历史机制探针：复刻R5旧同步块（不是当前生成算法），只在 applied 记账上做反事实对照 ---
 
 type syncProbe struct {
 	ed      widget.Editor
@@ -385,7 +372,7 @@ func (s *syncProbe) frame(gtx layout.Context) string {
 			// 故意非幂等：每次回写都追加一个字符。
 			s.vm = s.ed.Text() + "!"
 			if s.resnap {
-				// 生成代码的现状：回调结束后把 applied 重贴到 vm。
+				// R5旧算法：回调结束后把 applied 重贴到 vm。
 				s.applied = s.vm
 			}
 		}
