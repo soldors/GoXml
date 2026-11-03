@@ -45,10 +45,57 @@ Goxml 仓库根模块里的普通包，跟着一起被构建、被 vet；改名�
 本仓库的工程级测试（`examples/gxml/crosspackage_project_test.go`）读的就是这份材料，
 测试与教程不各写一份。
 
-## 复制、生成、构建、测试
+## 一条命令：复制 + 填占位符 + 生成 + 构建 + 可选离屏测试
 
-下面的命令以 Git Bash 为例（shell 参数可用 `/c/...` 路径）。`<repo>` 是本仓库
-checkout 的根目录，`goxml` 是构建出来的 CLI：
+不用再手抄下面那串 `find`/`mv`/`sed`：仓库自带入口脚本会按顺序做完，并逐阶段留证据。
+
+```bash
+python scripts/verify-projects.py crosspackage-preferences \
+    --out-dir "/d/work/我的偏好工程" \
+    --lock-path "D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock"
+```
+
+- 目标目录**必须不存在**：本工具只写「本轮独占创建」的新目录。已有目录（含空目录、
+  别人的标记文件、符号链接）一律拒绝，退出码 3，**一个字节都不动**。
+- 目录名可以含空格与 Unicode（全角括号也行）；`go.mod` 里的仓库路径写成**原生**
+  绝对路径并按 Go 规则转义（`"C:\\Users\\..."`），不需要你再把反斜杠改成正斜杠。
+- 公共锁必须显式传入（`--lock-path`）：他人持锁时直接退 8，**连输出目录都不创建、
+  一个 Go 进程都不启动**。
+
+阶段与产物落点：
+
+| 阶段 | 干什么 | 产物/证据落点 |
+|---|---|---|
+| `copy` | 复制模板、`*.go.txt`→`*.go`、替换占位符、补 `go.sum` | 工程目录；模板源码不改 |
+| `build-cli` | `go build ./cmd/goxml` | `<工程>/.verify-projects/goxml.exe` |
+| `generate:<view>` | 原生 CLI 逐个生成 View | `view/edit/edit_gen.go`、`view/summary/summary_gen.go` |
+| `build-entry` | **只构建**窗口入口 | `<工程>/.verify-projects/preferences.exe` |
+| `test` | 可选离屏语义测试（`--skip-tests` 可跳过） | 每阶段一个证据目录 |
+
+每个阶段的实际 argv / cwd / 退出码 / 收口结论 / stdout·stderr 原始字节与 sha256
+都在 `<工程>/.verify-projects/<阶段>/`，汇总在 `<工程>/.verify-projects/report.json`。
+
+退出码：`0` 全过 · `2` 用法错误 · `3` 拒绝（目录/模板/模板被改）· `4` 业务失败
+（某阶段退出码非 0）· `5` 超时 · `6` 进程树收口未证实 · `7` 记录不完整 · `8` 锁忙 ·
+`9` 锁未按自有 token 释放。
+
+边界（说清楚，不夸大）：
+
+- **窗口入口只构建、不运行**——执行它才会创建原生窗口；自动流程从不执行。
+- 原生窗口与输入法**没有**被自动验证；离屏测试只覆盖 View 的语义与状态流转。
+- `--check` 转发给 `generate`，在提交候选生成物之前执行目标包编译检查，成功后仍正常写盘。
+  缓存全命中也会检查；它不是 dry-run。报告只有在每个生成阶段实际成功且带检查成功标记时
+  才记 `passed=true`；兼容旧 CLI 时缺标记记 `null`，不能把已转发当作已检查。
+- `--log-dir` 如显式指定，必须不存在；输出目录拒绝后不会写入他人的日志目录。
+  `--json` 不覆盖已有报告或重解析目标，失败时只更新本轮确实拥有的证据文件。
+- 入口脚本是 Python（标准库），只在 Windows + 本机 Go 工具链上实测过，**不宣称**
+  PowerShell / Linux / macOS 全覆盖。
+
+### 手动步骤（排障时看）
+
+一条命令跑不通时，下面这几步就是它内部做的事，可以逐条手工复现、定位卡在哪。
+命令以 Git Bash 为例（shell 参数可用 `/c/...` 路径）；`<repo>` 是本仓库 checkout 的
+根目录，`goxml` 是构建出来的 CLI：
 
 ```bash
 # 0) 准备 CLI（只做一次）
@@ -65,7 +112,8 @@ mv go.mod.txt go.mod
 # 3) 复制依赖校验文件：离线构建必需，不联网、不 go mod tidy
 cp <repo>/go.sum .
 
-# 4) 填两个占位符（__GOXML_DIR__ 用 `/` 分隔的绝对路径）
+# 4) 填两个占位符（__GOXML_DIR__ 用 `/` 分隔的绝对路径；手工改成 / 最省事，
+#    入口脚本写的是转义后的原生路径 "C:\\...\\Goxml"，两者等价）
 sed -i 's|__MODULE__|example.com/my-prefs|g' go.mod cmd/preferences/main.go \
     view/edit/sem_test.go view/summary/sem_test.go
 sed -i 's|__GOXML_DIR__|D:/Codes/Goxml|g' go.mod

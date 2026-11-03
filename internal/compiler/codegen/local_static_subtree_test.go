@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,7 +24,7 @@ import (
 
 // localStaticVM 是独立完整的探测 VM（rtProbeVM 每次调用建独立 temp 目录，
 // 无需继承 probeVMSrc）：Title/ChangeCount 供动态文字与 Button，
-// ShowA 供 If 条件。
+// ShowA 供 If 条件，Rows 供 For 排除对照。
 const localStaticVM = `package vm
 
 // VM 是 R10-B 局部静态子树验收用 ViewModel。
@@ -52,6 +53,41 @@ func (vm *VM) SetShowA(b bool) { vm.ShowA = b }
 // SetRows 整体替换 <For> 数据源。
 func (vm *VM) SetRows(rs []Row) { vm.Rows = rs }
 `
+
+// ============================================================================
+// R11-B B1：测试仪表与生产分离。
+//
+// 生产生成的 View **不再包含** staticRecs 验收计数器（字段与自增均已从
+// codegen.go 移除）。需要录制计数的探针经 injectProbeRecs 在生成源码的
+// **外部副本**注入 probeRecs<N> 字段与自增——锚点数量逐一核验，失配
+// fail-closed（测试红），绝不静默变绿。不新增生产 debug 开关/回调。
+// ============================================================================
+
+// injectProbeRecs 在生成源码副本注入 per-slot 录制计数仪表（字段
+// probeRecs<N> + 录制分支自增）。锚点：每槽的 staticCached<N> bool 字段
+// 声明（注入字段）与 v.staticCached<N> = true 赋值（注入自增），数量
+// 必须恰为 1（或 slots 指定的槽数语义）；失配 fail-closed。
+// 注入后副本不得再含生产计数器名 staticRecs（生产分离断言）。
+func injectProbeRecs(t *testing.T, gen string, slots int) string {
+	t.Helper()
+	if strings.Contains(gen, "staticRecs") {
+		t.Fatalf("生产输出仍含 staticRecs 计数器（R11-B 生产分离被破坏）")
+	}
+	for i := 0; i < slots; i++ {
+		s := strconv.Itoa(i)
+		fieldAnchor := "\tstaticCached" + s + " bool\n"
+		if n := strings.Count(gen, fieldAnchor); n != 1 {
+			t.Fatalf("注入锚点A数量失配（staticCached%s bool 应恰 1 处）: %d", s, n)
+		}
+		incrAnchor := "\t\tv.staticCached" + s + " = true\n"
+		if n := strings.Count(gen, incrAnchor); n != 1 {
+			t.Fatalf("注入锚点B数量失配（v.staticCached%s = true 应恰 1 处）: %d", s, n)
+		}
+		gen = strings.Replace(gen, fieldAnchor, fieldAnchor+"\tprobeRecs"+s+" int\n", 1)
+		gen = strings.Replace(gen, incrAnchor, incrAnchor+"\t\tv.probeRecs"+s+"++\n", 1)
+	}
+	return gen
+}
 
 // localStaticPage 是主验收页面：动态绑定文字 + 最大纯静态子树（2 个静态
 // Text 的 Column）+ 交互 Button。
@@ -127,7 +163,8 @@ func rtProbeVMMutated(t *testing.T, vmSrc, gxmlBody, probeBody string, mutate fu
 // 动态文字（Title）更新不触碰静态子树计数；dims 逐帧一致（几何对照）。
 func TestLocalStaticRecordingCount(t *testing.T) {
 	vmSrc := localStaticVM
-	out := rtProbeVM(t, vmSrc, localStaticPage, `
+	// 计数仪表经外部副本注入（生产输出不再含计数器）。
+	out := rtProbeVMMutated(t, vmSrc, localStaticPage, `
 func TestProbeLocalStaticRecording(t *testing.T) {
 	th1 := material.NewTheme()
 	th2 := material.NewTheme()
@@ -154,40 +191,40 @@ func TestProbeLocalStaticRecording(t *testing.T) {
 
 	// 帧1：首次录制恰好 1 次
 	frame(th1)
-	fmt.Printf("SCEN localstatic-recording frame=1 recs=%d dims=%v\n", v.staticRecs0, dimsOf())
-	if v.staticRecs0 != 1 {
-		t.Fatalf("帧1: recs=%d, want 1", v.staticRecs0)
+	fmt.Printf("SCEN localstatic-recording frame=1 recs=%d dims=%v\n", v.probeRecs0, dimsOf())
+	if v.probeRecs0 != 1 {
+		t.Fatalf("帧1: recs=%d, want 1", v.probeRecs0)
 	}
 	d1 := dimsOf()
 
 	// 帧2-3：稳定——计数不增长，dims 逐帧一致
 	frame(th1)
 	frame(th1)
-	fmt.Printf("SCEN localstatic-recording frame=3 recs=%d dims=%v\n", v.staticRecs0, dimsOf())
-	if v.staticRecs0 != 1 || dimsOf() != d1 {
-		t.Fatalf("稳定帧: recs=%d dims=%v (d1=%v)", v.staticRecs0, dimsOf(), d1)
+	fmt.Printf("SCEN localstatic-recording frame=3 recs=%d dims=%v\n", v.probeRecs0, dimsOf())
+	if v.probeRecs0 != 1 || dimsOf() != d1 {
+		t.Fatalf("稳定帧: recs=%d dims=%v (d1=%v)", v.probeRecs0, dimsOf(), d1)
 	}
 
 	// 帧4：key.theme 变化 → 恰好重录 1 次
 	frame(th2)
-	fmt.Printf("SCEN localstatic-recording frame=4 recs=%d dims=%v\n", v.staticRecs0, dimsOf())
-	if v.staticRecs0 != 2 {
-		t.Fatalf("换主题后 recs=%d, want 2（恰好一次重录）", v.staticRecs0)
+	fmt.Printf("SCEN localstatic-recording frame=4 recs=%d dims=%v\n", v.probeRecs0, dimsOf())
+	if v.probeRecs0 != 2 {
+		t.Fatalf("换主题后 recs=%d, want 2（恰好一次重录）", v.probeRecs0)
 	}
 	if dimsOf() != d1 {
 		t.Fatalf("同约束重录后 dims 应一致: %v vs %v", dimsOf(), d1)
 	}
 	frame(th2)
-	if v.staticRecs0 != 2 {
-		t.Fatalf("稳定帧: recs=%d", v.staticRecs0)
+	if v.probeRecs0 != 2 {
+		t.Fatalf("稳定帧: recs=%d", v.probeRecs0)
 	}
 
 	// 帧5：Constraints 变化（画布 600x200）→ 恰好重录，dims 跟随几何
 	gtx.Constraints = layout.Exact(image.Pt(600, 200))
 	frame(th2)
-	fmt.Printf("SCEN localstatic-recording frame=5 recs=%d dims=%v\n", v.staticRecs0, dimsOf())
-	if v.staticRecs0 != 3 {
-		t.Fatalf("改 Constraints 后 recs=%d, want 3", v.staticRecs0)
+	fmt.Printf("SCEN localstatic-recording frame=5 recs=%d dims=%v\n", v.probeRecs0, dimsOf())
+	if v.probeRecs0 != 3 {
+		t.Fatalf("改 Constraints 后 recs=%d, want 3", v.probeRecs0)
 	}
 	d5 := dimsOf()
 
@@ -196,9 +233,9 @@ func TestProbeLocalStaticRecording(t *testing.T) {
 	obj.Title = "动态标题更新"
 	frame(th2)
 	fmt.Printf("SCEN localstatic-recording frame=6 recs=%d dims=%v title=%q\n",
-		v.staticRecs0, dimsOf(), obj.Title)
-	if v.staticRecs0 != 4 {
-		t.Fatalf("帧6: recs=%d, want 4（兄弟几何变化的合法重录）", v.staticRecs0)
+		v.probeRecs0, dimsOf(), obj.Title)
+	if v.probeRecs0 != 4 {
+		t.Fatalf("帧6: recs=%d, want 4（兄弟几何变化的合法重录）", v.probeRecs0)
 	}
 	if obj.Title != "动态标题更新" || len(v.slots) != 1 || v.slots[0].text != "动态标题更新" {
 		t.Fatalf("动态文字状态: %q", obj.Title)
@@ -207,14 +244,16 @@ func TestProbeLocalStaticRecording(t *testing.T) {
 	// 帧7：Constraints 还原 → 恰好重录回 d1
 	gtx.Constraints = layout.Exact(image.Pt(300, 200))
 	frame(th2)
-	if v.staticRecs0 != 5 || dimsOf() != d1 {
-		t.Fatalf("还原 Constraints: recs=%d dims=%v (d1=%v)", v.staticRecs0, dimsOf(), d1)
+	if v.probeRecs0 != 5 || dimsOf() != d1 {
+		t.Fatalf("还原 Constraints: recs=%d dims=%v (d1=%v)", v.probeRecs0, dimsOf(), d1)
 	}
 	fmt.Printf("SCEN localstatic-recording frame=7 recs=%d dims=%v d5=%v\n",
-		v.staticRecs0, dimsOf(), d5)
+		v.probeRecs0, dimsOf(), d5)
 	fmt.Println("SCEN-DONE localstatic-recording")
 }
-`)
+`, func(gen string) string {
+		return injectProbeRecs(t, gen, 1)
+	})
 	assertProbeHealth(t, "localstatic-recording", out)
 	t.Log(out)
 }
@@ -222,7 +261,8 @@ func TestProbeLocalStaticRecording(t *testing.T) {
 // TestLocalStaticTwoViewIsolation B2：多实例隔离——各自独立录制，
 // 互不串写（不同 View 的 staticOps/Key 各自持有）。
 func TestLocalStaticTwoViewIsolation(t *testing.T) {
-	out := rtProbeVM(t, localStaticVM, localStaticPage, `
+	// 计数仪表经外部副本注入（1 槽；两实例各自持有 probeRecs0）。
+	out := rtProbeVMMutated(t, localStaticVM, localStaticPage, `
 func TestProbeTwoViews(t *testing.T) {
 	th := material.NewTheme()
 	objA, objB := &gvm.VM{}, &gvm.VM{}
@@ -248,9 +288,9 @@ func TestProbeTwoViews(t *testing.T) {
 		r.Frame(gtx.Ops)
 	}
 	frame()
-	fmt.Printf("SCEN two-view recA=%d recB=%d\n", vA.staticRecs0, vB.staticRecs0)
-	if vA.staticRecs0 != 1 || vB.staticRecs0 != 1 {
-		t.Fatalf("两实例应各自独立录制: recA=%d recB=%d", vA.staticRecs0, vB.staticRecs0)
+	fmt.Printf("SCEN two-view recA=%d recB=%d\n", vA.probeRecs0, vB.probeRecs0)
+	if vA.probeRecs0 != 1 || vB.probeRecs0 != 1 {
+		t.Fatalf("两实例应各自独立录制: recA=%d recB=%d", vA.probeRecs0, vB.probeRecs0)
 	}
 	// B2 已证事实：动态兄弟（Title 绑定文字）内容变化会改变 Flex 分配给
 	// 后续子节点的可用约束（空串/非空行高不同）→ 静态子树按契约"宁可多
@@ -258,19 +298,21 @@ func TestProbeTwoViews(t *testing.T) {
 	objA.Title = "A 改了"
 	frame()
 	fmt.Printf("SCEN two-view recA=%d recB=%d titleA=%q\n",
-		vA.staticRecs0, vB.staticRecs0, objA.Title)
-	if vA.staticRecs0 != 2 || vB.staticRecs0 != 1 || vA.slots[0].text != "A 改了" || vB.slots[0].text != "" {
-		t.Fatalf("兄弟几何变化应使 A 重录一次、B 不动: recA=%d recB=%d", vA.staticRecs0, vB.staticRecs0)
+		vA.probeRecs0, vB.probeRecs0, objA.Title)
+	if vA.probeRecs0 != 2 || vB.probeRecs0 != 1 || vA.slots[0].text != "A 改了" || vB.slots[0].text != "" {
+		t.Fatalf("兄弟几何变化应使 A 重录一次、B 不动: recA=%d recB=%d", vA.probeRecs0, vB.probeRecs0)
 	}
 	// 稳定帧（几何不再变化）——两实例计数均不增长
 	frame()
 	frame()
-	if vA.staticRecs0 != 2 || vB.staticRecs0 != 1 {
-		t.Fatalf("稳定帧计数增长: recA=%d recB=%d", vA.staticRecs0, vB.staticRecs0)
+	if vA.probeRecs0 != 2 || vB.probeRecs0 != 1 {
+		t.Fatalf("稳定帧计数增长: recA=%d recB=%d", vA.probeRecs0, vB.probeRecs0)
 	}
 	fmt.Println("SCEN-DONE two-view")
 }
-`)
+`, func(gen string) string {
+		return injectProbeRecs(t, gen, 1)
+	})
 	assertProbeHealth(t, "two-view", out)
 	t.Log(out)
 }
@@ -292,7 +334,7 @@ func TestLocalStaticIfBranchExclusive(t *testing.T) {
   </If>
   <Text Value="{Title}"/>
 </Column>`
-	out := rtProbeVM(t, localStaticVM, page, `
+	out := rtProbeVMMutated(t, localStaticVM, page, `
 func TestProbeIfBranches(t *testing.T) {
 	th := material.NewTheme()
 	obj := &gvm.VM{}
@@ -314,27 +356,27 @@ func TestProbeIfBranches(t *testing.T) {
 		r.Frame(gtx.Ops)
 	}
 	frame()
-	fmt.Printf("SCEN if-branch frame=1 recs0=%d recs1=%d\n", v.staticRecs0, v.staticRecs1)
+	fmt.Printf("SCEN if-branch frame=1 recs0=%d recs1=%d\n", v.probeRecs0, v.probeRecs1)
 	// Then 分支的静态子树独占槽位 0（首帧录制 1 次）
-	if v.staticRecs0 != 1 {
-		t.Fatalf("Then 分支静态子树应录制 1 次: recs0=%d", v.staticRecs0)
+	if v.probeRecs0 != 1 {
+		t.Fatalf("Then 分支静态子树应录制 1 次: recs0=%d", v.probeRecs0)
 	}
 	// 判定翻转 → Else 分支的静态子树独占槽位 1（首帧录制）
 	obj.SetShowA(false)
 	frame()
-	fmt.Printf("SCEN if-branch frame=2 recs0=%d recs1=%d\n", v.staticRecs0, v.staticRecs1)
-	if v.staticRecs1 != 1 {
-		t.Fatalf("Else 分支静态子树应独占槽位 1: recs1=%d", v.staticRecs1)
+	fmt.Printf("SCEN if-branch frame=2 recs0=%d recs1=%d\n", v.probeRecs0, v.probeRecs1)
+	if v.probeRecs1 != 1 {
+		t.Fatalf("Else 分支静态子树应独占槽位 1: recs1=%d", v.probeRecs1)
 	}
 	// 隐藏分支不录制（其闭包不执行）；重现分支 key 未变 → **回放**
 	// （recs0 不增长，1 即回放证据——重录才是 2）
 	obj.SetShowA(true)
 	frame()
 	frame()
-	fmt.Printf("SCEN if-branch frame=4 recs0=%d recs1=%d\n", v.staticRecs0, v.staticRecs1)
-	if v.staticRecs0 != 1 || v.staticRecs1 != 1 {
+	fmt.Printf("SCEN if-branch frame=4 recs0=%d recs1=%d\n", v.probeRecs0, v.probeRecs1)
+	if v.probeRecs0 != 1 || v.probeRecs1 != 1 {
 		t.Fatalf("重现分支应回放（recs0=1）且隐藏分支不动（recs1=1）: %d/%d",
-			v.staticRecs0, v.staticRecs1)
+			v.probeRecs0, v.probeRecs1)
 	}
 	// 动态文字（Title）在 If 之外，每帧照常更新
 	obj.Title = "动态"
@@ -343,10 +385,12 @@ func TestProbeIfBranches(t *testing.T) {
 		t.Fatalf("动态文字: %q", obj.Title)
 	}
 	fmt.Printf("SCEN if-branch final recs0=%d recs1=%d title=%q\n",
-		v.staticRecs0, v.staticRecs1, obj.Title)
+		v.probeRecs0, v.probeRecs1, obj.Title)
 	fmt.Println("SCEN-DONE if-branch")
 }
-`)
+`, func(gen string) string {
+		return injectProbeRecs(t, gen, 2)
+	})
 	assertProbeHealth(t, "if-branch", out)
 	t.Log(out)
 }
@@ -391,29 +435,35 @@ func TestProbeForUntouched(t *testing.T) {
 	}
 	frame()
 	// For 外静态子树正常录制一次
-	if v.staticRecs0 != 1 {
-		t.Fatalf("For 外静态子树应录制 1 次: recs0=%d", v.staticRecs0)
+	if v.probeRecs0 != 1 {
+		t.Fatalf("For 外静态子树应录制 1 次: recs0=%d", v.probeRecs0)
 	}
 	// 帧3-4：稳定帧（For 行未变化）——静态子树计数不增长
 	frame()
 	frame()
-	if v.staticRecs0 != 1 {
-		t.Fatalf("稳定帧计数增长: %d", v.staticRecs0)
+	if v.probeRecs0 != 1 {
+		t.Fatalf("稳定帧计数增长: %d", v.probeRecs0)
 	}
 	// 行内容变化 → 行文字更新（For 沿用既有逐帧路径）
 	obj.SetRows([]gvm.Row{{Name: "甲乙丙"}, {Name: "丁"}})
 	frame()
-	fmt.Printf("SCEN for-untouched rows=%v recs0=%d\n", obj.Rows, v.staticRecs0)
+	fmt.Printf("SCEN for-untouched rows=%v recs0=%d\n", obj.Rows, v.probeRecs0)
 	fmt.Println("SCEN-DONE for-untouched")
 }
 `
 	var genSrc string
 	out := rtProbeVMMutated(t, vmSrc, page, forProbe, func(gen string) string {
 		genSrc = gen
-		return gen
+		return injectProbeRecs(t, gen, 1)
 	})
-	if strings.Count(genSrc, "staticRecs0") != 2 {
-		t.Fatalf("For 体不得分配局部静态槽位（生成源码 staticRecs0 应恰 2 处：字段声明+自增）")
+	// 结构断言（R11-B 生产分离后口径）：For 外静态子树恰一个槽位
+	// （staticCached0 字段声明恰 1 处），For 体无 staticCached1——
+	// 证明 For 体沿用既有路径、未分配局部静态槽位。
+	if strings.Count(genSrc, "\tstaticCached0 bool\n") != 1 {
+		t.Fatalf("For 外静态子树应恰一个局部槽位（staticCached0 bool）")
+	}
+	if strings.Contains(genSrc, "staticCached1") {
+		t.Fatalf("For 体不得分配局部静态槽位（staticCached1 不应存在）")
 	}
 	assertProbeHealth(t, "for-untouched", out)
 	t.Log(out)
@@ -455,17 +505,19 @@ func TestProbeStableRecs(t *testing.T) {
 	}
 	frame()
 	frame()
-	stable := v.staticRecs0
+	stable := v.probeRecs0
 	frame()
 	frame()
-	fmt.Printf("SCEN forced-rerecord stable=%d final=%d\n", stable, v.staticRecs0)
-	if v.staticRecs0 != stable {
-		t.Fatalf("稳定帧录制计数增长: %d -> %d", stable, v.staticRecs0)
+	fmt.Printf("SCEN forced-rerecord stable=%d final=%d\n", stable, v.probeRecs0)
+	if v.probeRecs0 != stable {
+		t.Fatalf("稳定帧录制计数增长: %d -> %d", stable, v.probeRecs0)
 	}
 	fmt.Println("SCEN-DONE forced-rerecord")
 }
 `
-	healthy := rtProbeVM(t, vmSrc, forcedPage, probe)
+	healthy := rtProbeVMMutated(t, vmSrc, forcedPage, probe, func(gen string) string {
+		return injectProbeRecs(t, gen, 1)
+	})
 	assertProbeHealth(t, "forced-rerecord", healthy)
 
 	mutatedOut := rtProbeVMMutated(t, vmSrc, forcedPage, probe, func(gen string) string {
@@ -475,7 +527,8 @@ func TestProbeStableRecs(t *testing.T) {
 		if !strings.Contains(gen, old) {
 			t.Fatalf("变异锚点未命中（生成源码形态漂移）")
 		}
-		return strings.Replace(gen, old, mut, 1)
+		gen = strings.Replace(gen, old, mut, 1)
+		return injectProbeRecs(t, gen, 1)
 	})
 	// 变异必须翻红：稳定帧计数增长，探针断言失败。
 	if !strings.Contains(mutatedOut, "稳定帧录制计数增长") || !strings.Contains(mutatedOut, "--- FAIL") {
@@ -525,21 +578,23 @@ func TestProbeMetricChange(t *testing.T) {
 	frame()
 	d1 := v.staticDims0.Size
 	fmt.Printf("DIAG frame1 key.metric=%v key.cons=%v dims=%v recs=%d\n",
-		v.staticKey0.metric, v.staticKey0.constraints, v.staticDims0.Size, v.staticRecs0)
+		v.staticKey0.metric, v.staticKey0.constraints, v.staticDims0.Size, v.probeRecs0)
 	// DPI 1 → 3：静态文字几何必须变化（重录）
 	gtx.Metric = unit.Metric{PxPerDp: 3, PxPerSp: 3}
 	frame()
 	d2 := v.staticDims0.Size
 	fmt.Printf("DIAG frame2 key.metric=%v key.cons=%v dims=%v recs=%d\n",
-		v.staticKey0.metric, v.staticKey0.constraints, v.staticDims0.Size, v.staticRecs0)
-	fmt.Printf("SCEN metric-change d1=%v d2=%v recs=%d\n", d1, d2, v.staticRecs0)
+		v.staticKey0.metric, v.staticKey0.constraints, v.staticDims0.Size, v.probeRecs0)
+	fmt.Printf("SCEN metric-change d1=%v d2=%v recs=%d\n", d1, d2, v.probeRecs0)
 	if d2.Y <= d1.Y {
 		t.Fatalf("DPI 变化后静态子树几何未跟随（漏失效）: d1=%v d2=%v", d1, d2)
 	}
 	fmt.Println("SCEN-DONE metric-change")
 }
 `
-	healthy := rtProbeVM(t, vmSrc, metricPage, probe)
+	healthy := rtProbeVMMutated(t, vmSrc, metricPage, probe, func(gen string) string {
+		return injectProbeRecs(t, gen, 1)
+	})
 	assertProbeHealth(t, "metric-change", healthy)
 
 	mutatedOut := rtProbeVMMutated(t, vmSrc, metricPage, probe, func(gen string) string {
@@ -550,7 +605,8 @@ func TestProbeMetricChange(t *testing.T) {
 			t.Fatalf("变异锚点未命中（生成源码形态漂移）")
 		}
 		gen = strings.Replace(gen, old, "", 1)
-		return strings.Replace(gen, "\t\"math\"\n", "", 1)
+		gen = strings.Replace(gen, "\t\"math\"\n", "", 1)
+		return injectProbeRecs(t, gen, 1)
 	})
 	// 变异必须翻红：DPI 变化后几何未跟随，探针断言失败。
 	if !strings.Contains(mutatedOut, "几何未跟随") || !strings.Contains(mutatedOut, "--- FAIL") {

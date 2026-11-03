@@ -598,7 +598,10 @@ func (g *generator) localStaticSubtree(n *contracts.NodeIR) bool {
 // （契约 §16.2-16.4：View 自持持久 Ops/CallOp/Dimensions/key，惰性录制、
 // key 未变只回放）。key 取该节点**实际收到**的 Constraints/Metric/Theme/
 // Locale（包装闭包的 gtx 已经过 sizeWrap 的约束改写），浮点按位比较
-// （§16.5）。staticRecs 记录实际录制次数（B3 验收）。
+// （§16.5）。
+//
+// 录制次数验收仪表不在生产输出内（R11-B B1：验收计数由测试在外部生成
+// 副本注入，见 local_static_subtree_test.go 的 injectProbeRecs）。
 //
 // 槽位字段 static*<slot> 由结构体发射段生成；子节点不再各自分配槽位
 // （外层槽位已整体覆盖——"不重复固化"）。
@@ -626,7 +629,6 @@ func (g *generator) localStaticCacheExpr(n *contracts.NodeIR) (string, error) {
 	b.WriteString("\t\tv.staticCall" + s + " = mS" + s + ".Stop()\n")
 	b.WriteString("\t\tv.staticKey" + s + " = kS" + s + "\n")
 	b.WriteString("\t\tv.staticCached" + s + " = true\n")
-	b.WriteString("\t\tv.staticRecs" + s + "++\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tv.staticCall" + s + ".Add(gtx.Ops)\n")
 	b.WriteString("\treturn v.staticDims" + s + "\n")
@@ -953,14 +955,13 @@ func (g *generator) assemble(body string) (string, error) {
 		// R10-B：动态父容器内局部静态子树缓存（契约 §16、ADR-0006 §2.1）。
 		// 每个"最大纯静态子树"一个独立槽位：View 自持持久 Ops（永不 Reset
 		// 之外的复用）、CallOp 区间、Dimensions 与上下文 key。
-		// staticRecs 是实际录制次数（B3 验收计数；稳定帧不增长）。
+		// R11-B：录制次数验收仪表已移出生产输出（测试经外部副本注入）。
 		for i := 0; i < g.staticSlots; i++ {
 			b.WriteString(fmt.Sprintf("\tstaticOps%d op.Ops\n", i))
 			b.WriteString(fmt.Sprintf("\tstaticCall%d op.CallOp\n", i))
 			b.WriteString(fmt.Sprintf("\tstaticDims%d layout.Dimensions\n", i))
 			b.WriteString(fmt.Sprintf("\tstaticKey%d %s\n", i, g.keyType))
 			b.WriteString(fmt.Sprintf("\tstaticCached%d bool\n", i))
-			b.WriteString(fmt.Sprintf("\tstaticRecs%d int\n", i))
 		}
 		// 行状态池：每个含交互控件的 <For> 一个（<For> 列表契约 §3.2）。
 		// map 元素不可寻址，必须存指针。

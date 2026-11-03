@@ -32,7 +32,8 @@ var pipelineHooks pipeline.Hooks
 //   - G2：SourceDir = 每个 .gxml 实际所在目录（单文件解析上下文）；
 //   - 输入路径与输出路径**分开计算**：SourceDir 服务解析，--out-dir 服务布局；
 //   - 多文件在提交前完成整批生成与暂存；暂存失败保留已有产物；
-//   - G6：--check 暂与默认行为相同（L1+L2 已是默认路径）。
+//   - G6：`--check` 在本批候选齐备后、写盘前对目标包做编译级检查（R11-A 落实）；
+//     检查失败则产物/Manifest/成功缓存都不落盘；不带 --check 的行为保持不变。
 func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if len(opts.paths) > 1 {
 		// 多个独立输入参数仍不支持：批量形态是「一个目录」，
@@ -265,6 +266,32 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		}
 		preparedFiles = append(preparedFiles, prepared{r: d.r, key: d.key, artifact: res.Artifact})
 		missTargets = append(missTargets, d.r.target)
+	}
+
+	// ---------- 阶段一 B：提交前检查（--check 合同，R11-A）----------
+	// 位置固定：本批全部候选已齐备（未命中=内存产物、命中=磁盘现有内容），而
+	// 阶段二尚未建目录/写文件 —— 所以检查失败时「产物、Manifest、成功缓存记录」
+	// 一个都不落盘，--clean 也还没执行（它在本次登记之后）。
+	//
+	// 全命中同样检查：命中产物的磁盘字节就是本批最终内容，仍须与目标包组合通过编译。
+	// 未命中/混合批次检查看的是本批新内容（overlay 注入内存字节），不是磁盘旧产物。
+	if opts.check {
+		artifactOf := make(map[*resolvedInput][]byte, len(preparedFiles))
+		for _, p := range preparedFiles {
+			artifactOf[p.r] = p.artifact.Source
+		}
+		cands := make([]precommitCandidate, 0, len(decisions))
+		for _, d := range decisions {
+			cands = append(cands, precommitCandidate{
+				dir:     d.r.targetDir,
+				output:  d.r.target,
+				content: artifactOf[d.r], // nil ⇒ 命中，磁盘即最终内容
+			})
+		}
+		if err := checkPrecommitCandidates(goExe, moduleRoot, cands, ctxValues.GOFLAGS); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "提交前检查通过：%d 个目标包\n", len(cands))
 	}
 
 	// ---------- 阶段二：有未命中才写盘（全或无）；命中不碰任何文件 ----------
