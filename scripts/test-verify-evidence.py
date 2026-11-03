@@ -10,7 +10,8 @@ rc 来源自相矛盾 / 时间倒序 / elapsedSec 未知 / unknown 形态夹带�
 recordOk=False / phase=prepared / 业务自相矛盾 / 空文件 / 全 unsupported。
 
 用法：
-  python test-verify-evidence.py --work <空目录>
+  python test-verify-evidence.py --work <工作根目录>
+每次调用在工作根下建立独占子目录，旧报告、raw与用户文件不覆盖或删除。
 输出：单行 JSON 汇总 + 失败明细；退出码 0 全绿 / 1 有红。
 """
 import argparse
@@ -19,6 +20,8 @@ import json
 import os
 import subprocess
 import sys
+import traceback
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -121,6 +124,18 @@ def write_helper_result(rec):
     write_file(rec['resultPath'], json.dumps(result).encode('utf-8'))
 
 
+def fresh_path(path):
+    """Reserve an exclusive report directory; never delete an existing report.
+
+    A supplied path is a naming hint, not proof of ownership of its current bytes.
+    The report file itself remains absent so the verifier can create it exclusively.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    owned = tempfile.mkdtemp(prefix='report-', dir=parent)
+    return os.path.join(owned, os.path.basename(path))
+
+
 def line_of(obj):
     return json.dumps(obj, ensure_ascii=False, sort_keys=True,
                       separators=(',', ':')).encode('utf-8')
@@ -137,6 +152,19 @@ def write_jsonl(path, lines):
 def status_and_codes(obj, check_disk=True):
     status, issues = schema.validate_full(obj, check_disk=check_disk)
     return status, [i['code'] for i in issues]
+
+
+def load_verifier_module():
+    """按路径加载 `verify-evidence.py`（文件名带连字符，不能直接 `import`）。
+
+    专为 **direct API** 回归服务：CLI 入口能拒绝"同一份台账传两次"，
+    但库调用**绕不过** CLI 那一层，所以判据必须在库这一层也成立。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('verify_evidence_direct', VERIFIER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def run_verifier(paths, extra=None):
@@ -346,8 +374,10 @@ def test_legacy_and_bytes(work):
     rc, out, err = run_verifier([p_half])
     check_eq('bytes.half-line.exit', rc, 1)
     check('bytes.half-line.code', 'bad-json' in out, 'out=%r' % out[:200])
-    half_report = os.path.join(work, 'half-report.json')
-    run_verifier([p_half], ['--json', half_report])
+    half_report = fresh_path(os.path.join(work, 'half-report.json'))
+    rc_h, _oh, _eh = run_verifier([p_half], ['--json', half_report])
+    # 本次必须真的写出报告；否则下面 open() 读到的可能上一次的旧文件。
+    check_eq('bytes.half-line.report-fresh', rc_h, 1)
     with open(half_report, encoding='utf-8') as fh:
         observed_half = json.load(fh)
     check('bytes.half-line.unterminated',
@@ -370,6 +400,193 @@ def test_legacy_and_bytes(work):
                         [line_of(healthy(work, 'nul-1')) + b'\x00'])
     rc, out, err = run_verifier([p_nul])
     check('bytes.nul.reported', 'NUL' in out or rc == 1, 'rc=%d out=%r' % (rc, out[:200]))
+
+
+def test_strict_input(work):
+    """输入放宽类毒化：NaN / Infinity / 重复 JSON 键 / 无时区时间——都不能判 PASS。
+
+    Python 的 `json` 默认接受 NaN/Infinity（不是 JSON 数字）并让重复键"后值覆盖前值"，
+    这两者都会让一份自相矛盾的台账看起来合法。判据必须落在**字节**上：
+    改的是落盘那一行，不是内存里的对象。
+    """
+    # 1) NaN：不是 JSON 数字
+    line = line_of(healthy(work, 'num-nan'))
+    patched = line.replace(b'"elapsedSec":1.0', b'"elapsedSec":NaN')
+    check('strict.nan-patched', patched != line, 'line=%r' % line[:160])
+    p = write_file(os.path.join(work, 'nan.jsonl'), patched + b'\n')
+    rc, out, err = run_verifier([p])
+    check_eq('strict.nan.exit', rc, 1)
+    check('strict.nan.code', 'bad-json' in out, 'out=%r' % out[:300])
+
+    # 2) Infinity：同上（NaN/Infinity/-Infinity 三个都是 parse_constant 的入口）
+    line = line_of(healthy(work, 'num-inf'))
+    patched = line.replace(b'"elapsedSec":1.0', b'"elapsedSec":Infinity')
+    check('strict.inf-patched', patched != line, 'line=%r' % line[:160])
+    p = write_file(os.path.join(work, 'inf.jsonl'), patched + b'\n')
+    rc, out, err = run_verifier([p])
+    check_eq('strict.inf.exit', rc, 1)
+    check('strict.inf.code', 'bad-json' in out, 'out=%r' % out[:300])
+
+    # 3) 重复 JSON 键：读的人无法判断哪个是事实
+    line = line_of(healthy(work, 'num-dupkey'))
+    patched = line[:-1] + b',"infraOk":true}'
+    check('strict.dupkey-patched', b'"infraOk":true}' in patched, 'line=%r' % patched[-80:])
+    p = write_file(os.path.join(work, 'dupkey.jsonl'), patched + b'\n')
+    rc, out, err = run_verifier([p])
+    check_eq('strict.dupkey.exit', rc, 1)
+    check('strict.dupkey.code', 'bad-json' in out, 'out=%r' % out[:300])
+
+    # 4) 时间戳不带时区：跨机器读不出"什么时候"，不能算有事实
+    naive = healthy(work, 'no-tz')
+    naive['startedUtc'] = '2026-11-02T00:00:01.000'
+    naive['endedUtc'] = '2026-11-02T00:00:02.000'
+    write_helper_result(naive)
+    p = write_jsonl(os.path.join(work, 'notz.jsonl'), [naive])
+    rc, out, err = run_verifier([p])
+    check_eq('strict.no-tz.exit', rc, 1)
+    check('strict.no-tz.code', 'timezone-missing' in out, 'out=%r' % out[:300])
+
+
+def test_clock_granularity(work):
+    """`elapsedSec` 是**单调差**（`time.monotonic()` 之差），不是墙钟差。
+
+    系统时钟会被 NTP 调整、也会跳变，所以墙钟差与单调差不一致是**正常事实**，
+    校验器不得拿 `endedUtc - startedUtc` 去核对 `elapsedSec`——那会把真实记录判红。
+    单调端点（t0/t1 的绝对读数）不持久化：它们是进程内读数，跨进程/跨平台不可比。
+    """
+    rec = healthy(work, 'clock-skew')
+    rec['startedUtc'] = '2026-11-02T00:00:01.000+00:00'
+    rec['endedUtc'] = '2026-11-02T00:00:11.000+00:00'   # 墙钟差 10s
+    rec['elapsedSec'] = 1.0                              # 单调差 1.0s
+    write_helper_result(rec)
+    status, issues = schema.validate_record(rec)
+    codes = [i['code'] for i in issues]
+    check_eq('clock.elapsed-not-wallclock', status, schema.STATUS_PASS)
+    # 不列"已知 code 黑名单"——黑名单对新加的过度校验不敏感，等于判据有洞。
+    # 直接要求：健康记录（只是墙钟差与单调差不一致）不得产生**任何** issue。
+    check_eq('clock.no-wallclock-issue', codes, [])
+    p = write_jsonl(os.path.join(work, 'clock.jsonl'), [rec])
+    rc, out, err = run_verifier([p])
+    check_eq('clock.verifier-pass', rc, 0)
+
+    # 非负与有限仍然要判：单调差本身不能是负数或 NaN
+    bad = healthy(work, 'clock-negative')
+    bad['elapsedSec'] = -1.0
+    write_helper_result(bad)
+    status, issues = schema.validate_record(bad)
+    check('clock.negative-red', 'negative-elapsed' in [i['code'] for i in issues],
+          'codes=%r' % [i['code'] for i in issues])
+
+    nan = healthy(work, 'clock-nan')
+    nan['elapsedSec'] = float('nan')
+    write_helper_result(nan)
+    status, issues = schema.validate_record(nan)
+    check('clock.nonfinite-red', 'nonfinite-elapsed' in [i['code'] for i in issues],
+          'codes=%r' % [i['code'] for i in issues])
+
+
+def test_aggregate(work):
+    """多份 JSONL 聚合：**跨文件**才是聚合的意义所在。
+
+    - 跨文件重复 id 必须判红，且定位要能点出**两个文件**（否则只知道"有重复"）；
+    - 每份文件有独立报告（自己的路径/字节/SHA/计数），汇总跨文件累加；
+    - 同一份台账传两次是**用法错误**（退出码 2），不是"每行跟自己重复"。
+    """
+    a = write_jsonl(os.path.join(work, 'agg-a.jsonl'), [healthy(work, 'agg-1')])
+    b = write_jsonl(os.path.join(work, 'agg-b.jsonl'),
+                    [healthy(work, 'agg-2'), healthy(work, 'agg-1')])  # 与 a 跨文件重复
+    rep = fresh_path(os.path.join(work, 'agg.json'))
+    rc, out, err = run_verifier([a, b], ['--json', rep])
+    check_eq('agg.cross-file-dup-exit', rc, 1)
+    check('agg.cross-file-dup-code', 'duplicate-id' in out, 'out=%r' % out[:300])
+    with open(rep, encoding='utf-8') as fh:
+        report = json.load(fh)
+    check_eq('agg.files-count', report['totals']['files'], 2)
+    check_eq('agg.lines-accumulate', report['totals']['lines'], 3)
+    check_eq('agg.pass-accumulate', report['totals']['pass'], 2)
+    check_eq('agg.fail-accumulate', report['totals']['fail'], 1)
+    check('agg.per-file-report',
+          len(report['files']) == 2
+          and all(f.get('bytes') and f.get('sha256') for f in report['files'])
+          and report['files'][0]['path'] != report['files'][1]['path'],
+          'files=%r' % [f.get('path') for f in report['files']])
+    # 定位要落在两个不同文件上（路径含盘符冒号，只能从**右侧**切行号）
+    located = set()
+    for dup in report.get('duplicateIds') or []:
+        for where in dup.get('where') or []:
+            located.add(where.rsplit(':', 1)[0])
+    check_eq('agg.dup-locates-both-files', len(located), 2)
+
+    # 同一份台账传两次 → 用法错误；拒绝时**不写**报告
+    rep2 = os.path.join(work, 'agg-same.json')
+    rc2, _out2, err2 = run_verifier([a, a], ['--json', rep2])
+    check_eq('agg.same-file-twice-exit', rc2, 2)
+    check('agg.same-file-twice-text', '同一份台账传了多次' in err2, 'stderr=%r' % err2[:200])
+    check_eq('agg.same-file-twice-no-report', os.path.exists(rep2), False)
+
+    # 换一种写法指向同一份文件（./x.jsonl）也必须识别为同一份
+    alt = os.path.join(work, '.', 'agg-a.jsonl')
+    rc3, _out3, err3 = run_verifier([a, alt])
+    check_eq('agg.same-file-different-spelling-exit', rc3, 2)
+    check('agg.same-file-different-spelling-text', '同一份台账传了多次' in err3,
+          'stderr=%r' % err3[:200])
+
+
+def test_direct_api_and_bool_fields(work):
+    """direct API 与稳定布尔字段（R9-C 两项 review 修完后的回归）。
+
+    重点：CLI 那一层的拒绝**不能顶替**库这一层的判据。
+    """
+    ve = load_verifier_module()
+
+    # 1) direct API：同一份台账传两次。两份报告的 path 与 line **完全相同**，
+    #    只按 (path, line) 认"第一条"会让两条都命中 skip → 一条都不翻红。
+    a = write_jsonl(os.path.join(work, 'direct-a.jsonl'), [healthy(work, 'dir-1')])
+    rep = ve.build_report([a, a], check_disk=True)
+    check_eq('direct.verdict-fail', rep['verdict'], 'FAIL')
+    check_eq('direct.exit-code', rep['exitCode'], 1)
+    check_eq('direct.dup-found', len(rep['duplicateIds']), 1)
+    # 不能用 `duplicateIds[0]['where']`：查不出重复时这里是空列表，会抛 IndexError，
+    # 而**异常不是判据**——它会中断整个用例、让后面的断言（含 dup.exit）根本没跑到，
+    # 看起来像"没翻红"。缺失就断言缺失，不要崩。
+    dup0 = rep['duplicateIds'][0] if rep['duplicateIds'] else {}
+    check_eq('direct.dup-where-count', len(dup0.get('where') or []), 2)
+    check_eq('direct.totals-lines', rep['totals']['lines'], 2)
+    check_eq('direct.totals-pass', rep['totals']['pass'], 1)
+    check_eq('direct.totals-fail', rep['totals']['fail'], 1)
+    # 不是"只在 totals 里加个数"：第二份报告那一行必须真的带上 duplicate-id 且翻红
+    check_eq('direct.first-report-pass', rep['files'][0]['counts']['pass'], 1)
+    check_eq('direct.second-report-fail', rep['files'][1]['counts']['fail'], 1)
+    second = rep['files'][1]['lines'][0] if len(rep['files']) > 1 and rep['files'][1]['lines'] else None
+    check('direct.second-line-present', second is not None, 'files=%r' % len(rep['files']))
+    if second is not None:
+        check_eq('direct.second-line-status', second['status'], schema.STATUS_FAIL)
+        check('direct.second-line-code',
+              any(i.get('code') == 'duplicate-id' for i in second['issues']),
+              'issues=%r' % [i.get('code') for i in second['issues']])
+
+    # 2) 对照：两份**不同**的健康台账不得误报重复（否则 1) 的"红"就是恒真空判据）
+    b = write_jsonl(os.path.join(work, 'direct-b.jsonl'), [healthy(work, 'dir-2')])
+    rep2 = ve.build_report([a, b], check_disk=True)
+    check_eq('direct.distinct-verdict', rep2['verdict'], 'PASS')
+    check_eq('direct.distinct-dups', rep2['duplicateIds'], [])
+
+    # 3) lastLineUnterminated 必须是**稳定 bool**：四种情形逐项断言真实取值与真实类型，
+    #    不允许用 `.get(key, False)` 把"没报告过"与"报告为假"混为一谈。
+    eol_dir = os.path.join(work, 'eol')
+    os.makedirs(eol_dir, exist_ok=True)
+    cases = [
+        ('normal', line_of(healthy(work, 'eol-normal')) + b'\n', False),
+        ('empty', b'', False),
+        ('no-trailing-newline', line_of(healthy(work, 'eol-notrail')), True),
+        ('half-line-bad-json', b'{"schema":"r8c-evidence-1","id":"half"', True),
+    ]
+    for name, payload, expected in cases:
+        p = write_file(os.path.join(eol_dir, '%s.jsonl' % name), payload)
+        r = ve.scan_file(p, True)
+        check_eq('eol.%s-key-present' % name, 'lastLineUnterminated' in r, True)
+        check_eq('eol.%s-type-bool' % name, type(r.get('lastLineUnterminated')) is bool, True)
+        check_eq('eol.%s-value' % name, r.get('lastLineUnterminated'), expected)
 
 
 def test_file_level(work):
@@ -453,21 +670,36 @@ def main():
     ap.add_argument('--r7-ledger', default=None,
                     help='R7 作者台账原件路径（只读复核；不给就用默认位置，缺失则跳过）')
     args = ap.parse_args()
-    work = os.path.abspath(args.work)
-    os.makedirs(work, exist_ok=True)
+    work_root = os.path.abspath(args.work)
+    os.makedirs(work_root, exist_ok=True)
+    work = tempfile.mkdtemp(prefix='verify-evidence-', dir=work_root)
 
-    test_healthy_control(work)
-    test_poisons(work)
-    test_disk_poisons(work)
-    test_unknown_phase(work)
-    test_legacy_and_bytes(work)
-    test_file_level(work)
-    test_r7_original_if_present(work, args.r7_ledger)
+    # 逐个用例包一层：一个用例抛异常**不得**让后面的判据凭空消失。
+    # 变异取证正是靠"哪些断言翻红"来判断的——被异常吃掉的那一段会伪装成"没翻红"。
+    for _name, _fn in [
+            ('test_healthy_control', lambda: test_healthy_control(work)),
+            ('test_poisons', lambda: test_poisons(work)),
+            ('test_disk_poisons', lambda: test_disk_poisons(work)),
+            ('test_unknown_phase', lambda: test_unknown_phase(work)),
+            ('test_legacy_and_bytes', lambda: test_legacy_and_bytes(work)),
+            ('test_strict_input', lambda: test_strict_input(work)),
+            ('test_clock_granularity', lambda: test_clock_granularity(work)),
+            ('test_aggregate', lambda: test_aggregate(work)),
+            ('test_direct_api_and_bool_fields', lambda: test_direct_api_and_bool_fields(work)),
+            ('test_file_level', lambda: test_file_level(work)),
+            ('test_r7_original_if_present', lambda: test_r7_original_if_present(work, args.r7_ledger))]:
+        try:
+            _fn()
+        except Exception as exc:  # noqa: BLE001 —— 必须记下来，不能吞
+            check('crash.%s' % _name, False,
+                  '%s: %s | %s' % (type(exc).__name__, exc,
+                                   traceback.format_exc().strip().splitlines()[-1]))
 
     failed = [r for r in ROWS if r['ok'] is False]
     skipped = [r for r in ROWS if r['ok'] is None]
     print(json.dumps({'status': 'PASS' if not failed else 'FAIL', 'checks': len(ROWS),
-                      'failed': len(failed), 'skipped': len(skipped)}, ensure_ascii=False))
+                      'failed': len(failed), 'skipped': len(skipped),
+                      'workDir': work}, ensure_ascii=False))
     return 0 if not failed else 1
 
 

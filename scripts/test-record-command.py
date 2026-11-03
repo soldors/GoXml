@@ -318,6 +318,13 @@ def case_lock(work, ledger, log_dir, py):
     check_eq('lock.busy-no-ledger-line', len(after_lines), len(before_lines))
     check('lock.busy-holder-reported', s2 and ((s2.get('lockHolder') or {}).get('agent')) == 'zcode',
           'holder=%r' % (s2 or {}).get('lockHolder'))
+    busy_holder = (s2 or {}).get('lockHolder') or {}
+    check('lock.busy-no-token-key', 'token' not in busy_holder,
+          'public holder keys=%r' % sorted(busy_holder))
+    check_eq('lock.busy-fingerprint-exact', busy_holder.get('tokenFingerprint'),
+             'sha256:' + hashlib.sha256(foreign['token'].encode('utf-8')).hexdigest())
+    check('lock.busy-no-plaintext', foreign['token'] not in json.dumps(s2, ensure_ascii=False),
+          'public busy summary must not contain the live token')
 
     # 3) 外层已持锁的明确模式：只核对，不碰锁文件
     rc3, s3, _o3, _e3 = run_record(['run', '--id', 'lock-external', '--jsonl', ledger,
@@ -349,6 +356,127 @@ def case_lock(work, ledger, log_dir, py):
                                      '--lock-path', os.path.join(lock_dir, 'x.lock'),
                                      '--', py, SENTINEL, 'quick'])
     check_eq('lock.mode-missing-exit', rc5, 2)
+
+    # 6) 已经取到锁、却走**普通错误**路径（不是成功尾部）：锁也必须归还。
+    #    锁只挂在成功尾部释放的话，这条路径会把公共锁泄漏给下一个 agent。
+    err_lock = os.path.join(lock_dir, 'errpath.lock')
+    occupied = os.path.join(lock_dir, 'occupied-report.json')
+    with open(occupied, 'wb') as fh:
+        fh.write(b'PRE-EXISTING')
+    rc6, _s6, _o6, _e6 = run_record(['run', '--id', 'lock-errpath', '--jsonl', ledger,
+                                     '--log-dir', log_dir, '--lock-path', err_lock,
+                                     '--lock-mode', 'acquire', '--report', occupied,
+                                     '--', py, SENTINEL, 'quick'])
+    check_eq('lock.errpath-exit', rc6, 2)
+    check_eq('lock.errpath-released', os.path.exists(err_lock), False)
+    check_eq('lock.errpath-report-intact', read_bytes(occupied), b'PRE-EXISTING')
+
+    # 7) external 声明了外层持锁，但 --lock-token 与持有者不一致：拒绝、不发起子进程、
+    #    也不碰锁文件（用法错误路径只写 stderr，stdout 上没有 summary JSON）
+    before_lines7, _ = ledger_lines(ledger)
+    rc7, s7, _o7, e7 = run_record(['run', '--id', 'lock-token-mismatch', '--jsonl', ledger,
+                                   '--log-dir', log_dir, '--lock-path', foreign_path,
+                                   '--lock-mode', 'external', '--lock-token', 'WRONG-TOKEN',
+                                   '--', py, SENTINEL, 'quick'])
+    check_eq('lock.token-mismatch-exit', rc7, 2)
+    check('lock.token-mismatch-usage-text', 'usage error' in e7, 'stderr=%r' % e7[:200])
+    check_eq('lock.token-mismatch-no-summary', s7, None)
+    check_eq('lock.token-mismatch-bytes-intact', read_bytes(foreign_path), before_bytes)
+    after_lines7, _ = ledger_lines(ledger)
+    check_eq('lock.token-mismatch-no-line', len(after_lines7), len(before_lines7))
+
+    # 8) --lock-token 只对 external 有意义；用在 acquire 上是用法错误
+    rc8, _s8, _o8, e8 = run_record(['run', '--id', 'lock-token-on-acquire', '--jsonl', ledger,
+                                    '--log-dir', log_dir,
+                                    '--lock-path', os.path.join(lock_dir, 'y.lock'),
+                                    '--lock-mode', 'acquire', '--lock-token', 'whatever',
+                                    '--', py, SENTINEL, 'quick'])
+    check_eq('lock.token-on-acquire-exit', rc8, 2)
+    check('lock.token-on-acquire-usage-text', 'usage error' in e8, 'stderr=%r' % e8[:200])
+    check_eq('lock.token-on-acquire-no-file',
+             os.path.exists(os.path.join(lock_dir, 'y.lock')), False)
+
+    # 9) external 模式**不得**释放外层（他人）的锁：自己没取过，released 必须保持 None
+    check('lock.external-not-released',
+          line3 and line3['lock'].get('acquired') is False
+          and line3['lock'].get('released') is None,
+          'lock=%r' % (line3 or {}).get('lock'))
+    check_eq('lock.external-still-intact', read_bytes(foreign_path), before_bytes)
+
+    # 10) 公开台账不得写可用明文 token：planned.json 保留真 token（恢复材料），
+    #     台账行 / --report 只留完整 SHA-256 指纹；且脱敏**不能**破坏按真 token 释放。
+    redact_lock = os.path.join(lock_dir, 'redact.lock')
+    report10 = os.path.join(lock_dir, 'redact-report.json')
+    rc10, s10, _o10, e10 = run_record(['run', '--id', 'lock-redact', '--jsonl', ledger,
+                                       '--log-dir', log_dir, '--lock-path', redact_lock,
+                                       '--lock-mode', 'acquire', '--lock-agent', 'workbuddy',
+                                       '--lock-task', 'r9-redact', '--report', report10,
+                                       '--', py, SENTINEL, 'quick'])
+    check_eq('redact.exit', rc10, 0)
+    check_eq('redact.released-by-real-token', s10 and s10.get('lockReleased'), True)
+    check_eq('redact.lock-file-gone', os.path.exists(redact_lock), False)
+
+    run_dirs10 = sorted(d for d in os.listdir(log_dir)
+                        if d.startswith('lock-redact') and
+                        os.path.isdir(os.path.join(log_dir, d)))
+    check('redact.run-dir-found', len(run_dirs10) >= 1, 'dirs=%r' % run_dirs10)
+    planned10 = os.path.join(log_dir, run_dirs10[-1], 'planned.json') if run_dirs10 else None
+    planned_obj = None
+    if planned10 and os.path.isfile(planned10):
+        planned_obj = json.loads(read_bytes(planned10).decode('utf-8'))
+    real_token = ((planned_obj or {}).get('lock') or {}).get('token')
+    check('redact.planned-keeps-real-token',
+          isinstance(real_token, str) and len(real_token) > 0,
+          'planned.lock.token=%r' % (real_token if real_token is None else '<%d chars>' % len(real_token or '')))
+
+    line10 = find_line(ledger_lines(ledger)[0], 'lock-redact')
+    check('redact.line-present', line10 is not None, 'err=%r' % e10[:200])
+    if line10 and isinstance(real_token, str):
+        lock10 = line10['lock']
+        check_eq('redact.public-no-token-key', 'token' in lock10, False)
+        fp = lock10.get('tokenFingerprint')
+        want = 'sha256:' + hashlib.sha256(real_token.encode('utf-8')).hexdigest()
+        check_eq('redact.fingerprint-exact', fp, want)
+        check('redact.fingerprint-full-hex',
+              isinstance(fp, str) and fp.startswith('sha256:') and len(fp) == 7 + 64,
+              'fp=%r' % (fp if fp is None else '<len %d>' % len(fp)))
+        check_eq('redact.fingerprint-stable',
+                 'sha256:' + hashlib.sha256(real_token.encode('utf-8')).hexdigest(), want)
+        check_eq('redact.fingerprint-is-not-token', fp == real_token, False)
+        check('redact.ledger-line-no-plaintext',
+              real_token.encode('utf-8') not in read_bytes(ledger),
+              '真 token 不得出现在公开台账字节里')
+        if os.path.isfile(report10):
+            check('redact.report-no-plaintext',
+                  real_token.encode('utf-8') not in read_bytes(report10),
+                  '--report 也不得含真 token')
+
+    # 恢复同样脱敏：planned.json 里是真 token，recover 出来的公开行必须走同一路径。
+    if planned10 and os.path.isfile(planned10):
+        planned_sha_before = sha_bytes(read_bytes(planned10))
+        raw_stdout = ((line10 or {}).get('raw') or {}).get('stdout') or {}
+        raw_path = raw_stdout.get('path')
+        raw_sha_before = sha_bytes(read_bytes(raw_path)) if raw_path and os.path.isfile(raw_path) else None
+        recover_ledger = os.path.join(work, 'redact-recover.jsonl')
+        rcR, _sR, _oR, eR = run_record(['recover', '--run-dir', os.path.join(log_dir, run_dirs10[-1]),
+                                        '--jsonl', recover_ledger])
+        check_eq('redact.recover-exit', rcR, 0)
+        rec_lines, _bad = ledger_lines(recover_ledger)
+        lineR = find_line(rec_lines, 'lock-redact')
+        check('redact.recovered-line-present', lineR is not None, 'err=%r' % eR[:200])
+        if lineR and isinstance(real_token, str):
+            check_eq('redact.recovered-no-token-key', 'token' in lineR['lock'], False)
+            check_eq('redact.recovered-fingerprint-exact', lineR['lock'].get('tokenFingerprint'),
+                     'sha256:' + hashlib.sha256(real_token.encode('utf-8')).hexdigest())
+            check('redact.recovered-line-no-plaintext',
+                  real_token.encode('utf-8') not in read_bytes(recover_ledger),
+                  '恢复出来的公开行也不得含真 token')
+        # 脱敏与恢复都不得回改原始材料
+        check_eq('redact.planned-bytes-unchanged',
+                 sha_bytes(read_bytes(planned10)), planned_sha_before)
+        if raw_sha_before is not None:
+            check_eq('redact.raw-bytes-unchanged',
+                     sha_bytes(read_bytes(raw_path)), raw_sha_before)
 
 
 TRICKY = ['', 'a b', '中文', 'q"q', 'C:\\tail\\']
@@ -575,6 +703,56 @@ def case_hard_kill_recover(work, ledger, log_dir, py):
              len([x for x in ledger_lines(ledger)[0] if x.get('id') == 'kill']), 1)
 
 
+def case_recover_hash_commitment(work, py):
+    """recover 必须保留**捕获时**的 bytes/SHA 承诺。
+
+    事后改字节再 recover，若按当前磁盘重算覆盖承诺，篡改就会被重新认证成可信证据。
+    因此：承诺保持原值 → 与当前磁盘不一致 → 这一行不许自称可信。
+    用独立的台账/日志目录，避免污染主台账的收尾复核。
+    """
+    sub = os.path.join(work, 'hashcommit')
+    ledger = os.path.join(sub, 'commands.jsonl')
+    log_dir = os.path.join(sub, 'logs')
+    rc, s, _o, err = run_record(['run', '--id', 'rec-hash', '--jsonl', ledger,
+                                 '--log-dir', log_dir, '--', py, SENTINEL, 'quick'])
+    check_eq('rechash.run-exit', rc, 0)
+    if not s:
+        check('rechash.summary-present', False, 'err=%r' % err[:200])
+        return
+    run_dir = os.path.dirname(s['plannedPath'])
+    line0 = find_line(ledger_lines(ledger)[0], 'rec-hash')
+    if not line0:
+        check('rechash.initial-line', False, 'ledger=%r' % ledger)
+        return
+    old_sha = line0['raw']['stdout']['sha256']
+    old_bytes = line0['raw']['stdout']['bytes']
+    raw_path = line0['raw']['stdout']['path']
+    with open(raw_path, 'ab') as fh:
+        fh.write(b'TAMPERED-AFTER-CAPTURE\n')
+    check('rechash.tamper-took-effect', sha_bytes(read_bytes(raw_path)) != old_sha,
+          'raw=%r' % raw_path)
+
+    ledger2 = os.path.join(sub, 'recovered.jsonl')
+    rc_r, _s_r, _o_r, err_r = run_record(['recover', '--run-dir', run_dir, '--jsonl', ledger2])
+    check_eq('rechash.recover-exit', rc_r, 7)  # 记录不完整（承诺与磁盘矛盾）→ 7
+    lines2, bad2 = ledger_lines(ledger2)
+    check_eq('rechash.no-bad-lines', bad2, [])
+    line = find_line(lines2, 'rec-hash')
+    check('rechash.line-present', line is not None, 'err=%r' % err_r[:200])
+    if line:
+        check_eq('rechash.phase', line['phase'], 'recovered')
+        check_eq('rechash.sha-preserved', line['raw']['stdout']['sha256'], old_sha)
+        check_eq('rechash.bytes-preserved', line['raw']['stdout']['bytes'], old_bytes)
+        check_eq('rechash.record-ok-false', line['recordOk'], False)
+        check('rechash.reason-mismatch',
+              any('raw-sha-mismatch' in r or 'raw-bytes-mismatch' in r
+                  for r in line['recordReasons']),
+              'reasons=%r' % (line['recordReasons'],))
+    rc_v, out_v, _e_v = run_verify([ledger2])
+    check_eq('rechash.verifier-fail', rc_v, 1)
+    check('rechash.verifier-code', 'raw-sha-mismatch' in out_v, 'out=%r' % out_v[:300])
+
+
 def case_repo_narrow_check(work, ledger, log_dir, py):
     """自用闭环：用本入口记录一条**本仓**只读窄检查，再由校验器验证。"""
     lock_target = os.path.join(work, 'locks', 'status-probe.lock')
@@ -597,6 +775,55 @@ def case_repo_narrow_check(work, ledger, log_dir, py):
     rc_v, out_v, err_v = run_verify([single])
     check_eq('repo.verifier-pass', rc_v, 0)
     check('repo.verifier-text', 'verdict=PASS' in out_v, 'out=%r err=%r' % (out_v[:160], err_v[:160]))
+
+
+def case_repo_selcheck_entry(work, ledger, log_dir, py):
+    """接入**现有**自检入口：用本工具记录 `selfcheck-verify-examples-proc.py` 的一次真实执行。
+
+    接入方式零改动：不修改那个入口的任何一行，只在它外面用本记录入口包一层。
+    归属口径：台账行记的是**被记录的命令**（`argv` 里是自检入口），
+    而 `tool.name` 是**记录器** `record-command.py`——两者不是一回事，不能互相顶替。
+    """
+    sc_base = os.path.join(work, 'selcheck-entry')
+    os.makedirs(sc_base, exist_ok=True)
+    sc_out = os.path.join(sc_base, 'selfcheck-report.json')
+    entry = os.path.join(HERE, 'selfcheck-verify-examples-proc.py')
+    # 自检入口自己在 --work 下建 `cases/`；这里**只传 sc_base**。
+    # 传 <base>/cases 会让它再造一层 cases/cases——路径对不对必须看产物，不能只改说明。
+    rc, s, _o, err = run_record(['run', '--id', 'repo-selcheck', '--jsonl', ledger,
+                                 '--log-dir', log_dir, '--timeout', '300', '--', py, entry,
+                                 '--work', sc_base, '--out', sc_out])
+    check_eq('selcheck.exit', rc, 0)
+    check_eq('selcheck.recordOk', s and s['recordOk'], True)
+    check_eq('selcheck.infraOk', s and s['infraOk'], True)
+    check_eq('selcheck.report-written', os.path.isfile(sc_out), True)
+    # 产物路径就是判据：恰好一层 cases/，且双层路径不存在（核真实 argv 与产物，不是改注释）。
+    check_eq('selcheck.cases-dir-exists', os.path.isdir(os.path.join(sc_base, 'cases')), True)
+    check_eq('selcheck.no-double-cases',
+             os.path.isdir(os.path.join(sc_base, 'cases', 'cases')), False)
+    line = find_line(ledger_lines(ledger)[0], 'repo-selcheck')
+    check('selcheck.line-present', line is not None, 'err=%r' % err[:200])
+    if line:
+        check('selcheck.argv-names-entry',
+              any('selfcheck-verify-examples-proc.py' in x for x in line['argv']),
+              'argv=%r' % (line['argv'],))
+        # 真实 argv 里的 --work 必须是 sc_base 本身（不是 .../cases）。
+        argv = line['argv']
+        work_arg = argv[argv.index('--work') + 1] if '--work' in argv else None
+        check_eq('selcheck.argv-work-is-base',
+                 os.path.normcase(os.path.realpath(work_arg or '')),
+                 os.path.normcase(os.path.realpath(sc_base)))
+        check_eq('selcheck.tool-is-recorder', line['tool']['name'], 'record-command.py')
+        raw = read_bytes(line['raw']['stdout']['path'])
+        check('selcheck.raw-nonempty', b'"checks"' in raw, 'raw head=%r' % raw[:160])
+        check_eq('selcheck.sha-matches', line['raw']['stdout']['sha256'], sha_bytes(raw))
+    single = os.path.join(work, 'selcheck-only.jsonl')
+    with open(single, 'wb') as fh:
+        fh.write(json.dumps(line, ensure_ascii=False, sort_keys=True,
+                            separators=(',', ':')).encode('utf-8') + b'\n')
+    rc_v, out_v, _e_v = run_verify([single])
+    check_eq('selcheck.verifier-pass', rc_v, 0)
+    check('selcheck.verifier-text', 'verdict=PASS' in out_v, 'out=%r' % out_v[:160])
 
 
 def case_final_ledger(work, ledger, log_dir):
@@ -641,20 +868,32 @@ def main():
     # 见证进程：不在被测 job 里，任何收口都不该影响它；收口放在**外层 finally**。
     witness = subprocess.Popen([py, SENTINEL, 'grand', '180'])
     try:
-        case_success(work, ledger, log_dir, py)
-        case_nonzero(work, ledger, log_dir, py)
-        case_startup_fail(work, ledger, log_dir)
-        case_timeout_partial(work, ledger, log_dir, py)
-        case_detach(work, ledger, log_dir, py)
-        case_no_overwrite(work, ledger, log_dir, py)
-        case_lock(work, ledger, log_dir, py)
-        case_fidelity(work, ledger, log_dir, py)
-        case_ps_hosts(work, ledger, log_dir, py)
-        case_soft_interrupt(work, ledger, log_dir, py)
-        case_hard_kill_recover(work, ledger, log_dir, py)
-        case_repo_narrow_check(work, ledger, log_dir, py)
-        check('witness.alive-during', witness.poll() is None, 'poll=%r' % witness.poll())
-        case_final_ledger(work, ledger, log_dir)
+        # 逐个用例包一层：一个用例抛异常**不得**让后面的判据凭空消失。
+        # 变异取证靠"哪些断言翻红"判断，被异常吃掉的那一段会伪装成"没翻红"。
+        for _name, _fn in [
+                ('case_success', lambda: case_success(work, ledger, log_dir, py)),
+                ('case_nonzero', lambda: case_nonzero(work, ledger, log_dir, py)),
+                ('case_startup_fail', lambda: case_startup_fail(work, ledger, log_dir)),
+                ('case_timeout_partial', lambda: case_timeout_partial(work, ledger, log_dir, py)),
+                ('case_detach', lambda: case_detach(work, ledger, log_dir, py)),
+                ('case_no_overwrite', lambda: case_no_overwrite(work, ledger, log_dir, py)),
+                ('case_lock', lambda: case_lock(work, ledger, log_dir, py)),
+                ('case_fidelity', lambda: case_fidelity(work, ledger, log_dir, py)),
+                ('case_ps_hosts', lambda: case_ps_hosts(work, ledger, log_dir, py)),
+                ('case_soft_interrupt', lambda: case_soft_interrupt(work, ledger, log_dir, py)),
+                ('case_hard_kill_recover', lambda: case_hard_kill_recover(work, ledger, log_dir, py)),
+                ('case_recover_hash_commitment', lambda: case_recover_hash_commitment(work, py)),
+                ('case_repo_narrow_check', lambda: case_repo_narrow_check(work, ledger, log_dir, py)),
+                ('case_repo_selcheck_entry', lambda: case_repo_selcheck_entry(work, ledger, log_dir, py)),
+                ('witness.alive-during', lambda: check('witness.alive-during',
+                                                       witness.poll() is None,
+                                                       'poll=%r' % witness.poll())),
+                ('case_final_ledger', lambda: case_final_ledger(work, ledger, log_dir))]:
+            try:
+                _fn()
+            except Exception as exc:  # noqa: BLE001 —— 必须记下来，不能吞
+                check('crash.%s' % _name, False,
+                      '%s: %s' % (type(exc).__name__, exc))
     except BaseException as exc:
         check('harness.completed', False, 'exception=%s: %s' % (type(exc).__name__, exc))
     finally:

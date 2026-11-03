@@ -97,12 +97,28 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if ctxErr != nil {
 		return fmt.Errorf("解析有效 Go 构建上下文失败: %w", ctxErr)
 	}
+	// R9-A S1：构造批级「目标包权威解析器」（go list -json，批内复用）。
+	// env=nil → 继承真实环境（与 measureContextValues 生产调用一致，二者看到同一
+	// GOENV/GOFLAGS/GOEXPERIMENT/CPU）。仅用于 packageDirName 定名；不改 VerifiedDoc 准入。
+	//
+	// 定名时旧生成物仍在目标目录里：用 -overlay 把**本工具已登记产物**映射为
+	// `//go:build ignore`（与 staleGeneratedOverlay 同语义），使 go list 只看到真实
+	// 用户源，避免旧产物包名参与本次定名（任务要求保留自有旧生成物排除）。
+	// 提前只读加载 Manifest（原在阶段零 B）；无 Manifest 时视为空。
+	nameMan, manErr := loadManifest(manifestPath(moduleRoot))
+	if manErr != nil {
+		return manErr
+	}
+	overlayForDir := func(dir string) (map[string][]byte, error) {
+		return targetNameOverlay(moduleRoot, nameMan, dir)
+	}
+	pkgResolver := newTargetPkgResolver(goExe, moduleRoot, nil, overlayForDir)
 
 	// ---------- 阶段零：解析输入与目标（不写盘、不生成）----------
 	resolved := make([]*resolvedInput, 0, len(inputs))
 	targets := make([]string, 0, len(inputs))
 	for _, in := range inputs {
-		r, err := resolveInput(in, moduleRoot, outRoot, pkgCtxt)
+		r, err := resolveInput(in, moduleRoot, outRoot, pkgCtxt, pkgResolver)
 		if err != nil {
 			return err
 		}
@@ -115,10 +131,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	}
 
 	// ---------- 阶段零 B：缓存判定（读 Manifest、算键、建 K3 排除集）----------
-	man, err := loadManifest(manifestPath(moduleRoot))
-	if err != nil {
-		return err
-	}
+	man := nameMan // S1 定名阶段已只读加载，复用避免重复 IO。
 	if err := validateManifestOutputPaths(moduleRoot, man); err != nil {
 		return err
 	}
@@ -470,7 +483,21 @@ var readPackageFile = os.ReadFile
 // 读取失败、没有合法 package 子句、多包、上下文错误一律 fail-closed，
 // 保留 cause——被选中的文件在 go build 眼里必然参与编译，CLI 静默跳过
 // 等于把「坏包」当「空包」处理。
-func packageDirName(dir string, ctxt build.Context) (string, error) {
+func packageDirName(dir string, ctxt build.Context, resolvers ...targetPkgResolverFn) (string, error) {
+	// R9-A S1 生产接线：若注入了权威解析器（pipeline 阶段零按批设置），优先用 Go
+	// 工具对目标有效环境的 `go list -json` 结果定名与校验选文件——这是唯一与 go list
+	// 同源的口径，避免把宿主 build.Default.ToolTags 当目标（R8-A F3 分叉根因）。
+	// 返回 ok=false（目录真正未初始化）时返回结构化未初始化错误，保留
+	// 「首建新目录回退源包名」等既有兼容边界；返回 err（多包/读错/解析失败）则 fail-closed。
+	if len(resolvers) > 0 && resolvers[0] != nil {
+		s1 := resolvers[0]
+		if name, ok, err := s1(dir); err != nil {
+			return "", err
+		} else if ok {
+			return name, nil
+		}
+		return "", fmt.Errorf("目录 %s 没有可定名的非测试 Go 源文件: %w", dir, errPackageUninitialized)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("读取目录 %s: %w", dir, err)

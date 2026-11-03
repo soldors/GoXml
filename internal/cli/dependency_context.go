@@ -43,6 +43,20 @@ type measuredContextValues struct {
 	GOWORK      string
 	GOVERSION   string
 	GOROOT      string
+	// R9-A S1：GOEXPERIMENT 是 Go 实际提供的 raw delta（用户显式增减，非启用全集）。
+	// 与 CPU 特性一起构成「选文件身份」的必要输入（实验/架构默认集决定哪些文件被选中）；
+	// 纳入 K10 缓存身份防跨实验假命中。语义等价的 raw 不强行归一（保守 miss 可接受）。
+	GOEXPERIMENT string
+	// CPU 特性（按 GOARCH 生效）：影响 go list 选文件与包名。
+	GOAMD64   string
+	GOARM     string
+	GOARM64   string
+	GO386     string
+	GOMIPS    string
+	GOMIPS64  string
+	GOPPC64   string
+	GORISCV64 string
+	GOWASM    string
 }
 
 // measureContextValues 用受控子进程测量 Go 实际生效的构建上下文。
@@ -58,7 +72,8 @@ func measureContextValues(goExe string, moduleRoot string, envOverrides ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), cacheContextTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, goExe, "env", "-json",
-		"GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOWORK", "GOVERSION", "GOROOT")
+		"GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOWORK", "GOVERSION", "GOROOT", "GOEXPERIMENT",
+		"GOAMD64", "GOARM", "GOARM64", "GO386", "GOMIPS", "GOMIPS64", "GOPPC64", "GORISCV64", "GOWASM")
 	if moduleRoot != "" {
 		cmd.Dir = moduleRoot
 	}
@@ -82,13 +97,23 @@ func measureContextValues(goExe string, moduleRoot string, envOverrides ...strin
 	// Workspace does not invalidate measured package-selection values.
 	// Its dependency closure is rejected separately by cacheString, not by generation.
 	return measuredContextValues{
-		GOOS:        values["GOOS"],
-		GOARCH:      values["GOARCH"],
-		CGO_ENABLED: values["CGO_ENABLED"],
-		GOFLAGS:     values["GOFLAGS"],
-		GOWORK:      values["GOWORK"],
-		GOVERSION:   values["GOVERSION"],
-		GOROOT:      values["GOROOT"],
+		GOOS:         values["GOOS"],
+		GOARCH:       values["GOARCH"],
+		CGO_ENABLED:  values["CGO_ENABLED"],
+		GOFLAGS:      values["GOFLAGS"],
+		GOWORK:       values["GOWORK"],
+		GOVERSION:    values["GOVERSION"],
+		GOROOT:       values["GOROOT"],
+		GOEXPERIMENT: values["GOEXPERIMENT"],
+		GOAMD64:      values["GOAMD64"],
+		GOARM:        values["GOARM"],
+		GOARM64:      values["GOARM64"],
+		GO386:        values["GO386"],
+		GOMIPS:       values["GOMIPS"],
+		GOMIPS64:     values["GOMIPS64"],
+		GOPPC64:      values["GOPPC64"],
+		GORISCV64:    values["GORISCV64"],
+		GOWASM:       values["GOWASM"],
 	}, nil
 }
 
@@ -122,6 +147,17 @@ func (m measuredContextValues) cacheString() (string, error) {
 		"GOFLAGS":     m.GOFLAGS,
 		"GOVERSION":   m.GOVERSION,
 		"GOROOT":      m.GOROOT,
+		// R9-A S1：实验 raw delta + CPU 特性进入 K10（决定 go list 选文件身份）。
+		"GOEXPERIMENT": m.GOEXPERIMENT,
+		"GOAMD64":      m.GOAMD64,
+		"GOARM":        m.GOARM,
+		"GOARM64":      m.GOARM64,
+		"GO386":        m.GO386,
+		"GOMIPS":       m.GOMIPS,
+		"GOMIPS64":     m.GOMIPS64,
+		"GOPPC64":      m.GOPPC64,
+		"GORISCV64":    m.GORISCV64,
+		"GOWASM":       m.GOWASM,
 	}
 	b, err := json.Marshal(stable)
 	if err != nil {

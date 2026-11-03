@@ -97,6 +97,8 @@ def scan_file(path, check_disk=True):
         'crlfLines': 0,
         'endsWithNewline': raw.endswith(b'\n') if raw else True,
         'blankLines': 0,
+        # 固定为 bool：调用方不该用 `.get(...) 默认值` 把"没报告过"和"报告为假"混为一谈。
+        'lastLineUnterminated': False,
         'lines': [],
         'counts': {'pass': 0, 'fail': 0, 'incomplete': 0, 'unsupported': 0},
     }
@@ -107,6 +109,7 @@ def scan_file(path, check_disk=True):
         parts = parts[:-1]
     if parts and not trailing_empty:
         # 最后一行没有换行：可能是被硬中断截断的半行——这是**必须判出来**的事实。
+        # 键在上面已初始化为 False，这里只需要翻 True，两个取值都是真实 bool。
         report['lastLineUnterminated'] = True
 
     for idx, raw_line in enumerate(parts, start=1):
@@ -137,30 +140,36 @@ def scan_file(path, check_disk=True):
 def find_duplicates(reports):
     """重复 id 判红：第一条算"先到先得"，其后每条都追加 `duplicate-id` FAIL。
 
-    注意路径里可能带盘符冒号，定位一律用 `(path, line)` 元组拼装，不做字符串切分。
+    定位必须用 **(report 索引, 行号)**，不能只用 `(path, line)`：
+    `build_report([a, a])` 这种 direct API 调用下，两份报告的 path 与 line **完全相同**，
+    按 `(path, line)` 认"第一条"会让两条**都**命中 skip 分支 → 一条都不翻红，
+    而 `dups` 里又点了这个 id 的名——输出自相矛盾。带上 report 索引后，
+    同一份文件被传两次也能正确判红（CLI 入口另有拒绝，但 library 调用绕不过 CLI 那一层）。
+
+    注意路径里可能带盘符冒号，`where` 一律用 (path, line) 元组拼装，不做字符串切分。
     """
     seen = {}
-    for rep in reports:
+    for rep_idx, rep in enumerate(reports):
         for entry in rep['lines']:
             rid = entry.get('id')
             if not isinstance(rid, str):
                 continue
-            seen.setdefault(rid, []).append((rep['path'], entry['line']))
+            seen.setdefault(rid, []).append((rep_idx, rep['path'], entry['line']))
 
     dups = []
     dup_ids = set()
     for rid, where in seen.items():
         if len(where) > 1:
             dup_ids.add(rid)
-            dups.append({'id': rid, 'where': ['%s:%d' % (p, n) for p, n in where]})
+            dups.append({'id': rid, 'where': ['%s:%d' % (p, n) for _i, p, n in where]})
 
-    for rep in reports:
+    for rep_idx, rep in enumerate(reports):
         for entry in rep['lines']:
             rid = entry.get('id')
             if not isinstance(rid, str) or rid not in dup_ids:
                 continue
-            first_path, first_line = seen[rid][0]
-            if rep['path'] == first_path and entry['line'] == first_line:
+            first_idx, first_path, first_line = seen[rid][0]
+            if rep_idx == first_idx and entry['line'] == first_line:
                 continue
             entry['issues'] = list(entry['issues']) + [
                 {'code': 'duplicate-id',
@@ -268,6 +277,19 @@ def main(argv):
     if missing:
         sys.stderr.write('no such file: %s\n' % ', '.join(missing))
         return EXIT_USAGE
+
+    # 同一份台账传两次是**用法错误**，不是"每一行都跟自己重复"：
+    # 那样会打出满屏 duplicate-id 噪音，而 verdict 反而仍是 PASS（行级 status 不翻红，
+    # 因为两次的 (path,line) 定位相同、都被当成"先到先得"的那一条）。
+    # 与其让"点了名却判通过"自相矛盾，不如在入口就拒绝。
+    seen_paths = {}
+    for p in args.jsonl:
+        key = os.path.normcase(os.path.realpath(p))
+        if key in seen_paths:
+            sys.stderr.write('usage error: 同一份台账传了多次：%s（另一次写作 %s）\n'
+                             % (p, seen_paths[key]))
+            return EXIT_USAGE
+        seen_paths[key] = p
 
     report = build_report(args.jsonl, check_disk=not args.no_disk)
     print_text(report, quiet=args.quiet)

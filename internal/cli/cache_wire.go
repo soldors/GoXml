@@ -108,7 +108,7 @@ type resolvedInput struct {
 //
 // ctxt 是本批实测的有效构建上下文（R7-B B1：与 go list/Analyzer/K10 同源），
 // 由调用方测量一次、批内共享；packageDirName 不再自行读环境。
-func resolveInput(in discovered, moduleRoot, outRoot string, ctxt build.Context) (*resolvedInput, error) {
+func resolveInput(in discovered, moduleRoot, outRoot string, ctxt build.Context, resolvers ...targetPkgResolverFn) (*resolvedInput, error) {
 	targetDir := in.sourceDir
 	if outRoot != "" {
 		targetDir = filepath.Join(outRoot, filepath.FromSlash(filepath.Dir(in.rel)))
@@ -116,13 +116,13 @@ func resolveInput(in discovered, moduleRoot, outRoot string, ctxt build.Context)
 	// 包名来源：
 	//   无 --out-dir：源目录（==目标目录）。
 	//   有 --out-dir：目标目录已初始化则按目标目录定名；否则回退源包名（兼容首建新目录）。
-	pkgName, pkgErr := packageDirName(targetDir, ctxt)
+	pkgName, pkgErr := packageDirName(targetDir, ctxt, resolvers...)
 	if pkgErr != nil && outRoot != "" {
 		// 目标目录未初始化（不存在/无 Go 源/多包）：
 		//   - 多生产包：无法定名 → fail-closed（下面的 err 分支已含「多个非测试 package」。
 		//   - 不存在/为空：回退源包名（既有兼容路径）。
 		if isUndeterminableBecauseUninitialized(pkgErr) {
-			srcPkg, sErr := packageDirName(in.sourceDir, ctxt)
+			srcPkg, sErr := packageDirName(in.sourceDir, ctxt, resolvers...)
 			if sErr != nil {
 				return nil, fmt.Errorf("--out-dir 目标包定名失败（%s）: %w", targetDir, pkgErr)
 			}
@@ -131,11 +131,11 @@ func resolveInput(in discovered, moduleRoot, outRoot string, ctxt build.Context)
 			return nil, fmt.Errorf("--out-dir 目标包定名失败（%s）: %w", targetDir, pkgErr)
 		}
 	} else if pkgErr != nil {
-		return nil, pkgErr
+		return nil, fmt.Errorf("%s: failed to load target package: %w", filepath.ToSlash(in.abs), pkgErr)
 	}
 	// 源目录（同包 ViewModel 所在包）真实包名：供跨包 VM 限定符。解析失败不阻断
 	// （例如纯静态页无 VM）；仅在需要跨包引用时由 Codegen 使用。
-	srcPkgName, _ := packageDirName(in.sourceDir, ctxt)
+	srcPkgName, _ := packageDirName(in.sourceDir, ctxt, resolvers...)
 	src, err := os.ReadFile(in.abs)
 	if err != nil {
 		return nil, fmt.Errorf("读取源文件: %w", err)

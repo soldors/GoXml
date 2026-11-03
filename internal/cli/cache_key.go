@@ -41,7 +41,10 @@ import (
 // v5（R6 Background）：新生成器开始绘制叶子静态背景，拒绝复用旧版忽略背景的产物。
 // v6（R8 Input）：负责人批准事件先行及程序化同步静默，旧v5生成物不可继续命中。
 // GXML语言版本仍为1，只有内部缓存标识演进。
-const cacheFormatVersion = 6
+// v7（R9-A S1）：K10 缓存上下文新增 GOEXPERIMENT raw delta + CPU 特性
+// （GOAMD64/GOARM/GOARM64/GO386/GOMIPS/GOMIPS64/GOPPC64/GORISCV64/GOWASM）；
+// 目标包名/选文件身份改由 go list 权威计算。旧 v6 记录键变化自然安全 miss，无迁移。
+const cacheFormatVersion = 7
 
 // cacheKeyInput 是缓存键的全部输入，均为**已解析的纯数据**。
 //

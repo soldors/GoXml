@@ -30,6 +30,11 @@ r"""R8-C **随仓命令记录入口**：把"跑过的每条命令"变成可复�
   8  公共锁被他人持有：本次**没有发起**任何子进程
   9  自己取的锁没能释放：取证可用，但必须人工处理（禁止按年龄删锁）
 
+公开证据里的锁字段（R9-C）：真 token 只写进 `<run-dir>/planned.json` 这一份**私有恢复材料**
+（硬中断后要按它人工释放自有锁，禁止按年龄删锁）。台账行与 `--report` 里写的是
+`lock.tokenFingerprint = "sha256:" + 完整 hexdigest`，只能用于审计"同一次持有"，
+**不是** release 凭据。外层 `--lock-token` 仅用于核对，不抄入证据与子进程环境。
+
 用法：
 
   python record-command.py run --id <id> --jsonl <file> --log-dir <dir> [--cwd D]
@@ -44,6 +49,7 @@ r"""R8-C **随仓命令记录入口**：把"跑过的每条命令"变成可复�
 不经 shell，也不再二次转义）。
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -268,6 +274,30 @@ def raw_block(result, case_dir):
     return out
 
 
+def public_lock_block(lock_info):
+    """公开台账/报告里的 lock 块：**不含可用的明文 token**，只留完整 SHA-256 指纹。
+
+    必须返回**副本**，绝不原地改 `lock_info`：
+      * `planned.json` 是硬中断后的恢复材料，它要保留真 token 才能按身份人工释放；
+        若与公开块共用同一个 dict，脱敏会把恢复材料一起毁掉；
+      * 释放走的是 `Lock` 对象自己的 token（`lock_obj.release()`），本函数不参与，
+        但原地改会让"本轮到底持有哪个 token"这件事在事后无从核对。
+
+    指纹只用于**审计同一次持有**（两次运行指纹相同 ⇔ 同一个 token），
+    它不是 release 凭据——谁拿它去释放锁都是错的。
+    """
+    block = dict(lock_info or {})
+    token = block.pop('token', None)
+    if token is None:
+        # 没取锁（mode=none）或 external（外层 token 只用于校验、不抄入证据）：
+        # 指纹如实为 None，不拿外层 token 去造一个"看起来有"的指纹。
+        block['tokenFingerprint'] = None
+    else:
+        block['tokenFingerprint'] = 'sha256:' + hashlib.sha256(
+            token.encode('utf-8')).hexdigest()
+    return block
+
+
 def build_record(*, rec_id, requested_id, phase, argv, cwd, result, env, lock_info,
                  planned_path, case_dir, business, interrupted=None, recovered_from=None,
                  repaired_newline=False):
@@ -286,7 +316,7 @@ def build_record(*, rec_id, requested_id, phase, argv, cwd, result, env, lock_in
         'resultPath': result.get('resultPath') if result else None,
         'business': business,
         'env': env,
-        'lock': lock_info,
+        'lock': public_lock_block(lock_info),
         'tool': {
             'name': 'record-command.py',
             'path': os.path.abspath(__file__),
@@ -485,7 +515,7 @@ def cmd_run(args):
     lock, lock_info, lock_obj = resolve_lock(args, lockmod)
     if lock_info.get('busy'):
         emit({'ok': False, 'exitCode': EXIT_LOCK_BUSY, 'lockBusy': True,
-              'lockHolder': lock_info.get('holder'),
+              'lockHolder': public_lock_block(lock_info.get('holder')),
               'recorded': False, 'note': '公共锁被他人持有：本次没有发起任何子进程'},
              EXIT_LOCK_BUSY)
         return EXIT_LOCK_BUSY
