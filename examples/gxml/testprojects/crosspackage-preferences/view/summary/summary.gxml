@@ -1,0 +1,17 @@
+<!-- 跨包偏好设置 · 摘要视图（只读）。
+     与 edit.gxml 声明**同一个** ViewModel（model.Preferences），但本页
+     不接任何事件、不放任何输入框：只绑定已保存值与它的派生串。
+     两个视图各自持有独立的文本缓存槽位，共用同一个模型指针——
+     「多 View 不共享渲染缓存、但共享状态」就是这套模板要证明的事。 -->
+<Goxml Version="1" ViewModel="model.Preferences">
+  <Page Route="/preferences/summary">
+    <Column Padding="16" Gap="8">
+      <Text Value="偏好设置 · 摘要（只读）" Background="#EFEFEF" Padding="4"/>
+      <Text Value="名称" Background="#F7F7F7" Padding="4"/>
+      <Text Value="{SavedName}" Background="#FFFFFF" Padding="4"/>
+      <Text Value="端口" Background="#F7F7F7" Padding="4"/>
+      <Text Value="{SavedPort}" Background="#FFFFFF" Padding="4"/>
+      <Text Value="{SavedSummary}" Background="#FFFBE6" Padding="4"/>
+    </Column>
+  </Page>
+</Goxml>

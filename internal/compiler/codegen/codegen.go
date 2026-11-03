@@ -248,6 +248,13 @@ type generator struct {
 	inputSlots int
 	// inputs 记录每个 <Input> 的生成信息（D4-A）。
 	inputs []inputSlot
+	// staticSlots 是"动态父容器内最大纯静态子树"局部缓存槽位的数量（R10-B，
+	// 契约 §16、ADR-0006 §2.1）。仅动态页（usesVM）分配；静态页由整页
+	// 缓存覆盖，<For> 体内不分配（沿用既有路径）。
+	staticSlots int
+	// inLocalStatic 是当前生成深度是否处于某个局部静态子树内部（>0）。
+	// 内部节点由外层槽位整体覆盖，不得再分配嵌套槽位。
+	inLocalStatic int
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -577,10 +584,70 @@ func checkLoopVarName(name string) error {
 
 // nodeExpr 生成单个节点的渲染**表达式**（返回 layout.Dimensions）。
 //
+// localStaticSubtree 报告 n 是否为"动态父容器内最大纯静态子树"的根。
+//
+// 静态判据**唯一依据** ADR-0006 §2.1：不含 {Binding}、事件、<If>、<For>、
+// 交互控件（Button/Input），布局结果只依赖 renderContextKey 已纳入的上下文。
+// 本函数不复制该定义——直接复用 hasDynamic 的否定（同一条规则的否定形式），
+// 避免第二份定义漂移（契约 §16.1"本条不另立定义"）。
+func (g *generator) localStaticSubtree(n *contracts.NodeIR) bool {
+	return n != nil && !hasDynamic(n)
+}
+
+// localStaticCacheExpr 为一个最大纯静态子树生成"局部缓存"包装表达式
+// （契约 §16.2-16.4：View 自持持久 Ops/CallOp/Dimensions/key，惰性录制、
+// key 未变只回放）。key 取该节点**实际收到**的 Constraints/Metric/Theme/
+// Locale（包装闭包的 gtx 已经过 sizeWrap 的约束改写），浮点按位比较
+// （§16.5）。staticRecs 记录实际录制次数（B3 验收）。
+//
+// 槽位字段 static*<slot> 由结构体发射段生成；子节点不再各自分配槽位
+// （外层槽位已整体覆盖——"不重复固化"）。
+func (g *generator) localStaticCacheExpr(n *contracts.NodeIR) (string, error) {
+	slot := g.staticSlots
+	g.staticSlots++
+	g.inLocalStatic++
+	inner, err := g.nodeExpr(n)
+	g.inLocalStatic--
+	if err != nil {
+		return "", err
+	}
+	s := fmt.Sprint(slot)
+	var b strings.Builder
+	b.WriteString("func(gtx layout.Context) layout.Dimensions {\n")
+	b.WriteString("\tkS" + s + " := " + g.keyType + "{constraints: gtx.Constraints, metric: gtx.Metric, theme: th, locale: gtx.Locale}\n")
+	b.WriteString("\tif !v.staticCached" + s + " || !v.staticKey" + s + ".equal(kS" + s + ") {\n")
+	b.WriteString("\t\tv.staticOps" + s + ".Reset()\n")
+	b.WriteString("\t\tmS" + s + " := op.Record(&v.staticOps" + s + ")\n")
+	b.WriteString("\t\trecS" + s + " := gtx\n")
+	b.WriteString("\t\trecS" + s + ".Ops = &v.staticOps" + s + "\n")
+	b.WriteString("\t\tv.staticDims" + s + " = func(gtx layout.Context) layout.Dimensions {\n")
+	b.WriteString("\t\t\treturn " + inner + "\n")
+	b.WriteString("\t\t}(recS" + s + ")\n")
+	b.WriteString("\t\tv.staticCall" + s + " = mS" + s + ".Stop()\n")
+	b.WriteString("\t\tv.staticKey" + s + " = kS" + s + "\n")
+	b.WriteString("\t\tv.staticCached" + s + " = true\n")
+	b.WriteString("\t\tv.staticRecs" + s + "++\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tv.staticCall" + s + ".Add(gtx.Ops)\n")
+	b.WriteString("\treturn v.staticDims" + s + "\n")
+	b.WriteString("}(gtx)")
+	return b.String(), nil
+}
+
 // 与语句形态的区别：闭包内必须是表达式，不能是赋值语句。
 func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 	if n == nil {
 		return "", fmt.Errorf("codegen: nil node")
+	}
+
+	// R10-B：动态父容器内的最大纯静态子树 → 局部缓存槽位（契约 §16、
+	// ADR-0006 §2.1）。判据复用 hasDynamic 的否定（不另立定义，避免第二份
+	// 静态定义漂移）；静态页由整页缓存覆盖（usesVM=false）、<For> 体内
+	// 沿用既有路径（§6.2）、局部缓存内部不嵌套（外层槽位已覆盖子节点）。
+	// If 分支内的纯静态后代同样适用（emitBranchAppends 亦经 nodeExpr），
+	// 各分支天然独占槽位。
+	if g.usesVM && !g.inFor && g.inLocalStatic == 0 && !hasDynamic(n) {
+		return g.localStaticCacheExpr(n)
 	}
 
 	switch n.Tag {
@@ -839,7 +906,7 @@ func (g *generator) assemble(body string) (string, error) {
 	//   静态页 —— op.Record / op.CallOp 的整页固化；
 	//   动态页 —— 绑定缓存槽位（op.Ops/op.CallOp）或事件失效（op.InvalidateCmd）。
 	// 只为展示型 <For> 的页面两者都没有，无条件导入会编译失败。
-	if !g.usesVM || g.bindSlots > 0 || len(g.clicks) > 0 {
+	if !g.usesVM || g.bindSlots > 0 || len(g.clicks) > 0 || g.staticSlots > 0 {
 		g.imports.add("gioui.org/op", "op")
 	}
 	if g.usesVM {
@@ -882,6 +949,18 @@ func (g *generator) assemble(body string) (string, error) {
 		for i := 0; i < g.inputSlots; i++ {
 			b.WriteString(fmt.Sprintf("\tinput%d widget.Editor\n", i))
 			b.WriteString(fmt.Sprintf("\tapplied%d string\n", i))
+		}
+		// R10-B：动态父容器内局部静态子树缓存（契约 §16、ADR-0006 §2.1）。
+		// 每个"最大纯静态子树"一个独立槽位：View 自持持久 Ops（永不 Reset
+		// 之外的复用）、CallOp 区间、Dimensions 与上下文 key。
+		// staticRecs 是实际录制次数（B3 验收计数；稳定帧不增长）。
+		for i := 0; i < g.staticSlots; i++ {
+			b.WriteString(fmt.Sprintf("\tstaticOps%d op.Ops\n", i))
+			b.WriteString(fmt.Sprintf("\tstaticCall%d op.CallOp\n", i))
+			b.WriteString(fmt.Sprintf("\tstaticDims%d layout.Dimensions\n", i))
+			b.WriteString(fmt.Sprintf("\tstaticKey%d %s\n", i, g.keyType))
+			b.WriteString(fmt.Sprintf("\tstaticCached%d bool\n", i))
+			b.WriteString(fmt.Sprintf("\tstaticRecs%d int\n", i))
 		}
 		// 行状态池：每个含交互控件的 <For> 一个（<For> 列表契约 §3.2）。
 		// map 元素不可寻址，必须存指针。

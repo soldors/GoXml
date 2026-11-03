@@ -1,0 +1,299 @@
+package summary
+
+// 跨包偏好设置 · 摘要视图的离屏语义测试（写在临时 module 的 view/summary 包里）。
+//
+// 这一份测的是**跨视图**的事实，不是单页事实：
+//   - 两个生成视图（edit / summary）持有同一个 *model.Preferences；
+//   - 编辑视图的草稿改了，摘要视图必须**不动**；
+//   - 编辑视图确认之后，摘要视图下一帧就显示新的已保存值；
+//   - 两个独立工程实例（各自一份模型 + 两个视图）互不串状态。
+//
+// 为什么写在 summary 包里：摘要视图的文本槽位（slots[i].text）是**包内**字段，
+// 只有本包能读到「渲染出来的到底是什么字」。断言读槽位而不是读模型，
+// 才能区分「模型变了」和「摘要真的跟着变」。
+//
+// 交互一律经同一个 input.Router 投递真实事件（点击 / EditEvent），
+// 与 cmd/preferences 的入口共用一套组合方式；直接调模型方法只用于布置前置状态。
+
+import (
+	"image"
+	"strconv"
+	"testing"
+	"unicode/utf8"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/edit"
+)
+
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW    = 520
+	frameH    = 900
+	maxFrames = 10
+)
+
+// both 是「两个生成视图 + 一个模型 + 一个 Router」的组合，与 cmd/preferences
+// 的入口同构：入口用 layout.Flex 并排，这里改成上下排（离屏画布更宽裕，
+// 点击扫描也只需要一条窄带）。组合方式属于入口，不属于框架——没有路由参与。
+type both struct {
+	e *edit.GoxmlEditView
+	s *GoxmlSummaryView
+}
+
+func (b *both) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return b.e.Layout(gtx, th)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return b.s.Layout(gtx, th)
+		}),
+	)
+}
+
+type harness struct {
+	m      *model.Preferences
+	both   *both
+	e      *edit.GoxmlEditView
+	s      *GoxmlSummaryView
+	r      input.Router
+	gtx    layout.Context
+	frames int
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	m := model.NewPreferences()
+	e, err := edit.NewGoxmlEditView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewGoxmlSummaryView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{m: m, e: e, s: s, both: &both{e: e, s: s}}
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.both.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y int) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// insert 在光标处插入真实 EditEvent 文本（不改已有内容）。
+func (h *harness) insert(text string) {
+	h.r.Queue(key.EditEvent{Range: key.Range{}, Text: text})
+	h.frame()
+}
+
+// savedSummaryOf 是 SavedSummary 的期望值，按模型公式逐字重算。
+func savedSummaryOf(name, port string) string {
+	return "已保存：" + name + " / " + port +
+		"（名称 " + strconv.Itoa(utf8.RuneCountInString(name)) + " 字符）"
+}
+
+// probePos 缓存扫描结果：名称输入框焦点与两个按钮坐标。
+var probePos struct {
+	focus   [2]int
+	confirm [2]int
+	reset   [2]int
+	done    bool
+}
+
+// discover 用**黑盒探测**定位控件：
+//   - 焦点：点一下再投一次 EditEvent，草稿被回写就说明焦点落到了名称框；
+//   - 按钮：点一下再看模型的 LastAction 是哪条接线。
+//
+// 摘要包看不到 edit 包的 input 字段，所以焦点只能这样探——这反而更接近用户视角。
+func discover(t *testing.T) {
+	t.Helper()
+	if probePos.done {
+		return
+	}
+	// 焦点：y 只在编辑视图的上半部分扫（两个输入框都在提示区之上）。
+	for y := 0; y <= 400 && probePos.focus == [2]int{}; y += 4 {
+		for _, x := range []int{30, 120, 300} {
+			h := newHarness(t)
+			h.frame()
+			h.click(x, y)
+			before := h.m.NameChanges
+			h.insert("探")
+			if h.m.NameChanges > before {
+				probePos.focus = [2]int{x, y}
+				break
+			}
+		}
+	}
+	if probePos.focus == [2]int{} {
+		t.Fatal("扫描未能把焦点送到名称输入框：离屏环境限制，不是用例通过")
+	}
+	for y := 0; y <= 400; y += 4 {
+		for _, x := range []int{24, 40, 60} {
+			if probePos.confirm != [2]int{} && probePos.reset != [2]int{} {
+				break
+			}
+			h := newHarness(t)
+			h.frame()
+			h.click(x, y)
+			switch h.m.LastAction {
+			case "confirm":
+				if probePos.confirm == [2]int{} {
+					probePos.confirm = [2]int{x, y}
+				}
+			case "reset":
+				if probePos.reset == [2]int{} {
+					probePos.reset = [2]int{x, y}
+				}
+			}
+		}
+	}
+	if probePos.confirm == [2]int{} || probePos.reset == [2]int{} {
+		t.Fatalf("扫描未同时命中确认/重置：confirm=%v reset=%v", probePos.confirm, probePos.reset)
+	}
+	probePos.done = true
+	t.Logf("OBS 实测坐标 焦点=(%d,%d) 确认=(%d,%d) 重置=(%d,%d)",
+		probePos.focus[0], probePos.focus[1],
+		probePos.confirm[0], probePos.confirm[1],
+		probePos.reset[0], probePos.reset[1])
+}
+
+// clickAction 点一个已定位的按钮，并**实测**确认这次点击落在那条接线上。
+func clickAction(t *testing.T, h *harness, pos [2]int, want, label string) {
+	t.Helper()
+	h.click(pos[0], pos[1])
+	if h.m.LastAction != want {
+		t.Fatalf("点 (%d,%d) 应触发「%s」，实际 LastAction=%q", pos[0], pos[1], label, h.m.LastAction)
+	}
+	t.Logf("OBS 「%s」命中于 (%d,%d)", label, pos[0], pos[1])
+}
+
+func checkFrames(t *testing.T, h *harness, name string) {
+	t.Helper()
+	if h.frames > maxFrames {
+		t.Fatalf("%s 用了 %d 帧，超过每例 %d 帧的硬上限", name, h.frames, maxFrames)
+	}
+	t.Logf("OBS %s 主链路帧数=%d（上限 %d）", name, h.frames, maxFrames)
+}
+
+// TestCrossSummaryFollowsSharedModel 编辑 → 确认 → 摘要更新 → 重置 这条链，
+// 每一步都读**摘要视图渲染出来的文本**，而不是只读模型字段。
+func TestCrossSummaryFollowsSharedModel(t *testing.T) {
+	discover(t)
+	h := newHarness(t)
+	h.frame()
+
+	initial := savedSummaryOf(model.DefaultName, model.DefaultPort)
+	if h.s.slots[0].text != model.DefaultName || h.s.slots[1].text != model.DefaultPort {
+		t.Fatalf("摘要初始应显示已保存值 %q/%q，实际 %q/%q",
+			model.DefaultName, model.DefaultPort, h.s.slots[0].text, h.s.slots[1].text)
+	}
+	if h.s.slots[2].text != initial {
+		t.Fatalf("摘要派生串应为 %q，实际 %q", initial, h.s.slots[2].text)
+	}
+
+	// 编辑：只改草稿。
+	h.click(probePos.focus[0], probePos.focus[1])
+	h.insert("新名")
+	h.frame() // 沉降一帧：EditEvent 由编辑器在自身 Layout 内消费
+	if h.m.Name == model.DefaultName {
+		t.Fatalf("编辑没有生效：Name=%q", h.m.Name)
+	}
+	if h.m.SavedName != model.DefaultName {
+		t.Fatalf("改草稿不应写已保存值：SavedName=%q", h.m.SavedName)
+	}
+	if h.s.slots[0].text != model.DefaultName || h.s.slots[2].text != initial {
+		t.Fatalf("草稿改了、摘要不能提前变：slots[0]=%q slots[2]=%q", h.s.slots[0].text, h.s.slots[2].text)
+	}
+
+	// 确认：已保存值才变，摘要**同一帧**跟着变。
+	wantName := h.m.Name
+	clickAction(t, h, probePos.confirm, "confirm", "确认")
+	if h.m.SavedName != wantName {
+		t.Fatalf("确认后已保存值应为 %q，实际 %q", wantName, h.m.SavedName)
+	}
+	wantSummary := savedSummaryOf(wantName, h.m.SavedPort)
+	if h.s.slots[0].text != wantName {
+		t.Fatalf("摘要名称槽位应更新为 %q，实际 %q", wantName, h.s.slots[0].text)
+	}
+	if h.s.slots[2].text != wantSummary {
+		t.Fatalf("摘要派生串应更新为 %q，实际 %q", wantSummary, h.s.slots[2].text)
+	}
+	if h.s.slots[2].text == initial {
+		t.Fatalf("摘要派生串没有真正变化，仍是初始值 %q", initial)
+	}
+
+	// 重置：草稿回到已保存值，摘要不变（已保存值没动）。
+	clickAction(t, h, probePos.reset, "reset", "重置")
+	if h.m.Name != wantName {
+		t.Fatalf("重置后草稿应回到已保存值 %q，实际 %q", wantName, h.m.Name)
+	}
+	if h.s.slots[0].text != wantName || h.s.slots[2].text != wantSummary {
+		t.Fatalf("重置不改已保存值，摘要不应变：slots[0]=%q slots[2]=%q", h.s.slots[0].text, h.s.slots[2].text)
+	}
+	checkFrames(t, h, "共享模型全链")
+	t.Logf("OBS 共享模型：Name=%q SavedName=%q slots[0]=%q slots[2]=%q",
+		h.m.Name, h.m.SavedName, h.s.slots[0].text, h.s.slots[2].text)
+	t.Log("CROSS-DONE TestCrossSummaryFollowsSharedModel")
+}
+
+// TestCrossSummaryInstancesIsolated 两个独立工程实例：各一份模型、各一套视图，互不串状态。
+func TestCrossSummaryInstancesIsolated(t *testing.T) {
+	discover(t)
+	a := newHarness(t)
+	a.frame()
+	b := newHarness(t)
+	b.frame()
+	if a.m == b.m {
+		t.Fatal("两个实例必须持有不同模型指针")
+	}
+	initialB := savedSummaryOf(model.DefaultName, model.DefaultPort)
+	if b.s.slots[0].text != model.DefaultName || b.s.slots[2].text != initialB {
+		t.Fatalf("实例 B 初始摘要不对：slots[0]=%q slots[2]=%q", b.s.slots[0].text, b.s.slots[2].text)
+	}
+
+	a.click(probePos.focus[0], probePos.focus[1])
+	a.insert("只属于A")
+	a.frame()
+	clickAction(t, a, probePos.confirm, "confirm", "确认")
+
+	if a.m.SavedName == model.DefaultName {
+		t.Fatalf("实例 A 的确认没有生效：SavedName=%q", a.m.SavedName)
+	}
+	if b.m.Name != model.DefaultName || b.m.SavedName != model.DefaultName {
+		t.Fatalf("实例 B 的模型被串改：Name=%q SavedName=%q", b.m.Name, b.m.SavedName)
+	}
+	if b.s.slots[0].text != model.DefaultName || b.s.slots[2].text != initialB {
+		t.Fatalf("实例 B 的摘要被串改：slots[0]=%q slots[2]=%q", b.s.slots[0].text, b.s.slots[2].text)
+	}
+	checkFrames(t, a, "实例隔离")
+	t.Logf("OBS 隔离：A.SavedName=%q B.SavedName=%q B.slots[0]=%q",
+		a.m.SavedName, b.m.SavedName, b.s.slots[0].text)
+	t.Log("CROSS-DONE TestCrossSummaryInstancesIsolated")
+}

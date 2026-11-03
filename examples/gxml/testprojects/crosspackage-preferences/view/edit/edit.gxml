@@ -1,0 +1,30 @@
+<!-- 跨包偏好设置 · 编辑视图。
+     ViewModel 指向**另一个包**（model.Preferences，路径相对模块根），
+     所以生成代码落在本目录的 package edit 里，而类型定义在 model 包。
+     两个输入框各自一份草稿：改草稿不会改动已保存值，只有点「确认」且校验通过才写。
+     名称框声明了 Submit（回车只记录载荷、不回写草稿）；端口框没有 Submit，
+     用来对照「事件接线按控件各自独立」——在端口框按回车必须什么都不发生。
+     只用已批准控件：Text / Button / Input / If；不引入新语法、不使用 <For>。 -->
+<Goxml Version="1" ViewModel="model.Preferences">
+  <Page Route="/preferences/edit">
+    <Column Padding="16" Gap="8">
+      <Text Value="偏好设置 · 编辑" Background="#EFEFEF" Padding="4"/>
+      <Text Value="{DirtyText}" Background="#F7F7F7" Padding="4"/>
+      <Input Value="{Name}" Hint="名称（最多 12 个字符，可含中文）" MaxLen="12"
+             ValueChanged="OnNameChanged" Submit="OnNameSubmit" Background="#FFF7E6" Padding="4"/>
+      <Input Value="{Port}" Hint="端口（仅数字，最多 5 位）" Filter="0123456789" MaxLen="5"
+             ValueChanged="OnPortChanged" Background="#EEF5FF" Padding="4"/>
+      <Button Text="确认" Click="Confirm" Background="#E8F5E9" Padding="4"/>
+      <Button Text="重置" Click="Reset" Background="#FBE9E7" Padding="4"/>
+      <If Condition="{HasStatus}">
+        <Then>
+          <Text Value="{Status}" Background="#FFF1F0" Padding="4"/>
+          <Button Text="清除提示" Click="ClearStatus" Background="#F5F5F5" Padding="4"/>
+        </Then>
+        <Else>
+          <Text Value="（无提示）" Background="#FAFAFA" Padding="4"/>
+        </Else>
+      </If>
+    </Column>
+  </Page>
+</Goxml>

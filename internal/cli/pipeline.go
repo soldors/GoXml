@@ -112,7 +112,23 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	overlayForDir := func(dir string) (map[string][]byte, error) {
 		return targetNameOverlay(moduleRoot, nameMan, dir)
 	}
-	pkgResolver := newTargetPkgResolver(goExe, moduleRoot, nil, overlayForDir)
+	// R10-A：阶段零已知目标集合后，先批量（有界分组）go list -e -json 解析全部已初始化
+	// 目标目录，把「每目录一次」降为「有界批次」。批量结果按 Dir 归因、逐目录严格校验；
+	// 权威查询失败不回退宿主标签。批量未覆盖的新目录（如 --out-dir 回退到 sourceDir）
+	// 由 resolver 惰性单查兜底（仍是权威 go list，不退回 MatchFile 猜测）。
+	targetDirs := collectTargetDirs(inputs, outRoot)
+	batchRes, batchErr := resolveTargetPackagesBatch(goExe, moduleRoot, nil, targetDirs, overlayForDir)
+	if batchErr != nil {
+		return fmt.Errorf("批量解析目标包失败（拒绝回退宿主标签）: %w", batchErr)
+	}
+	singleResolver := newTargetPkgResolver(goExe, moduleRoot, nil, overlayForDir)
+	pkgResolver := func(dir string) (string, bool, error) {
+		if r, ok := lookupBatch(batchRes, dir); ok {
+			return r.name, r.ok, r.err
+		}
+		// 批量集合外的目录（sourceDir 回退 / 批内新增）：权威单查兜底。
+		return singleResolver(dir)
+	}
 
 	// ---------- 阶段零：解析输入与目标（不写盘、不生成）----------
 	resolved := make([]*resolvedInput, 0, len(inputs))

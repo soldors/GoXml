@@ -1,0 +1,226 @@
+// Package model 是「跨包偏好设置」工程模板的**唯一状态所有者**。
+//
+// 它是模板里唯一手写的业务类型，被两个生成视图共同引用：
+//
+//	view/edit    编辑视图：两个 Input（名称 / 端口）+ 确认 + 重置
+//	view/summary 摘要视图：只读展示**已保存值**
+//
+// 两个视图各自在自己的 .gxml 里声明 `ViewModel="model.Preferences"`，
+// 生成代码因此落在 view/edit 与 view/summary 两个包里，而类型定义留在这里：
+// 生成输出与 ViewModel 分属不同包，是这套模板要演示的核心接线。
+//
+// 状态分成三组，**不能混**：
+//
+//	Draft  (Name / Port)          编辑器里的草稿，ValueChanged 只写这里
+//	Saved  (SavedName / SavedPort) 已保存值，只有 Confirm 通过校验才写
+//	Derived(SavedSummary / Dirty*) 由上面两组算出来的显示串，不在 Layout 里逐帧拼接
+//
+// 「草稿改了但没确认」与「已保存值变了」必须能分开观察——否则摘要视图
+// 是否真的跟着共享模型更新，就没有判据。
+//
+// 后台写入需要调用方自行同步：Invalidate 的并发安全不等于字段读写安全。
+package model
+
+import (
+	"strconv"
+	"strings"
+	"unicode/utf8"
+)
+
+// 已保存值的初始状态。Reset 把草稿恢复到这两个值。
+const (
+	DefaultName = "默认名称"
+	DefaultPort = "8080"
+)
+
+// 两个字段各自的静态上限，与 edit.gxml 里的 MaxLen 逐字一致。
+//
+// Gio 的 Editor.MaxLen 按 **rune** 计数（不是字节、也不是 UTF-16 码元），
+// 所以中文名称与 ASCII 的计数口径一致；断言请用 utf8.RuneCountInString。
+const (
+	NameMaxRunes = 12
+	PortMaxRunes = 5
+)
+
+// 端口字段的静态字符集与取值范围。Filter 只允许数字，范围校验留给处理器。
+const (
+	PortDigits = "0123456789"
+	PortMin    = 1
+	PortMax    = 65535
+)
+
+// 脏标记的**两态文案**（逐字常量）。
+//
+// 自动测试逐字断言这两个值，不能用 strings.Contains(文案, "未保存") 判断——
+// "未保存" 三个字在两态里都出现，那样的判据永远不会红。
+const (
+	DirtyTextClean = "（无未保存修改）"
+	DirtyTextDirty = "（草稿有未保存的修改）"
+)
+
+// Preferences 是共享视图模型。两个生成视图持有**同一个** *Preferences。
+type Preferences struct {
+	// Name / Port 是两份**独立草稿**：各自绑定一个 <Input> 的 Value，
+	// 只能被各自的 ValueChanged 回写。
+	//
+	// Name 走 MaxLen=12（rune 计数，可含中文）；Port 走 Filter=数字 + MaxLen=5。
+	Name string
+	Port string
+
+	// SavedName / SavedPort 是**已保存值**：只有 Confirm 通过校验才写进来，
+	// Reset 把草稿恢复回去。摘要视图只绑定这两个（以及它们的派生串）。
+	SavedName string
+	SavedPort string
+
+	// SavedSummary 是已保存值的派生显示串，由 refresh() 在事件处理器里算好。
+	// 摘要视图绑定它，所以「模型变了 → 下一帧摘要变」是一条可断言的事实。
+	SavedSummary string
+
+	// Status / HasStatus 驱动编辑视图提示区的 If/Then/Else。
+	Status    string
+	HasStatus bool
+
+	// Dirty 是**派生量**：草稿与已保存值不一致即有未保存改动。DirtyText 是它的显示串。
+	//
+	// 写成派生而不是独立变量：独立变量在 Confirm / Reset 每条路径上都得记得清空，
+	// 漏一处就是静默失真。
+	Dirty     bool
+	DirtyText string
+
+	// 计数不可被后续事件覆盖（不要用 LastAction 统计次数：紧随的外部值应用
+	// 会再触发一次 ChangeEvent，把 LastAction 覆盖成 "…-change"）。
+	NameChanges     int
+	PortChanges     int
+	Confirms        int
+	ConfirmRejected int
+	Resets          int
+	StatusClears    int
+
+	// Submits / LastSubmitPayload 记录名称框回车（Submit）的次数与载荷。
+	//
+	// 回车**不回写草稿**：Submit 的载荷只是「回车瞬间编辑器里有什么」，
+	// 草稿仍是上一次 ValueChanged 写进去的值（契约 §4.2）。
+	Submits           int
+	LastSubmitPayload string
+
+	// LastAction 记录最近一次事件，仅用于扫描时判断「点到了哪个按钮」。
+	LastAction string
+}
+
+// NewPreferences 构造初始状态：草稿与已保存值一致，因此初始不脏。
+func NewPreferences() *Preferences {
+	m := &Preferences{SavedName: DefaultName, SavedPort: DefaultPort}
+	m.Name = DefaultName
+	m.Port = DefaultPort
+	m.refresh()
+	return m
+}
+
+// refresh 在**事件处理器**里准备所有显示串，不在 Layout 中每帧格式化。
+func (m *Preferences) refresh() {
+	m.Dirty = m.Name != m.SavedName || m.Port != m.SavedPort
+	if m.Dirty {
+		m.DirtyText = DirtyTextDirty
+	} else {
+		m.DirtyText = DirtyTextClean
+	}
+	m.SavedSummary = "已保存：" + m.SavedName + " / " + m.SavedPort +
+		"（名称 " + strconv.Itoa(utf8.RuneCountInString(m.SavedName)) + " 字符）"
+}
+
+// Validate 返回第一处校验失败的原因；合法返回空串。
+//
+// 校验**只读**草稿、不写任何状态：失败时调用方自己决定提示文案。
+func (m *Preferences) Validate() string {
+	if strings.TrimSpace(m.Name) == "" {
+		return "名称不能为空"
+	}
+	if utf8.RuneCountInString(m.Name) > NameMaxRunes {
+		return "名称超过 " + strconv.Itoa(NameMaxRunes) + " 个字符"
+	}
+	if strings.TrimSpace(m.Port) == "" {
+		return "端口不能为空"
+	}
+	if strings.Trim(m.Port, PortDigits) != "" {
+		return "端口只能包含数字"
+	}
+	n, err := strconv.Atoi(m.Port)
+	if err != nil {
+		return "端口不是有效数字"
+	}
+	if n < PortMin || n > PortMax {
+		return "端口需在 " + strconv.Itoa(PortMin) + "-" + strconv.Itoa(PortMax) + " 之间"
+	}
+	return ""
+}
+
+// OnNameChanged 是名称 <Input> 的 ValueChanged：原样回写草稿，**不动已保存值**。
+func (m *Preferences) OnNameChanged(value string) {
+	m.Name = value
+	m.NameChanges++
+	m.LastAction = "name-change"
+	m.refresh()
+}
+
+// OnPortChanged 是端口 <Input> 的 ValueChanged：原样回写草稿，**不动已保存值**。
+//
+// 载荷已经是 Filter + MaxLen 之后的编辑器文本：非法字符根本不会进到这里。
+func (m *Preferences) OnPortChanged(value string) {
+	m.Port = value
+	m.PortChanges++
+	m.LastAction = "port-change"
+	m.refresh()
+}
+
+// OnNameSubmit 是名称框的 Submit（回车）处理器。
+//
+// 它必须与 Confirm 分成两个方法：`Submit` 事件带一个 text 载荷，
+// 而 `Click` 不带载荷——同一个方法无法同时满足两种签名（GXML-EVENT-004）。
+//
+// 载荷只记录、**不回写草稿**（契约 §4.2：声明 Submit 不会自动写草稿）。
+// 本模板刻意不给回车加业务动作：那会把「回车=保存」这种未经批准的产品决策
+// 写进示例。要保存仍然点「确认」。
+func (m *Preferences) OnNameSubmit(text string) {
+	m.Submits++
+	m.LastSubmitPayload = text
+	m.LastAction = "name-submit"
+}
+
+// Confirm 是「确认」按钮：先校验，通过才把草稿写进已保存值。
+//
+// 校验失败时**不写任何已保存值**，只留提示——摘要视图必须保持旧值，
+// 这正是「校验失败不落盘」在 UI 上的对应事实。
+func (m *Preferences) Confirm() {
+	if reason := m.Validate(); reason != "" {
+		m.Status = "校验未通过，未保存：" + reason
+		m.HasStatus = true
+		m.ConfirmRejected++
+		m.LastAction = "confirm-reject"
+		return
+	}
+	m.SavedName = m.Name
+	m.SavedPort = m.Port
+	m.Confirms++
+	m.Status = "已保存：名称=" + m.Name + "，端口=" + m.Port
+	m.HasStatus = true
+	m.LastAction = "confirm"
+	m.refresh()
+}
+
+// Reset 把两份草稿恢复成已保存值。**不改已保存值**，因此摘要不变。
+func (m *Preferences) Reset() {
+	m.Name = m.SavedName
+	m.Port = m.SavedPort
+	m.Resets++
+	m.Status = "已重置为已保存值"
+	m.HasStatus = true
+	m.LastAction = "reset"
+	m.refresh()
+}
+
+// ClearStatus 切回提示区的 Else 分支。
+func (m *Preferences) ClearStatus() {
+	m.HasStatus = false
+	m.StatusClears++
+	m.LastAction = "clear-status"
+}

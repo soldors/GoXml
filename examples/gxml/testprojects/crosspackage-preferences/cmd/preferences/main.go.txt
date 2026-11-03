@@ -1,0 +1,78 @@
+// 窗口入口模板。生成两个视图之后复制到 cmd/preferences/main.go，
+// 并把 __MODULE__ 换成 go.mod 里的模块路径。
+//
+// 这是**窗口入口**：只有运行它才会创建原生窗口。自动测试只编译本文件，从不执行它。
+//
+// 关键点：model.NewPreferences() **只调用一次**，把同一个指针交给两个生成视图。
+// 两个视图各自持有自己的文本缓存与输入控件状态，但读的是同一份模型——
+// 编辑视图确认之后，摘要视图下一帧就会显示新的已保存值；反过来，两个互不相干的
+// 模型实例之间不会串状态（各自 NewPreferences 即可）。
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"gioui.org/layout"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/edit"
+	"__MODULE__/view/summary"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+)
+
+// shell 用**现有 Go** 把两个生成视图并排组合成一个 app.View。
+//
+// Goxml 当前没有路由（pkg/runtime/router 仍是规划项），所以这里不做页面切换：
+// 两栏同时可见，左边编辑、右边只读摘要。这样"共享同一个模型"是肉眼可见的事实，
+// 而不是一句文档声明。
+type shell struct {
+	edit    *edit.GoxmlEditView
+	summary *summary.GoxmlSummaryView
+}
+
+// Layout 实现 app.View（layout.Context + *material.Theme -> Dimensions）。
+func (s *shell) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	inset := layout.UniformInset(unit.Dp(12))
+	column := func(w layout.Widget) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
+			return inset.Layout(gtx, w)
+		}
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return column(func(gtx layout.Context) layout.Dimensions {
+				return s.edit.Layout(gtx, th)
+			})(gtx)
+		}),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return column(func(gtx layout.Context) layout.Dimensions {
+				return s.summary.Layout(gtx, th)
+			})(gtx)
+		}),
+	)
+}
+
+func main() {
+	// 一份模型，两个视图。
+	m := model.NewPreferences()
+	ev, err := edit.NewGoxmlEditView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	sv, err := summary.NewGoxmlSummaryView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	view := &shell{edit: ev, summary: sv}
+	if err := app.Run(view, app.Config{Title: "Goxml cross-package preferences",
+		Width: 900, Height: 560}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

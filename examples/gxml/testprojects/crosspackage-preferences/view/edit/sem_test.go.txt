@@ -1,0 +1,517 @@
+package edit
+
+// 跨包偏好设置 · 编辑视图的离屏语义测试（写在临时 module 的 view/edit 包里）。
+//
+// 三条纪律（与仓库既有 forms / workbench / preferences 工程测试同源）：
+//   - 焦点与按钮坐标一律**实测扫描**，不硬编码像素：控件尺寸随字体/主题变化；
+//   - 页面状态变化（出现提示区）会改变几何，因此按钮按**当前状态**重扫，
+//     不复用旧坐标；输入框在提示区之上，位置不随状态变化；
+//   - 判据取**增量**与**逐字**值：外部值应用本身会带来一次 ChangeEvent，
+//     「调用次数」不等于「用户敲了几个字」；文案断言用 ==，不用 Contains
+//     （DirtyTextClean / DirtyTextDirty 两态文案都含「未保存」，Contains 永远绿）。
+//
+// 直接调用模型方法只用于**布置前置状态**（例如让提示区先出现），
+// 不作为任何一条验收判据——所有交互都经 input.Router 投递真实事件。
+
+import (
+	"image"
+	"strconv"
+	"testing"
+	"unicode/utf8"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+)
+
+// sharedTheme 只构建一次：material.NewTheme 相对慢，扫描要跑很多帧。
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW    = 520
+	frameH    = 640
+	maxFrames = 8
+)
+
+// focusXs / buttonXs 是扫描用的竖线集合：本页单列布局、按钮左对齐，
+// 沿几条竖线自上而下扫即可命中，不必铺满整张网格。
+var (
+	focusXs  = []int{30, 120, 300}
+	buttonXs = []int{24, 40, 60}
+)
+
+// harness 是一份离屏环境：真实生成的 View + 真实 input.Router，不创建原生窗口。
+type harness struct {
+	m      *model.Preferences
+	v      *GoxmlEditView
+	r      input.Router
+	gtx    layout.Context
+	frames int
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	m := model.NewPreferences()
+	v, err := NewGoxmlEditView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{m: m, v: v}
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.v.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y float32) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+func (h *harness) editor(idx int) *widget.Editor {
+	if idx == 0 {
+		return &h.v.input0
+	}
+	return &h.v.input1
+}
+
+func (h *harness) focused(idx int) bool {
+	return h.gtx.Focused(h.editor(idx))
+}
+
+// replaceAll 投递一次真实 EditEvent，把编辑器现有文本整体替换成 text。
+//
+// 用显式 Range 而不是「插在光标处」：插入会让断言依赖初始文本的前缀，
+// 只能写 Contains；整体替换才能对草稿做逐字断言。
+func (h *harness) replaceAll(idx int, text string) {
+	n := utf8.RuneCountInString(h.editor(idx).Text())
+	h.r.Queue(key.EditEvent{Range: key.Range{Start: 0, End: n}, Text: text})
+	h.frame()
+}
+
+// ret 回车：Press 与 Release 同帧投递（契约 §4.3）。
+func (h *harness) ret() {
+	h.r.Queue(key.Event{Name: key.NameReturn, State: key.Press})
+	h.r.Queue(key.Event{Name: key.NameReturn, State: key.Release})
+	h.frame()
+}
+
+// focusCache 缓存两个输入框的焦点坐标（一次性探测）。
+//
+// 两个输入框都在提示区之上，出现提示**不会**挪动它们，所以这份缓存跨状态有效；
+// 按钮则相反，见 findAction。
+var focusCache struct {
+	pos  [2][2]int
+	ok   [2]bool
+	done bool
+}
+
+func discoverFocus(t *testing.T) {
+	t.Helper()
+	if focusCache.done {
+		return
+	}
+	h := newHarness(t)
+	h.frame()
+	for y := 0; y <= frameH; y += 4 {
+		if focusCache.ok[0] && focusCache.ok[1] {
+			break
+		}
+		for _, x := range focusXs {
+			h.click(float32(x), float32(y))
+			for i := 0; i < 2; i++ {
+				if !focusCache.ok[i] && h.focused(i) {
+					focusCache.pos[i] = [2]int{x, y}
+					focusCache.ok[i] = true
+				}
+			}
+		}
+	}
+	focusCache.done = true
+	for i := 0; i < 2; i++ {
+		if !focusCache.ok[i] {
+			t.Fatalf("扫描（x=%v，y 0..%d 步长 4）未能聚焦 input%d：离屏环境限制，不是用例通过",
+				focusXs, frameH, i)
+		}
+	}
+	t.Logf("OBS 焦点实测坐标 name=(%d,%d) port=(%d,%d)",
+		focusCache.pos[0][0], focusCache.pos[0][1], focusCache.pos[1][0], focusCache.pos[1][1])
+}
+
+// newFocused 用**真实点击**把焦点送到第 idx 个输入框。
+func newFocused(t *testing.T, idx int) *harness {
+	t.Helper()
+	discoverFocus(t)
+	x, y := focusCache.pos[idx][0], focusCache.pos[idx][1]
+	h := newHarness(t)
+	h.frame()
+	h.click(float32(x), float32(y))
+	if !h.focused(idx) {
+		t.Fatalf("探测到的焦点坐标 (%d,%d) 未复现 input%d：离屏环境限制", x, y, idx)
+	}
+	return h
+}
+
+// buttonCache 缓存「按钮在某个状态下」的坐标。键里带状态名：
+// 「清除提示」只在提示区可见时存在，坐标与初始态不同。
+var buttonCache = map[string][2]int{}
+
+// findAction 在**指定状态**下重扫按钮坐标，返回首个命中 want 的点。
+//
+// 每个点都开一份新 harness：点击按钮会改状态，复用同一份会让后续点位的判据
+// 变成「上一次点击的残留」。prepare 用来把 harness 推到目标状态（例如先点确认，
+// 让提示区出现），这样扫到的坐标与真实链路里那一帧的几何一致。
+func findAction(t *testing.T, prepare func(*harness), want string) (int, int, bool) {
+	t.Helper()
+	for y := 0; y <= frameH; y += 4 {
+		for _, x := range buttonXs {
+			h := newHarness(t)
+			h.frame()
+			if prepare != nil {
+				prepare(h)
+			}
+			h.click(float32(x), float32(y))
+			if h.m.LastAction == want {
+				return x, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// clickFound 用缓存坐标点按钮，并**实测**确认这次点击真的落在那条接线上。
+func clickFound(t *testing.T, h *harness, cacheKey string, prepare func(*harness), want, label string) {
+	t.Helper()
+	pos, ok := buttonCache[cacheKey]
+	if !ok {
+		x, y, found := findAction(t, prepare, want)
+		if !found {
+			t.Fatalf("在 x=%v / y 0..%d 的扫描下未命中「%s」", buttonXs, frameH, label)
+		}
+		pos = [2]int{x, y}
+		buttonCache[cacheKey] = pos
+	}
+	h.click(float32(pos[0]), float32(pos[1]))
+	if h.m.LastAction != want {
+		t.Fatalf("点 (%d,%d) 应触发「%s」(%s)，实际 LastAction=%q", pos[0], pos[1], label, want, h.m.LastAction)
+	}
+	t.Logf("OBS 「%s」命中于 (%d,%d)", label, pos[0], pos[1])
+}
+
+// clickAfterConfirm 是在「已点过确认」这个状态下点按钮的辅助：先按缓存的确认坐标
+// 把状态推到位，再点目标按钮。它保证状态与真实链路一致，而不是靠猜。
+func clickAfterConfirm(t *testing.T, h *harness, cacheKey, want, label string) {
+	t.Helper()
+	pos, ok := buttonCache["confirm"]
+	if !ok {
+		t.Fatal("必须先定位「确认」按钮")
+	}
+	prepare := func(hh *harness) {
+		hh.click(float32(pos[0]), float32(pos[1]))
+		if hh.m.LastAction != "confirm" {
+			t.Fatalf("prepare 阶段点 (%d,%d) 未触发确认，实际 %q", pos[0], pos[1], hh.m.LastAction)
+		}
+	}
+	clickFound(t, h, cacheKey, prepare, want, label)
+}
+
+func checkFrames(t *testing.T, h *harness, name string) {
+	t.Helper()
+	if h.frames > maxFrames {
+		t.Fatalf("%s 用了 %d 帧，超过每例 %d 帧的硬上限", name, h.frames, maxFrames)
+	}
+	t.Logf("OBS %s 主链路帧数=%d（上限 %d）", name, h.frames, maxFrames)
+}
+
+// savedSummaryOf 是 SavedSummary 的**期望值**，按模型里的公式逐字重算。
+//
+// 不把结果写死成字符串字面量：那样改了文案公式，测试会跟着「正确」地错下去。
+func savedSummaryOf(name, port string) string {
+	return "已保存：" + name + " / " + port +
+		"（名称 " + strconv.Itoa(utf8.RuneCountInString(name)) + " 字符）"
+}
+
+// TestCrossEditDraftKeepsSaved 改草稿不改已保存值：这是摘要视图「没提前变」的前提。
+func TestCrossEditDraftKeepsSaved(t *testing.T) {
+	h := newFocused(t, 0)
+	if h.m.Name != model.DefaultName || h.m.SavedName != model.DefaultName {
+		t.Fatalf("初始草稿/已保存值应为 %q，实际 Name=%q SavedName=%q",
+			model.DefaultName, h.m.Name, h.m.SavedName)
+	}
+	if h.v.slots[1].text != "" {
+		t.Fatalf("初始应在提示区 Else 分支（无绑定槽内容），实际 slots[1].text=%q", h.v.slots[1].text)
+	}
+
+	h.replaceAll(0, "键盘布局")
+	// 一帧「沉降」：EditEvent 由编辑器在**自身 Layout 时**消费，回写发生在
+	// 本帧的 Text 节点渲染之后，所以草稿上方的脏标记槽位要下一帧才更新。
+	h.frame()
+
+	if h.m.Name != "键盘布局" {
+		t.Fatalf("EditEvent 后草稿应为 %q，实际 %q", "键盘布局", h.m.Name)
+	}
+	if h.m.SavedName != model.DefaultName {
+		t.Fatalf("改草稿不应写已保存值：SavedName=%q（应仍为 %q）", h.m.SavedName, model.DefaultName)
+	}
+	if h.m.SavedSummary != savedSummaryOf(model.DefaultName, model.DefaultPort) {
+		t.Fatalf("已保存值的派生串不应随草稿变：%q", h.m.SavedSummary)
+	}
+	if !h.m.Dirty || h.m.DirtyText != model.DirtyTextDirty {
+		t.Fatalf("草稿与已保存值不同应判脏：Dirty=%v DirtyText=%q", h.m.Dirty, h.m.DirtyText)
+	}
+	if h.v.applied0 != "键盘布局" || h.v.input0.Text() != "键盘布局" {
+		t.Fatalf("编辑器与模型应一致：applied0=%q editor=%q", h.v.applied0, h.v.input0.Text())
+	}
+	if h.v.slots[0].text != model.DirtyTextDirty {
+		t.Fatalf("脏标记的**渲染串**应为 %q，实际 %q", model.DirtyTextDirty, h.v.slots[0].text)
+	}
+	if h.m.NameChanges != 1 {
+		t.Fatalf("一次 EditEvent 应恰好回写一次：NameChanges=%d", h.m.NameChanges)
+	}
+	checkFrames(t, h, "草稿不动已保存值")
+	t.Logf("OBS 草稿=%q 已保存=%q DirtyText=%q slots[0]=%q",
+		h.m.Name, h.m.SavedName, h.m.DirtyText, h.v.slots[0].text)
+	t.Log("CROSS-DONE TestCrossEditDraftKeepsSaved")
+}
+
+// TestCrossEditMaxLenCountsRunes MaxLen 按 rune 截断，不是按字节、也不是不生效。
+func TestCrossEditMaxLenCountsRunes(t *testing.T) {
+	h := newFocused(t, 0)
+	if h.v.input0.MaxLen != model.NameMaxRunes {
+		t.Fatalf("生成物应透传 MaxLen=%d，实际 %d", model.NameMaxRunes, h.v.input0.MaxLen)
+	}
+	h.replaceAll(0, "ABCDEFGHIJKLMNOP") // 16 个 ASCII，远超 12
+	if got := utf8.RuneCountInString(h.m.Name); got != model.NameMaxRunes {
+		t.Fatalf("MaxLen 应按 rune 截断到 %d，实际 %d（%q）", model.NameMaxRunes, got, h.m.Name)
+	}
+	if h.m.Name != "ABCDEFGHIJKL" {
+		t.Fatalf("截断结果应为 %q，实际 %q", "ABCDEFGHIJKL", h.m.Name)
+	}
+	checkFrames(t, h, "MaxLen 按 rune 截断")
+	t.Logf("OBS MaxLen：插入 16 字符后 Name=%q（%d rune）", h.m.Name, utf8.RuneCountInString(h.m.Name))
+	t.Log("CROSS-DONE TestCrossEditMaxLenCountsRunes")
+}
+
+// TestCrossEditPortFilterDropsNonDigits Filter 在编辑器内过滤，模型只收到数字。
+func TestCrossEditPortFilterDropsNonDigits(t *testing.T) {
+	h := newFocused(t, 1)
+	if h.v.input1.Filter != model.PortDigits {
+		t.Fatalf("生成物应透传 Filter=%q，实际 %q", model.PortDigits, h.v.input1.Filter)
+	}
+	h.replaceAll(1, "8a0b8c0")
+	if h.m.Port != "8080" {
+		t.Fatalf("Filter 后草稿应为 %q，实际 %q", "8080", h.m.Port)
+	}
+	if h.v.input1.Text() != "8080" {
+		t.Fatalf("编辑器文本也应是过滤后的 %q，实际 %q", "8080", h.v.input1.Text())
+	}
+	if h.m.Name != model.DefaultName {
+		t.Fatalf("改端口不应串写名称：Name=%q", h.m.Name)
+	}
+	checkFrames(t, h, "端口 Filter")
+	t.Logf("OBS Filter：输入 %q → 草稿 %q", "8a0b8c0", h.m.Port)
+	t.Log("CROSS-DONE TestCrossEditPortFilterDropsNonDigits")
+}
+
+// TestCrossEditConfirmWritesSaved 确认把两份草稿一起写进已保存值，并重算派生串。
+func TestCrossEditConfirmWritesSaved(t *testing.T) {
+	discoverFocus(t)
+	h := newFocused(t, 0)
+	h.replaceAll(0, "新名称")
+	h.click(float32(focusCache.pos[1][0]), float32(focusCache.pos[1][1]))
+	if !h.focused(1) {
+		t.Fatal("未能把焦点移到端口框")
+	}
+	h.replaceAll(1, "9090")
+
+	if h.m.SavedName != model.DefaultName || h.m.SavedPort != model.DefaultPort {
+		t.Fatalf("确认之前已保存值必须原样：SavedName=%q SavedPort=%q", h.m.SavedName, h.m.SavedPort)
+	}
+	if h.m.DirtyText != model.DirtyTextDirty {
+		t.Fatalf("确认前应为脏态 %q，实际 %q", model.DirtyTextDirty, h.m.DirtyText)
+	}
+
+	clickFound(t, h, "confirm", nil, "confirm", "确认")
+
+	if h.m.SavedName != "新名称" || h.m.SavedPort != "9090" {
+		t.Fatalf("确认后已保存值应为 新名称/9090，实际 %q/%q", h.m.SavedName, h.m.SavedPort)
+	}
+	if h.m.Confirms != 1 || h.m.ConfirmRejected != 0 {
+		t.Fatalf("确认计数应为 1/0，实际 %d/%d", h.m.Confirms, h.m.ConfirmRejected)
+	}
+	wantStatus := "已保存：名称=新名称，端口=9090"
+	if h.m.Status != wantStatus || !h.m.HasStatus {
+		t.Fatalf("提示应为 %q 且可见，实际 %q / %v", wantStatus, h.m.Status, h.m.HasStatus)
+	}
+	if h.v.slots[1].text != wantStatus {
+		t.Fatalf("提示区的**渲染串**应为 %q，实际 %q", wantStatus, h.v.slots[1].text)
+	}
+	if h.m.Dirty || h.m.DirtyText != model.DirtyTextClean {
+		t.Fatalf("确认后草稿等于已保存值，应判干净：Dirty=%v DirtyText=%q", h.m.Dirty, h.m.DirtyText)
+	}
+	if h.m.SavedSummary != savedSummaryOf("新名称", "9090") {
+		t.Fatalf("派生串应随已保存值重算：%q", h.m.SavedSummary)
+	}
+	checkFrames(t, h, "确认写已保存值")
+	t.Logf("OBS 确认：SavedName=%q SavedPort=%q SavedSummary=%q", h.m.SavedName, h.m.SavedPort, h.m.SavedSummary)
+	t.Log("CROSS-DONE TestCrossEditConfirmWritesSaved")
+}
+
+// TestCrossEditConfirmRejectedKeepsSaved 校验失败不写已保存值，只留提示。
+func TestCrossEditConfirmRejectedKeepsSaved(t *testing.T) {
+	h := newFocused(t, 0)
+	h.replaceAll(0, "   ") // 纯空白 → 名称不能为空
+	clickFound(t, h, "confirm", nil, "confirm-reject", "确认（应被拒绝）")
+	if h.m.SavedName != model.DefaultName {
+		t.Fatalf("校验失败不应写已保存值：SavedName=%q", h.m.SavedName)
+	}
+	if h.m.ConfirmRejected != 1 || h.m.Confirms != 0 {
+		t.Fatalf("拒绝计数应为 1/0，实际 %d/%d", h.m.ConfirmRejected, h.m.Confirms)
+	}
+	if h.m.Status != "校验未通过，未保存：名称不能为空" {
+		t.Fatalf("拒绝提示逐字不符：%q", h.m.Status)
+	}
+	if h.m.SavedSummary != savedSummaryOf(model.DefaultName, model.DefaultPort) {
+		t.Fatalf("拒绝后派生串不应变：%q", h.m.SavedSummary)
+	}
+	checkFrames(t, h, "确认被拒绝")
+	t.Logf("OBS 拒绝：Status=%q ConfirmRejected=%d", h.m.Status, h.m.ConfirmRejected)
+	t.Log("CROSS-DONE TestCrossEditConfirmRejectedKeepsSaved")
+}
+
+// TestCrossEditResetRestoresSaved 重置把两份草稿恢复成已保存值，不改已保存值。
+func TestCrossEditResetRestoresSaved(t *testing.T) {
+	discoverFocus(t)
+	h := newFocused(t, 0)
+	h.replaceAll(0, "临时名")
+	h.click(float32(focusCache.pos[1][0]), float32(focusCache.pos[1][1]))
+	h.replaceAll(1, "1234")
+	if h.m.Name != "临时名" || h.m.Port != "1234" {
+		t.Fatalf("重置前草稿应为 临时名/1234，实际 %q/%q", h.m.Name, h.m.Port)
+	}
+
+	clickFound(t, h, "reset", nil, "reset", "重置")
+
+	if h.m.Name != model.DefaultName || h.m.Port != model.DefaultPort {
+		t.Fatalf("重置后草稿应恢复为 %q/%q，实际 %q/%q",
+			model.DefaultName, model.DefaultPort, h.m.Name, h.m.Port)
+	}
+	if h.m.SavedName != model.DefaultName || h.m.SavedPort != model.DefaultPort {
+		t.Fatalf("重置不应改已保存值：%q/%q", h.m.SavedName, h.m.SavedPort)
+	}
+	if h.m.Resets != 1 || h.m.Status != "已重置为已保存值" {
+		t.Fatalf("重置计数/提示不符：Resets=%d Status=%q", h.m.Resets, h.m.Status)
+	}
+	if h.v.applied0 != model.DefaultName || h.v.applied1 != model.DefaultPort {
+		t.Fatalf("外部值应用应把编辑器写回已保存值：applied0=%q applied1=%q", h.v.applied0, h.v.applied1)
+	}
+	if h.m.Dirty || h.m.DirtyText != model.DirtyTextClean {
+		t.Fatalf("重置后应判干净：Dirty=%v DirtyText=%q", h.m.Dirty, h.m.DirtyText)
+	}
+	checkFrames(t, h, "重置恢复已保存值")
+	t.Logf("OBS 重置：Name=%q Port=%q Resets=%d", h.m.Name, h.m.Port, h.m.Resets)
+	t.Log("CROSS-DONE TestCrossEditResetRestoresSaved")
+}
+
+// TestCrossEditReturnPayloadOnly 回车只记录载荷、不回写草稿；端口框没接线，回车无效。
+func TestCrossEditReturnPayloadOnly(t *testing.T) {
+	discoverFocus(t)
+	h := newFocused(t, 0)
+	h.replaceAll(0, "回车名")
+	before := h.m.Name
+	h.ret()
+	if h.m.Submits != 1 {
+		t.Fatalf("一次回车应恰好触发一次 Submit，实际 %d", h.m.Submits)
+	}
+	if h.m.LastSubmitPayload != "回车名" {
+		t.Fatalf("Submit 载荷应为回车瞬间编辑器文本 %q，实际 %q", "回车名", h.m.LastSubmitPayload)
+	}
+	if h.m.Name != before {
+		t.Fatalf("Submit 不应回写草稿：Name=%q（回车前 %q）", h.m.Name, before)
+	}
+	if h.v.input1.Submit {
+		t.Fatal("端口框未声明 Submit，生成物的 Editor.Submit 不应为真")
+	}
+	h.click(float32(focusCache.pos[1][0]), float32(focusCache.pos[1][1]))
+	h.ret()
+	if h.m.Submits != 1 {
+		t.Fatalf("端口框回车不应触发 Submit：Submits=%d", h.m.Submits)
+	}
+	checkFrames(t, h, "回车只记载荷")
+	t.Logf("OBS 回车：Submits=%d payload=%q Name=%q", h.m.Submits, h.m.LastSubmitPayload, h.m.Name)
+	t.Log("CROSS-DONE TestCrossEditReturnPayloadOnly")
+}
+
+// TestCrossEditStatusBranch 提示区 If/Then/Else 两态：出现 → 清除回 Else。
+func TestCrossEditStatusBranch(t *testing.T) {
+	h := newFocused(t, 0)
+	if h.v.slots[1].text != "" {
+		t.Fatalf("初始应无提示，slots[1].text=%q", h.v.slots[1].text)
+	}
+	clickFound(t, h, "confirm", nil, "confirm", "确认")
+	if !h.m.HasStatus || h.v.slots[1].text != h.m.Status {
+		t.Fatalf("确认后提示应可见且渲染：HasStatus=%v slots[1].text=%q Status=%q",
+			h.m.HasStatus, h.v.slots[1].text, h.m.Status)
+	}
+	shown := h.m.Status
+	clickAfterConfirm(t, h, "clear-status", "clear-status", "清除提示")
+	if h.m.HasStatus || h.m.StatusClears != 1 {
+		t.Fatalf("清除提示后应回 Else 分支：HasStatus=%v StatusClears=%d", h.m.HasStatus, h.m.StatusClears)
+	}
+	if h.m.Status != shown {
+		t.Fatalf("清除提示只切分支、不改文案：%q -> %q", shown, h.m.Status)
+	}
+	if h.v.slots[1].text != shown {
+		t.Fatalf("切回 Else 后提示槽位应保留上一次录制内容 %q（不再渲染），实际 %q", shown, h.v.slots[1].text)
+	}
+	checkFrames(t, h, "提示区两态")
+	t.Logf("OBS 提示区：shown=%q StatusClears=%d", shown, h.m.StatusClears)
+	t.Log("CROSS-DONE TestCrossEditStatusBranch")
+}
+
+// TestCrossEditInstancesIsolated 两个独立工程实例互不串状态。
+func TestCrossEditInstancesIsolated(t *testing.T) {
+	discoverFocus(t)
+	a := newFocused(t, 0)
+	b := newHarness(t)
+	b.frame()
+	if a.m == b.m {
+		t.Fatal("两个实例必须持有不同模型指针")
+	}
+	a.replaceAll(0, "实例A")
+	clickFound(t, a, "confirm", nil, "confirm", "确认")
+	if a.m.SavedName != "实例A" {
+		t.Fatalf("实例 A 应已保存 %q，实际 %q", "实例A", a.m.SavedName)
+	}
+	if b.m.Name != model.DefaultName || b.m.SavedName != model.DefaultName || b.m.Confirms != 0 {
+		t.Fatalf("实例 B 被串改：Name=%q SavedName=%q Confirms=%d",
+			b.m.Name, b.m.SavedName, b.m.Confirms)
+	}
+	if b.v.applied0 != model.DefaultName {
+		t.Fatalf("实例 B 的渲染状态被串改：applied0=%q", b.v.applied0)
+	}
+	checkFrames(t, a, "实例隔离")
+	t.Logf("OBS 隔离：A.SavedName=%q B.SavedName=%q", a.m.SavedName, b.m.SavedName)
+	t.Log("CROSS-DONE TestCrossEditInstancesIsolated")
+}
