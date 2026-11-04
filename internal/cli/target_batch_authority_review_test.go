@@ -12,7 +12,7 @@ func TestBatchReviewRejectsExtraDependencyObjects(t *testing.T) {
 	root, dirs := batchFixture(t, 1)
 	mustWrite(t, filepath.Join(dirs[0], "vm.go"), "package pkg00\nimport _ \"fmt\"\ntype VM struct{}\n")
 	env := []string{"GOENV=off", "GOFLAGS=-deps"}
-	_, _, singleErr := resolveTargetPackageGo(goBinary(t), root, dirs[0], env, nil)
+	_, _, singleErr := resolveTargetPackageGo(goBinary(t), root, dirs[0], env, nil, nil)
 	if singleErr == nil {
 		t.Fatal("fixture must emit extra package objects")
 	}

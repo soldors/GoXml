@@ -30,7 +30,7 @@ func TestS1TargetPackageByArchitecture(t *testing.T) {
 	goenv := filepath.Join(root, ".ge386")
 	mustWrite(t, goenv, "GOOS=windows\nGOARCH=386\n")
 	env386 := []string{"GOENV=" + goenv, "GOOS=", "GOARCH=", "GOEXPERIMENT="}
-	name386, _, err := resolveTargetPackageGo(goBinary(t), root, dir, env386, nil)
+	name386, _, err := resolveTargetPackageGo(goBinary(t), root, dir, env386, nil, nil)
 	if err != nil {
 		t.Fatalf("386 go list: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestS1TargetPackageByArchitecture(t *testing.T) {
 	}
 	// amd64：默认 expenabled。
 	envAmd := []string{"GOENV=off", "GOOS=windows", "GOARCH=amd64", "GOEXPERIMENT="}
-	nameAmd, files, err := resolveTargetPackageGo(goBinary(t), root, dir, envAmd, nil)
+	nameAmd, files, err := resolveTargetPackageGo(goBinary(t), root, dir, envAmd, nil, nil)
 	if err != nil {
 		t.Fatalf("amd64 go list: %v", err)
 	}
@@ -59,11 +59,11 @@ func TestS1RedundantGreenteagcFlag(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "d", "base.go"), "package p\n\nfunc B() {}\n")
 	dir := filepath.Join(root, "d")
 	base := []string{"GOENV=off", "GOOS=windows", "GOARCH=amd64"}
-	n1, f1, err := resolveTargetPackageGo(goBinary(t), root, dir, append(append([]string{}, base...), "GOEXPERIMENT="), nil)
+	n1, f1, err := resolveTargetPackageGo(goBinary(t), root, dir, append(append([]string{}, base...), "GOEXPERIMENT="), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n2, f2, err := resolveTargetPackageGo(goBinary(t), root, dir, append(append([]string{}, base...), "GOEXPERIMENT=greenteagc"), nil)
+	n2, f2, err := resolveTargetPackageGo(goBinary(t), root, dir, append(append([]string{}, base...), "GOEXPERIMENT=greenteagc"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

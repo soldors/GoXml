@@ -40,7 +40,7 @@ type batchTargetResult struct {
 // resolveTargetPackagesBatch 批量解析 dirs（已初始化目标目录集合）。
 // overlayFor 对单个 dir 返回该目录自有旧产物 overlay（同 targetNameOverlay 语义）。
 // 返回 map[dir]batchTargetResult；无法归因/完整性问题以 error 形式放进对应或全局 err。
-func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error)) (map[string]batchTargetResult, error) {
+func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []string, overlayFor func(dir string) (map[string]string, map[string]bool, error)) (map[string]batchTargetResult, error) {
 	if goExe == "" {
 		goExe = "go"
 	}
@@ -71,9 +71,10 @@ func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []s
 }
 
 // resolveOneChunk 对一组目录执行一次 go list -e -json，并把结果校验后填入 res。
-func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error), res map[string]batchTargetResult) error {
-	// 合并本 chunk 的 overlay：只包含本 chunk 各目录的自有旧产物。
-	mergedOverlay := map[string][]byte{}
+func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, overlayFor func(dir string) (map[string]string, map[string]bool, error), res map[string]batchTargetResult) error {
+	// 合并本 chunk 的 overlay（路径映射）与 owned 集合。
+	mergedOverlay := map[string]string{}
+	mergedOwned := map[string]bool{}
 	// dir → 绝对目录（用于按 .Dir 归因；go list 返回绝对 Dir）。
 	absToDir := make(map[string]string, len(chunk))
 	// 目录不存在/无选中源者无需查询（可直接 ok=false），但为了统一错误语义，仍可跳过查询。
@@ -84,7 +85,7 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 			res[d] = batchTargetResult{err: fmt.Errorf("解析目录绝对路径 %s: %w", d, err)}
 			continue
 		}
-		var ov map[string][]byte
+		var ov map[string]string
 		var owned map[string]bool
 		if overlayFor != nil {
 			o, ow, oerr := overlayFor(d)
@@ -106,8 +107,11 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 			res[d] = batchTargetResult{ok: false}
 			continue
 		}
-		for p, b := range ov {
-			mergedOverlay[p] = b
+		for from, to := range ov {
+			mergedOverlay[from] = to
+			if owned[from] {
+				mergedOwned[from] = true
+			}
 		}
 		absToDir[normalizeDir(abs)] = d
 		query = append(query, d)
@@ -123,17 +127,17 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 	var overlayFile string
 	if len(mergedOverlay) > 0 {
 		repl := make(map[string]string, len(mergedOverlay))
-		for p, b := range mergedOverlay {
-			if b == nil {
-				repl[p] = ""
+		for from, to := range mergedOverlay {
+			if mergedOwned[from] {
+				tmp, terr := writeOverlayReplacementFile([]byte("//go:build ignore\n\npackage ignore\n"))
+				if terr != nil {
+					return fmt.Errorf("写 overlay 替换文件失败: %w", terr)
+				}
+				defer os.Remove(tmp)
+				repl[from] = tmp
 				continue
 			}
-			tmp, terr := writeOverlayReplacementFile(b)
-			if terr != nil {
-				return fmt.Errorf("写 overlay 替换文件失败: %w", terr)
-			}
-			defer os.Remove(tmp)
-			repl[p] = tmp
+			repl[from] = to
 		}
 		ovJSON, jerr := jsonMarshalOverlay(repl)
 		if jerr != nil {
@@ -198,7 +202,7 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 			// 缺对象或多对象：不填 batchRes → 单查兜底（单查给出正确 fail-closed 诊断）。
 			continue
 		}
-		name, files, verr := validateBatchObject(d, objs[0], mergedOverlay)
+		name, files, verr := validateBatchObject(d, objs[0], mergedOverlay, mergedOwned)
 		if verr != nil {
 			res[d] = batchTargetResult{err: verr}
 			continue
@@ -210,7 +214,7 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 }
 
 // validateBatchObject 对单个目录的 go list 对象做与 resolveTargetPackageGo 同等的严格校验。
-func validateBatchObject(dir string, p goListPkgObj, overlay map[string][]byte) (string, []string, error) {
+func validateBatchObject(dir string, p goListPkgObj, overlay map[string]string, owned map[string]bool) (string, []string, error) {
 	if p.Name == "" {
 		msg := "空包名"
 		if p.Error != nil && p.Error.Err != "" {
@@ -243,15 +247,20 @@ func validateBatchObject(dir string, p goListPkgObj, overlay map[string][]byte) 
 			return "", nil, fmt.Errorf("invalid selected Go filename %q", filename)
 		}
 		full := filepath.Join(dir, filename)
-		// R21-A：overlay 优先（与单查/ go list / go build 一致），支持 overlay 新增文件。
+		// R21-A：只读被 Go 选中文件的替换源（不预读整份映射）。
 		var data []byte
-		if replacement, ok := overlay[full]; ok {
-			if replacement == nil {
-				// 用户 overlay 删除（空目标）：该文件应视为不存在。go list 通常已排除；
-				// 若仍列出则跳过包子句校验，避免把「删除」误判成非法包。
-				continue
+		if to, ok := overlay[full]; ok {
+			if owned[full] {
+				continue // 工具自有，已被 ignore 排除
 			}
-			data = replacement
+			if to == "" {
+				continue // 用户删除
+			}
+			rd, rerr := os.ReadFile(to)
+			if rerr != nil {
+				return "", nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", to, rerr)
+			}
+			data = rd
 		} else {
 			rd, err := readPackageFile(full)
 			if err != nil {

@@ -112,11 +112,11 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		return manErr
 	}
 	// R21-A：用户 overlay **本运行只读一次**（有界），供各目录复用。
-	userOverlay, uoErr := userOverlayBytes(ctxValues.GOFLAGS, moduleRoot)
+	userOverlay, uoErr := userOverlayMap(ctxValues.GOFLAGS, moduleRoot)
 	if uoErr != nil {
 		return uoErr
 	}
-	overlayForDir := func(dir string) (map[string][]byte, map[string]bool, error) {
+	overlayForDir := func(dir string) (map[string]string, map[string]bool, error) {
 		// 并入用户 overlay（工具自有旧产物优先），使定名 go list 与逐文件校验同
 		// go build/--check 一致；owned 仅来自 Manifest+保护头+Source（无字节启发式）。
 		return effectiveTargetResolutionWithUser(moduleRoot, nameMan, dir, userOverlay)

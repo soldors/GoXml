@@ -75,12 +75,13 @@ func TestEffectiveTargetOverlayMergesUserAndOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	full := filepath.Join(root, "p", "a.go")
-	data, ok := eff[full]
+	toPath, ok := eff[full]
 	if !ok {
 		t.Fatalf("用户 overlay 应并入 effective 映射；got keys=%v", keysOf(eff))
 	}
-	if !strings.Contains(string(data), "package q") {
-		t.Fatalf("用户 overlay 字节应生效，got=%q", string(data))
+	rdb, rerr := os.ReadFile(toPath)
+	if rerr != nil || !strings.Contains(string(rdb), "package q") {
+		t.Fatalf("用户 overlay 替换源应生效，to=%q err=%v", toPath, rerr)
 	}
 	if owned[full] {
 		t.Fatalf("用户 overlay 条目不得被判为工具自有")
@@ -95,7 +96,7 @@ func TestEffectiveTargetOverlayMergesUserAndOwned(t *testing.T) {
 	}
 }
 
-func keysOf(m map[string][]byte) []string {
+func keysOf(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -126,15 +127,12 @@ func TestUserOverlayRenamesPackageConsistent(t *testing.T) {
 	}
 
 	// CLI 定名（effective overlay 应得到同样的 q）
-	name, _, err := resolveTargetPackageGo(goExe, root, filepath.Join(root, "p"),
-		[]string{"GOENV=off", "GOTOOLCHAIN=local"}, nil)
-	// 注意：resolveTargetPackageGo 直接收 overlay map；这里用 effective 构造。
-	eff, _, eerr := r21Effective(t, root, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
+	eff, owned, eerr := r21Effective(t, root, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
 	if eerr != nil {
 		t.Fatal(eerr)
 	}
-	name, _, err = resolveTargetPackageGo(goExe, root, filepath.Join(root, "p"),
-		[]string{"GOENV=off", "GOTOOLCHAIN=local"}, eff)
+	name, _, err := resolveTargetPackageGo(goExe, root, filepath.Join(root, "p"),
+		[]string{"GOENV=off", "GOTOOLCHAIN=local"}, eff, owned)
 	if err != nil {
 		t.Fatalf("定名失败: %v", err)
 	}

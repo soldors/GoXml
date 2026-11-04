@@ -69,7 +69,7 @@ type goListPkgObj struct {
 // overlay（可选）是 go list -overlay 映射（path→替代字节），用于把**本工具旧生成物**
 // 映射为 `//go:build ignore`，使定名只看到真实用户源（与 staleGeneratedOverlay 一致语义），
 // 避免"旧产物的包名"参与本次目标包定名（R9-A 任务要求保留自有旧生成物排除）。
-func resolveTargetPackageGo(goExe, moduleRoot, dir string, env []string, overlay map[string][]byte) (string, []string, error) {
+func resolveTargetPackageGo(goExe, moduleRoot, dir string, env []string, overlay map[string]string, owned map[string]bool) (string, []string, error) {
 	if goExe == "" {
 		goExe = "go"
 	}
@@ -79,19 +79,20 @@ func resolveTargetPackageGo(goExe, moduleRoot, dir string, env []string, overlay
 	var overlayFile string
 	if len(overlay) > 0 {
 		repl := make(map[string]string, len(overlay))
-		for p, b := range overlay {
-			if b == nil {
-				// nil = 删除语义：go overlay 用空字符串目标表示删除文件。
-				repl[p] = ""
+		for from, to := range overlay {
+			if owned[from] {
+				// 工具自有旧产物：用 //go:build ignore 占位，使 go list 只见真实用户源。
+				tmp, terr := writeOverlayReplacementFile([]byte("//go:build ignore\n\npackage ignore\n"))
+				if terr != nil {
+					return "", nil, fmt.Errorf("写 overlay 替换文件失败: %w", terr)
+				}
+				defer os.Remove(tmp)
+				repl[from] = tmp
 				continue
 			}
-			// go list -overlay 要求替换内容是**磁盘文件路径**，不是内联字节。
-			tmp, terr := writeOverlayReplacementFile(b)
-			if terr != nil {
-				return "", nil, fmt.Errorf("写 overlay 替换文件失败: %w", terr)
-			}
-			defer os.Remove(tmp)
-			repl[p] = tmp
+			// 用户 overlay：把其替换路径或删除语义原样交给 Go 权威查询，
+			// 不预先读取整份映射的所有替换文件（Go 只读它选中的）。
+			repl[from] = to
 		}
 		ovJSON, jerr := json.Marshal(map[string]any{"Replace": repl})
 		if jerr != nil {
@@ -169,14 +170,20 @@ func resolveTargetPackageGo(goExe, moduleRoot, dir string, env []string, overlay
 			return "", nil, fmt.Errorf("invalid selected Go filename %q", filename)
 		}
 		full := filepath.Join(dir, filename)
-		// R21-A：overlay 优先——用户 overlay 可能**新增**磁盘不存在的文件（或整体替换
-		// 包子句）；先取 overlay 字节，缺失时才读磁盘，与 go list/go build 口径一致。
+		// R21-A：只读**被 Go 选中**文件的替换源（不预读整份映射）。
 		var data []byte
-		if replacement, ok := overlay[full]; ok {
-			if replacement == nil {
-				continue
+		if to, ok := overlay[full]; ok {
+			if owned[full] {
+				continue // 工具自有，已被 ignore 排除
 			}
-			data = replacement
+			if to == "" {
+				continue // 用户删除
+			}
+			rd, rerr := os.ReadFile(to)
+			if rerr != nil {
+				return "", nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", to, rerr)
+			}
+			data = rd
 		} else {
 			rd, err := readPackageFile(full)
 			if err != nil {
@@ -233,7 +240,7 @@ type targetPkgResolverFn func(dir string) (name string, ok bool, err error)
 // `go list -json`。env 是目标有效环境的覆写（GOENV/GOOS/GOARCH/GOEXPERIMENT/CPU），
 // 由调用方与 Analyzer/缓存共享有效环境。仅实际目录无用户非测试Go源时ok=false，
 // Go按目标配置排除所有用户文件仍为错误；不按错误文案降级至宿主MatchFile。
-func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error)) targetPkgResolverFn {
+func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor func(dir string) (map[string]string, map[string]bool, error)) targetPkgResolverFn {
 	type cacheEntry struct {
 		name string
 		ok   bool
@@ -247,7 +254,7 @@ func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor fun
 		if e == nil {
 			e = &cacheEntry{}
 			cache[key] = e
-			var overlay map[string][]byte
+			var overlay map[string]string
 			var owned map[string]bool
 			if overlayFor != nil {
 				ov, ow, oerr := overlayFor(dir)
@@ -269,7 +276,7 @@ func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor fun
 				e.done = true
 				return "", false, nil
 			}
-			e.name, _, e.err = resolveTargetPackageGo(goExe, moduleRoot, dir, env, overlay)
+			e.name, _, e.err = resolveTargetPackageGo(goExe, moduleRoot, dir, env, overlay, owned)
 			e.ok = e.err == nil
 
 			e.done = true
@@ -339,29 +346,37 @@ func targetNameOverlay(moduleRoot string, man *manifest, dir string) (map[string
 // 自有旧产物过滤仍以 Manifest+保护头为所有权依据（工具项优先）。
 // effectiveTargetResolutionWithUser 用**预先解析一次**的用户 overlay 映射构造有界结果。
 // user 由调用方在每次运行中读取一次（GOFLAGS 的 -overlay 只读一次），避免逐目录重复读盘。
-func effectiveTargetResolutionWithUser(moduleRoot string, man *manifest, dir string, user map[string][]byte) (map[string][]byte, map[string]bool, error) {
+func effectiveTargetResolutionWithUser(moduleRoot string, man *manifest, dir string, user map[string]string) (map[string]string, map[string]bool, error) {
 	ownedOverlay, err := targetNameOverlay(moduleRoot, man, dir)
 	if err != nil {
 		return nil, nil, err
 	}
 	owned := make(map[string]bool, len(ownedOverlay))
-	effective := make(map[string][]byte, len(ownedOverlay))
-	for from, data := range ownedOverlay {
+	effective := make(map[string]string, len(ownedOverlay))
+	for from := range ownedOverlay {
 		owned[from] = true
-		effective[from] = data
+		effective[from] = "" // 占位；owned 走 ignore 临时文件，值不参与用户语义
 	}
-	for from, data := range user {
+	for from, to := range user {
 		if owned[from] {
-			continue
+			continue // 工具自有旧产物优先
 		}
-		effective[from] = data
+		effective[from] = to
 	}
 	return effective, owned, nil
 }
 
-// userOverlayBytes 读取 GOFLAGS 中 -overlay= 指向的用户 overlay JSON，返回
-// from(abs)→替换字节。读不到/坏 JSON 返回 error（可消费失败，不静默降级）。
-func userOverlayBytes(flags, moduleRoot string) (map[string][]byte, error) {
+// userOverlayMap 读取 GOFLAGS 中 -overlay= 指向的用户 overlay JSON，返回
+// from(abs, Clean 归一化)→to(abs 替换路径；"" 表示删除)。**不读取替换文件内容**，
+// 把替换路径/删除语义原样交给 Go 权威查询（Go 只读它选中的替换源）。
+//
+// fail-closed 边界（与 Go overlay 结构错误对齐）：
+//   - 空键（from 归一化后为空）→ 错误；
+//   - 归一化后重复的 from（如 "target/doc.go" 与 "./target/doc.go"）→ 错误，
+//     不复刻 Go 的完整文件系统也不静默修正后写盘。
+//
+// 读不到 overlay/坏 JSON → error（可消费失败）。
+func userOverlayMap(flags, moduleRoot string) (map[string]string, error) {
 	fields, err := goFlagsSplit(flags)
 	if err != nil {
 		return nil, fmt.Errorf("解析目标定名 GOFLAGS: %w", err)
@@ -387,27 +402,26 @@ func userOverlayBytes(flags, moduleRoot string) (map[string][]byte, error) {
 	if jerr := json.Unmarshal(b, &cfg); jerr != nil {
 		return nil, fmt.Errorf("解析用户 overlay %s: %w", path, jerr)
 	}
-	out := make(map[string][]byte, len(cfg.Replace))
-	for from, to := range cfg.Replace {
-		if !filepath.IsAbs(from) {
-			from = filepath.Join(moduleRoot, from)
+	out := make(map[string]string, len(cfg.Replace))
+	seenFrom := make(map[string]string, len(cfg.Replace)) // normFrom -> 原始 from（诊断）
+	for rawFrom, to := range cfg.Replace {
+		if strings.TrimSpace(rawFrom) == "" {
+			return nil, fmt.Errorf("用户 overlay 含空路径键（overlay %s）", path)
 		}
-		from = filepath.Clean(from)
-		if to == "" {
-			// 删除语义：映射为空字节（go overlay 的删除用空字符串表示；这里用空内容近似，
-			// 但目标定名校验通过 readPackageFile 读到空内容会解析失败——保留为删除标记由
-			// 上层语义决定。当前仅支持替换，删除交给 go 侧 -overlay 原始值为空。）
-			out[from] = nil
-			continue
+		norm := rawFrom
+		if !filepath.IsAbs(norm) {
+			norm = filepath.Join(moduleRoot, norm)
 		}
-		if !filepath.IsAbs(to) {
-			to = filepath.Join(moduleRoot, to)
+		norm = filepath.Clean(norm)
+		if prev, dup := seenFrom[strings.ToLower(norm)]; dup {
+			return nil, fmt.Errorf("用户 overlay 路径归一化后重复：%q 与 %q（overlay %s）", prev, rawFrom, path)
 		}
-		data, rerr := os.ReadFile(to)
-		if rerr != nil {
-			return nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", to, rerr)
+		seenFrom[strings.ToLower(norm)] = rawFrom
+		toNorm := to
+		if toNorm != "" && !filepath.IsAbs(toNorm) {
+			toNorm = filepath.Join(moduleRoot, toNorm)
 		}
-		out[from] = data
+		out[norm] = toNorm // "" 保留删除语义；否则替换路径原样
 	}
 	return out, nil
 }
@@ -429,7 +443,7 @@ func isTestGoName(name string) bool {
 //
 // 所有权**只**取自 owned（Manifest+保护头+Source 证明），不做任何字节启发式，
 // 避免把合法用户输入（内容恰含 //go:build ignore / package ignore）误判为工具产物。
-func effectiveUserGoFiles(dir string, overlay map[string][]byte, owned map[string]bool) (bool, error) {
+func effectiveUserGoFiles(dir string, overlay map[string]string, owned map[string]bool) (bool, error) {
 	entries, statErr := os.ReadDir(dir)
 	dirExists := true
 	if os.IsNotExist(statErr) {
@@ -447,15 +461,15 @@ func effectiveUserGoFiles(dir string, overlay map[string][]byte, owned map[strin
 			if owned[full] {
 				continue // 已证工具自有旧产物：不算用户源
 			}
-			if data, ok := overlay[full]; ok && data == nil {
+			if to, ok := overlay[full]; ok && to == "" {
 				continue // 用户 overlay 删除该文件
 			}
 			return true, nil
 		}
 	}
 	// overlay 新增（磁盘不存在）的非 owned 非测试 .go 也算用户源。
-	for from, data := range overlay {
-		if owned[from] || data == nil {
+	for from, to := range overlay {
+		if owned[from] || to == "" {
 			continue
 		}
 		if !samePathDir(filepath.Dir(filepath.Clean(from)), dir) {

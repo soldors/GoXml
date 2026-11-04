@@ -67,7 +67,7 @@ func TestR21OverlayExcludedFileIsAuthoritativeFailure(t *testing.T) {
 	}
 	// 直接走单查 resolver：必须返回 err（权威失败），而不是 ok=false 回退。
 	resolve := newTargetPkgResolver(r21Go(t), root, []string{"GOENV=off", "GOTOOLCHAIN=local"},
-		func(d string) (map[string][]byte, map[string]bool, error) {
+		func(d string) (map[string]string, map[string]bool, error) {
 			return r21Effective(t, root, d, `-mod=readonly "-overlay=overlay.json"`)
 		})
 	_, ok, rerr := resolve(dir)
@@ -89,17 +89,22 @@ func TestR21OwnershipNotFromByteHeuristic(t *testing.T) {
 	if owned[filepath.Join(dir, "doc.go")] {
 		t.Fatal("含 //go:build ignore 文本的合法用户文件不得被判为工具自有（禁止字节启发式）")
 	}
-	// 条目字节保留用户的 package q
-	if d := ov[filepath.Join(dir, "doc.go")]; d == nil || string(d) != repl {
-		t.Fatalf("用户替换字节应原样保留，got=%q", string(d))
+	// 条目应保留用户替换**路径**（指向 replacement.go），其内容为 package q
+	to, ok := ov[filepath.Join(dir, "doc.go")]
+	if !ok || to == "" {
+		t.Fatalf("用户替换路径应原样保留，got=%q ok=%v", to, ok)
+	}
+	rd, rerr := os.ReadFile(to)
+	if rerr != nil || string(rd) != repl {
+		t.Fatalf("用户替换源内容应为原 repl，got=%q err=%v", string(rd), rerr)
 	}
 	_ = os.Stdout
 }
 
 // r21Effective 用"用户 overlay 读取一次"的 WithUser 版本构造结果（测试便捷）。
-func r21Effective(t *testing.T, root, dir, flags string) (map[string][]byte, map[string]bool, error) {
+func r21Effective(t *testing.T, root, dir, flags string) (map[string]string, map[string]bool, error) {
 	t.Helper()
-	user, err := userOverlayBytes(flags, root)
+	user, err := userOverlayMap(flags, root)
 	if err != nil {
 		return nil, nil, err
 	}
