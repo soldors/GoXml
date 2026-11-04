@@ -185,6 +185,11 @@ func runGoBuildCheck(goExe, workDir, overlayPath string, pkgs []string, outputFi
 	ctx, cancel := context.WithTimeout(context.Background(), precommitCheckTimeout)
 	defer cancel()
 	args := []string{"build"}
+	// R14-A：检查**必须真的编译**。若进程 GOFLAGS 或 GOENV 持久化了 `-n`（dry-run），
+	// `go build` 只会打印命令并以 0 退出，会让本检查假通过、随后提交坏产物。
+	// 命令行 flag 优先于 GOFLAGS/GOENV，故在 argv 追加 `-n=false` 强制真正编译；
+	// 这既不改写用户 GOFLAGS，也不影响 `-x` 等其它标志，用户显式 `-n=false` 时无副作用。
+	args = append(args, "-n=false")
 	if outputFile != "" {
 		args = append(args, "-o", outputFile)
 	}

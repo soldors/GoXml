@@ -167,12 +167,25 @@ func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, erro
 
 	vmRef, _ := v.ViewModel()
 
+	// R14-B：目标包已有包级符号（命名预检事实）+ 本文件将声明的包级名，
+	// 都是导入名（文件块）不得触碰的名字——同名标识符不能同时出现在
+	// 文件块与包块（Go 规范），用户合法声明 `layout`/`material`/`op` 时
+	// 固定限定符会让生成文件编译失败。
+	taken := make(map[string]bool, len(opts.PackageNames)+4)
+	for n := range opts.PackageNames {
+		taken[n] = true
+	}
+	taken[view] = true
+	taken["New"+view] = true
+	taken[keyType] = true
+	taken[cacheType] = true
+
 	g := &generator{
 		opts:      opts,
 		view:      view,
 		keyType:   keyType,
 		cacheType: cacheType,
-		imports:   newImportSet(),
+		imports:   newImportSetWithTaken(taken),
 		facts:     v.Facts(),
 		vmRef:     vmRef,
 	}
@@ -183,6 +196,7 @@ func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, erro
 	if page == nil {
 		return nil, 0, fmt.Errorf("codegen: document has no <Page>; nothing to generate")
 	}
+	reserveLoopNames(page, g.facts, taken)
 
 	body, err := g.page(page)
 	if err != nil {
@@ -202,6 +216,30 @@ func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, erro
 	// g.bindSlots 是发射过程中**实际累加**的值（分配序号时 ++），
 	// 不是重新数一遍——这正是 CountBindSlots 要对齐的基准。
 	return out, g.bindSlots, nil
+}
+
+// A range variable is in scope when child qualifiers are emitted. Reserve
+// these names before registering any import, including numeric alias variants.
+func reserveLoopNames(n *contracts.NodeIR, facts *analyzer.Facts, taken map[string]bool) {
+	if n == nil {
+		return
+	}
+	if loop, ok := lookupFor(n, facts); ok {
+		taken[loop.Each] = true
+		if loop.Index != "" {
+			taken[loop.Index] = true
+		}
+	}
+	for _, child := range n.Children {
+		reserveLoopNames(child, facts, taken)
+	}
+	if n.If != nil {
+		for _, branch := range [][]*contracts.NodeIR{n.If.Then, n.If.Else} {
+			for _, child := range branch {
+				reserveLoopNames(child, facts, taken)
+			}
+		}
+	}
 }
 
 // generator 是单次生成的状态。
@@ -367,14 +405,14 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 // 以及传给 sizeWrap 的「子项主轴方向」。两者取自同一个 bool，避免出现
 // 「Axis 写成 Horizontal 却按 Vertical 解释尺寸」这种只错一半的组合。
 func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
-	g.imports.add("gioui.org/layout", "layout")
+	ql := g.q("gioui.org/layout", "layout")
 
 	if hasForChild(children) || hasIfChild(children) {
 		return g.dynamicContainerExpr(children, mainIsHorizontal, ops, fields)
 	}
 
 	var b strings.Builder
-	b.WriteString("layout.Flex{Axis: " + axisIdent(mainIsHorizontal) + fields + "}.Layout(" + ops)
+	b.WriteString(ql + ".Flex{Axis: " + axisIdent(g, mainIsHorizontal) + fields + "}.Layout(" + ops)
 	for _, c := range children {
 		inner, err := g.nodeExpr(c)
 		if err != nil {
@@ -382,7 +420,7 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal
 		}
 		// 尺寸语义（含「无界不抬 Min」的唯一判据）全部在 sizeWrap 内，
 		// 本函数只负责按声明顺序拼接，不复制任何条件表达式。
-		b.WriteString(",\n\t\t" + sizeWrap(c, inner, mainIsHorizontal))
+		b.WriteString(",\n\t\t" + sizeWrap(g, c, inner, mainIsHorizontal))
 	}
 	b.WriteString(")")
 	return b.String(), nil
@@ -403,6 +441,7 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal
 // `layout.Rigid(...)` 并静默忽略 Width/Height，现在由 sizeWrap 统一决定
 // Rigid/Flexed 与约束改写，主轴方向由调用方逐层透传。
 func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
+	ql := g.q("gioui.org/layout", "layout")
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
@@ -412,8 +451,8 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHor
 	}
 
 	var b strings.Builder
-	b.WriteString("func() layout.Dimensions {\n")
-	b.WriteString(fmt.Sprintf("\t\t\tchildren := make([]layout.FlexChild, 0, %d)\n", static))
+	b.WriteString("func() " + ql + ".Dimensions {\n")
+	b.WriteString(fmt.Sprintf("\t\t\tchildren := make([]"+ql+".FlexChild, 0, %d)\n", static))
 
 	for _, c := range children {
 		if isForNode(c) {
@@ -433,10 +472,10 @@ func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHor
 			return "", err
 		}
 		// 与静态路径共用同一 sizeWrap：动态路径不得另写一份尺寸判断。
-		b.WriteString("\t\t\tchildren = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
+		b.WriteString("\t\t\tchildren = append(children, " + sizeWrap(g, c, inner, mainIsHorizontal) + ")\n")
 	}
 
-	b.WriteString("\t\t\treturn layout.Flex{Axis: " + axisIdent(mainIsHorizontal) + fields + "}.Layout(" + ops + ", children...)\n")
+	b.WriteString("\t\t\treturn " + ql + ".Flex{Axis: " + axisIdent(g, mainIsHorizontal) + fields + "}.Layout(" + ops + ", children...)\n")
 	b.WriteString("\t\t}()")
 	return b.String(), nil
 }
@@ -524,7 +563,7 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 			return err
 		}
 		// 逐项 append 与静态子项共用 sizeWrap：循环内的尺寸语义不另起一套。
-		b.WriteString(indent + "\t\tchildren = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
+		b.WriteString(indent + "\t\tchildren = append(children, " + sizeWrap(g, c, inner, mainIsHorizontal) + ")\n")
 	}
 	g.inFor = prevInFor
 	g.currentFor = prevFor
@@ -614,14 +653,16 @@ func (g *generator) localStaticCacheExpr(n *contracts.NodeIR) (string, error) {
 	}
 	s := fmt.Sprint(slot)
 	var b strings.Builder
-	b.WriteString("func(gtx layout.Context) layout.Dimensions {\n")
+	ql := g.q("gioui.org/layout", "layout")
+	qop := g.q("gioui.org/op", "op")
+	b.WriteString("func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n")
 	b.WriteString("\tkS" + s + " := " + g.keyType + "{constraints: gtx.Constraints, metric: gtx.Metric, theme: th, locale: gtx.Locale}\n")
 	b.WriteString("\tif !v.staticCached" + s + " || !v.staticKey" + s + ".equal(kS" + s + ") {\n")
 	b.WriteString("\t\tv.staticOps" + s + ".Reset()\n")
-	b.WriteString("\t\tmS" + s + " := op.Record(&v.staticOps" + s + ")\n")
+	b.WriteString("\t\tmS" + s + " := " + qop + ".Record(&v.staticOps" + s + ")\n")
 	b.WriteString("\t\trecS" + s + " := gtx\n")
 	b.WriteString("\t\trecS" + s + ".Ops = &v.staticOps" + s + "\n")
-	b.WriteString("\t\tv.staticDims" + s + " = func(gtx layout.Context) layout.Dimensions {\n")
+	b.WriteString("\t\tv.staticDims" + s + " = func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n")
 	b.WriteString("\t\t\treturn " + inner + "\n")
 	b.WriteString("\t\t}(recS" + s + ")\n")
 	b.WriteString("\t\tv.staticCall" + s + " = mS" + s + ".Stop()\n")
@@ -673,7 +714,7 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 			}
 			g.usesVM = true
 			if !takesSlot {
-				inner = fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", expr)
+				inner = fmt.Sprintf(g.q("gioui.org/widget/material", "material")+".Body1(th, %s).Layout(gtx)", expr)
 			} else {
 				// 分配显示缓存槽位；闭包内通过 v.n<i> 读写缓存。
 				slot := g.bindSlots
@@ -686,28 +727,28 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 				return "", fmt.Errorf(
 					"codegen: <Text> needs a static Value; data binding is not supported in this slice")
 			}
-			inner = fmt.Sprintf("material.Body1(th, %s).Layout(gtx)", quote(value))
+			inner = fmt.Sprintf(g.q("gioui.org/widget/material", "material")+".Body1(th, %s).Layout(gtx)", quote(value))
 		}
 		// 叶子装饰（Padding 子集）：静态 Padding 包 layout.Inset。
-		return leafDecorationExpr(n, g.imports, inner), nil
+		return leafDecorationExpr(g, n, inner), nil
 
 	case "Button":
 		inner, err := g.buttonExpr(n)
 		if err != nil {
 			return "", err
 		}
-		return leafDecorationExpr(n, g.imports, inner), nil
+		return leafDecorationExpr(g, n, inner), nil
 
 	case "Input":
 		inner, err := g.inputExpr(n)
 		if err != nil {
 			return "", err
 		}
-		return leafDecorationExpr(n, g.imports, inner), nil
+		return leafDecorationExpr(g, n, inner), nil
 
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
-		fields, err := flexFieldsExpr(n.Tag, n)
+		fields, err := flexFieldsExpr(g, n.Tag, n)
 		if err != nil {
 			return "", err
 		}
@@ -715,10 +756,10 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return paddingInsetExpr(n, g.imports, inner), nil
+		return paddingInsetExpr(g, n, inner), nil
 
 	case "Row":
-		fields, err := flexFieldsExpr(n.Tag, n)
+		fields, err := flexFieldsExpr(g, n.Tag, n)
 		if err != nil {
 			return "", err
 		}
@@ -726,7 +767,7 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return paddingInsetExpr(n, g.imports, inner), nil
+		return paddingInsetExpr(g, n, inner), nil
 
 	case "Grid":
 		// 列定义见 Contracts.GridColumn；生成形态与规范推演见 grid.go 文件头。
@@ -734,7 +775,7 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return paddingInsetExpr(n, g.imports, inner), nil
+		return paddingInsetExpr(g, n, inner), nil
 
 	case "Spacer":
 		return g.spacerExpr(n)
@@ -766,7 +807,7 @@ func (g *generator) spacerExpr(n *contracts.NodeIR) (string, error) {
 			"codegen: <Spacer> accepts only Width and Height, but %d other attribute(s) survived the frontend", len(n.Attrs))
 	}
 	g.imports.add("gioui.org/layout", "layout")
-	return "layout.Spacer{}.Layout(gtx)", nil
+	return g.q("gioui.org/layout", "layout") + ".Spacer{}.Layout(gtx)", nil
 }
 
 // buttonExpr 生成 <Button> 的渲染表达式（事件处理输出契约 §6）。
@@ -868,9 +909,9 @@ func (g *generator) buttonExpr(n *contracts.NodeIR) (string, error) {
 	}
 
 	if g.inFor {
-		return fmt.Sprintf("material.Button(th, v.rowClick%d(%s), %s).Layout(gtx)", rowPool, rowKey, label), nil
+		return fmt.Sprintf(g.q("gioui.org/widget/material", "material")+".Button(th, v.rowClick%d(%s), %s).Layout(gtx)", rowPool, rowKey, label), nil
 	}
-	return fmt.Sprintf("material.Button(th, &v.click%d, %s).Layout(gtx)", idx, label), nil
+	return fmt.Sprintf(g.q("gioui.org/widget/material", "material")+".Button(th, &v.click%d, %s).Layout(gtx)", idx, label), nil
 }
 
 // staticAttr 取静态属性值；绑定属性返回 false。
@@ -942,12 +983,12 @@ func (g *generator) assemble(body string) (string, error) {
 		}
 		// 交互控件状态：每个 <Button> 一个，跨帧地址不变（契约 §1.3）。
 		for i := 0; i < g.clickSlots; i++ {
-			b.WriteString(fmt.Sprintf("\tclick%d widget.Clickable\n", i))
+			b.WriteString(fmt.Sprintf("\tclick%d %s.Clickable\n", i, g.q("gioui.org/widget", "widget")))
 		}
 		// Input 的编辑器实例：每个 <Input> 一个，跨帧稳定（契约 §6.3）。
 		// applied<n> 是 lastApplied 占位——D4-B 实现同步算法时使用。
 		for i := 0; i < g.inputSlots; i++ {
-			b.WriteString(fmt.Sprintf("\tinput%d widget.Editor\n", i))
+			b.WriteString(fmt.Sprintf("\tinput%d %s.Editor\n", i, g.q("gioui.org/widget", "widget")))
 			b.WriteString(fmt.Sprintf("\tapplied%d string\n", i))
 		}
 		// R10-B：动态父容器内局部静态子树缓存（契约 §16、ADR-0006 §2.1）。
@@ -955,9 +996,9 @@ func (g *generator) assemble(body string) (string, error) {
 		// 之外的复用）、CallOp 区间、Dimensions 与上下文 key。
 		// R11-B：录制次数验收仪表已移出生产输出（测试经外部副本注入）。
 		for i := 0; i < g.staticSlots; i++ {
-			b.WriteString(fmt.Sprintf("\tstaticOps%d op.Ops\n", i))
-			b.WriteString(fmt.Sprintf("\tstaticCall%d op.CallOp\n", i))
-			b.WriteString(fmt.Sprintf("\tstaticDims%d layout.Dimensions\n", i))
+			b.WriteString(fmt.Sprintf("\tstaticOps%d %s.Ops\n", i, g.q("gioui.org/op", "op")))
+			b.WriteString(fmt.Sprintf("\tstaticCall%d %s.CallOp\n", i, g.q("gioui.org/op", "op")))
+			b.WriteString(fmt.Sprintf("\tstaticDims%d %s.Dimensions\n", i, g.q("gioui.org/layout", "layout")))
 			b.WriteString(fmt.Sprintf("\tstaticKey%d %s\n", i, g.keyType))
 			b.WriteString(fmt.Sprintf("\tstaticCached%d bool\n", i))
 		}
@@ -968,10 +1009,10 @@ func (g *generator) assemble(body string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			b.WriteString(fmt.Sprintf("\trowClicks%d map[%s]*widget.Clickable\n", pi, kt))
+			b.WriteString(fmt.Sprintf("\trowClicks%d map[%s]*%s.Clickable\n", pi, kt, g.q("gioui.org/widget", "widget")))
 		}
 	} else {
-		for _, line := range cacheFieldLines(g.view, g.keyType) {
+		for _, line := range g.cacheFieldLines() {
 			b.WriteString(line + "\n")
 		}
 	}
@@ -997,7 +1038,7 @@ func (g *generator) assemble(body string) (string, error) {
 		b.WriteString("// 读写的并发安全；跨 goroutine 修改 vm 由调用方负责同步。\n")
 		b.WriteString("func New" + g.view + "(vm *" + g.vmTypeExprStr() + ") (*" + g.view + ", error) {\n")
 		b.WriteString("\tif vm == nil {\n")
-		b.WriteString("\t\treturn nil, fmt.Errorf(\"goxml: New" + g.view + " requires a non-nil ViewModel; a binding page cannot render without state\")\n")
+		b.WriteString("\t\treturn nil, " + g.q("fmt", "fmt") + ".Errorf(\"goxml: New" + g.view + " requires a non-nil ViewModel; a binding page cannot render without state\")\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn &" + g.view + "{vm: vm}, nil\n")
 		b.WriteString("}\n\n")
@@ -1012,7 +1053,9 @@ func (g *generator) assemble(body string) (string, error) {
 			b.WriteString("// 事件轮询置于一切绘制之前（事件处理输出契约 §2.2）：\n")
 			b.WriteString("// 保证所有状态变更发生在任何节点渲染之前，同帧强一致。\n")
 		}
-		b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
+		ql := g.q("gioui.org/layout", "layout")
+		qm := g.q("gioui.org/widget/material", "material")
+		b.WriteString("func (v *" + g.view + ") Layout(gtx " + ql + ".Context, th *" + qm + ".Theme) " + ql + ".Dimensions {\n")
 		// 事件消费：必须在绘制之前（契约 §2.1/§2.2）。
 		// 普通按钮逐个轮询；行状态按钮数据驱动（<For> 列表契约 §5）。
 		for _, cs := range g.clicks {
@@ -1029,7 +1072,7 @@ func (g *generator) assemble(body string) (string, error) {
 			}
 			b.WriteString(fmt.Sprintf(ind+"for v.click%d.Clicked(gtx) {\n", cs.index))
 			b.WriteString(ind + "\t v.vm." + cs.method + "(" + cs.args + ")\n")
-			b.WriteString(ind + "\t gtx.Execute(op.InvalidateCmd{})\n")
+			b.WriteString(ind + "\t gtx.Execute(" + g.q("gioui.org/op", "op") + ".InvalidateCmd{})\n")
 			b.WriteString(ind + "}\n")
 			if guardExpr(cs.guards) != "" {
 				b.WriteString("\t}\n")
@@ -1039,7 +1082,7 @@ func (g *generator) assemble(body string) (string, error) {
 		// 与渲染用**同一数据源表达式**（同源）与**同一顺序**（range 切片），
 		// 防止并发修改列表时两处错位。
 		for _, rc := range g.rowClicks {
-			b.WriteString(rc.pollCode())
+			b.WriteString(rc.pollCode(g.q("gioui.org/op", "op")))
 		}
 		// 键清理（<For> 列表契约 §4）：轮询之后、渲染之前。
 		// 快速跳过：池不比列表大就不可能有失效键——稳定帧零分配。
@@ -1057,15 +1100,16 @@ func (g *generator) assemble(body string) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			qw := g.q("gioui.org/widget", "widget")
 			b.WriteString(fmt.Sprintf(`
 // rowClick%d 返回 Key 对应的行控件状态；不存在则创建（惰性）。
-func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
+func (v *`+g.view+`) rowClick%d(key %s) *`+qw+`.Clickable {
 	if v.rowClicks%d == nil {
-		v.rowClicks%d = make(map[%s]*widget.Clickable)
+		v.rowClicks%d = make(map[%s]*`+qw+`.Clickable)
 	}
 	c := v.rowClicks%d[key]
 	if c == nil {
-		c = new(widget.Clickable)
+		c = new(`+qw+`.Clickable)
 		v.rowClicks%d[key] = c
 	}
 	return c
@@ -1073,21 +1117,24 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 `, pi, pi, kt, pi, pi, kt, pi, pi))
 		}
 		// 绑定页面同样需要 renderKey 与绑定缓存声明。
-		b.WriteString(renderKeyDecl(g.view, g.keyType))
-		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
+		b.WriteString(g.renderKeyDecl())
+		b.WriteString(g.bindCacheDecl())
 		return b.String(), nil
 	}
 	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
 
+	ql := g.q("gioui.org/layout", "layout")
+	qm := g.q("gioui.org/widget/material", "material")
+	qop := g.q("gioui.org/op", "op")
 	b.WriteString("// 首个 key 生效时录制，之后 key 未变只回放（契约 §16.4）。\n")
-	b.WriteString("func (v *" + g.view + ") Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {\n")
+	b.WriteString("func (v *" + g.view + ") Layout(gtx " + ql + ".Context, th *" + qm + ".Theme) " + ql + ".Dimensions {\n")
 	b.WriteString("\tk := v.currentKey(gtx, th)\n")
 	b.WriteString("\tif v.cached && v.cacheKey.equal(k) {\n")
 	b.WriteString("\t\tv.cacheCall.Add(gtx.Ops)\n")
 	b.WriteString("\t\treturn v.cacheDims\n")
 	b.WriteString("\t}\n\n")
 	b.WriteString("\tv.cacheOps.Reset()\n")
-	b.WriteString("\tm := op.Record(&v.cacheOps)\n")
+	b.WriteString("\tm := " + qop + ".Record(&v.cacheOps)\n")
 	b.WriteString("\trec := gtx\n")
 	b.WriteString("\trec.Ops = &v.cacheOps\n")
 	b.WriteString("\t" + strings.ReplaceAll(body, "\n", "\n\t") + "\n")
@@ -1097,11 +1144,22 @@ func (v *`+g.view+`) rowClick%d(key %s) *widget.Clickable {
 	b.WriteString("\tv.cacheCall.Add(gtx.Ops)\n")
 	b.WriteString("\treturn v.cacheDims\n")
 	b.WriteString("}\n")
-	b.WriteString(renderKeyDecl(g.view, g.keyType))
+	b.WriteString(g.renderKeyDecl())
 	if g.usesVM {
-		b.WriteString(bindCacheDecl(g.view, g.bindSlots, g.keyType, g.cacheType))
+		b.WriteString(g.bindCacheDecl())
 	}
 	return b.String(), nil
+}
+
+// q 登记并返回 path 的有效限定符（R14-B）。
+//
+// 首次调用时按默认名登记 import（默认名与目标包已有包级符号或已登记名冲突时，
+// 取第一个空闲名 `pkg_2`、`pkg_3`……并强制写别名）；后续调用返回同一名字。
+// 发射点一律经它取限定符并拼接引用，保证 import 块与实际引用同步——
+// 不是对生成源做文本替换，用户字符串与事件实参天然不受影响。
+func (g *generator) q(path, defaultName string) string {
+	g.imports.add(path, defaultName)
+	return g.imports.nameOf(path)
 }
 
 // vmTypeExpr 生成 ViewModel 参数的类型表达式，并按需登记 import。
@@ -1190,15 +1248,18 @@ func isValidGoIdent(s string) bool {
 	return s != "_" && token.IsIdentifier(s)
 }
 
-// renderKeyDecl 生成私有 renderKey 类型（契约 §16.5.1 方案 A）。
+// renderKeyDecl 生成 renderKey 类型与其方法（契约 §16.5.1 方案 A）。
 //
 // 注意：这是**生成产物**，不要手改。字段变更必须先改契约 §16.5 再重新生成。
-// renderKeyDecl 生成 renderKey 类型与其方法。
-//
-// 只依赖 view 与 keyType：cacheType 曾在这里出现但从未被使用（BUG-007），
-// 保留它会让人误以为 renderKey 声明与 textCache 类型存在耦合，
-// 从而在改命名规则时误判影响面。需要缓存类型的声明走 bindCacheDecl。
-func renderKeyDecl(view, keyType string) string {
+// R14-B：改为 generator 方法——限定符经 g.q 解析（目标包已有同名符号时
+// 随 import 一起改别名），与 import 块同步。
+func (g *generator) renderKeyDecl() string {
+	ql := g.q("gioui.org/layout", "layout")
+	qu := g.q("gioui.org/unit", "unit")
+	qm := g.q("gioui.org/widget/material", "material")
+	qsys := g.q("gioui.org/io/system", "system")
+	qmath := g.q("math", "math")
+	view, keyType := g.view, g.keyType
 	return `
 // ` + keyType + ` 复制自 代码生成输出契约 §16.5。
 //
@@ -1208,23 +1269,23 @@ func renderKeyDecl(view, keyType string) string {
 // ⚠️ 本类型是生成产物，不要手改。
 // 字段变更必须先改契约 §16.5，再重新生成——已生成文件不会自动跟随。
 type ` + keyType + ` struct {
-	constraints layout.Constraints
-	metric      unit.Metric
-	theme       *material.Theme
-	locale      system.Locale
+	constraints ` + ql + `.Constraints
+	metric      ` + qu + `.Metric
+	theme       *` + qm + `.Theme
+	locale      ` + qsys + `.Locale
 }
 
 // equal 按位比较浮点字段，避免 float32 精度造成的误判（契约 §16.5）。
 func (k ` + keyType + `) equal(o ` + keyType + `) bool {
 	return k.constraints == o.constraints &&
-		math.Float32bits(k.metric.PxPerDp) == math.Float32bits(o.metric.PxPerDp) &&
-		math.Float32bits(k.metric.PxPerSp) == math.Float32bits(o.metric.PxPerSp) &&
+		` + qmath + `.Float32bits(k.metric.PxPerDp) == ` + qmath + `.Float32bits(o.metric.PxPerDp) &&
+		` + qmath + `.Float32bits(k.metric.PxPerSp) == ` + qmath + `.Float32bits(o.metric.PxPerSp) &&
 		k.theme == o.theme &&
 		k.locale == o.locale
 }
 
 // currentKey 采集当前帧的上下文指纹。
-func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) ` + keyType + ` {
+func (v *` + view + `) currentKey(gtx ` + ql + `.Context, th *` + qm + `.Theme) ` + keyType + ` {
 	return ` + keyType + `{
 		constraints: gtx.Constraints,
 		metric:      gtx.Metric,
@@ -1236,20 +1297,23 @@ func (v *` + view + `) currentKey(gtx layout.Context, th *material.Theme) ` + ke
 }
 
 // cacheFieldLines 返回 View 结构体的缓存字段（契约 §16.2）。
-func cacheFieldLines(view, keyType string) []string {
+// R14-B：改为 generator 方法——限定符经 g.q 解析。
+func (g *generator) cacheFieldLines() []string {
+	qop := g.q("gioui.org/op", "op")
+	ql := g.q("gioui.org/layout", "layout")
 	return []string{
 		"\t// cacheOps 是持久操作列表，仅由本视图持有，永不 Reset 之外的复用。",
 		"\t// 必须与每帧的帧 Ops 分离：帧 Ops 每帧被 Reset，而 CallOp 引用 cacheOps 的数据。",
-		"\tcacheOps op.Ops",
+		"\tcacheOps " + qop + ".Ops",
 		"",
 		"\t// cacheCall 指向 cacheOps 中的录制区间。",
-		"\tcacheCall op.CallOp",
+		"\tcacheCall " + qop + ".CallOp",
 		"",
 		"\t// cacheDims 是录制时的布局结果。CallOp.Add 不返回尺寸，必须一并缓存。",
-		"\tcacheDims layout.Dimensions",
+		"\tcacheDims " + ql + ".Dimensions",
 		"",
 		"\t// cacheKey 是录制时的上下文指纹，用于判断失效。",
-		"\tcacheKey " + keyType,
+		"\tcacheKey " + g.keyType,
 		"",
 		"\t// cached 表示 cacheCall 是否已有效录制。",
 		"\tcached bool",
@@ -1264,20 +1328,68 @@ func cacheFieldLines(view, keyType string) []string {
 //
 // 契约 §7 的要求：只为实际使用的符号生成、按路径去重、读取真实包名、
 // 冲突时按路径字典序分配 `pkg`、`pkg_2`……、输出前经过 go/format。
+//
+// R14-B：导入名（文件块）不得与本包**任何**包级标识符同名（Go 规范：
+// 同名标识符不能同时出现在文件块与包块）——目标包的用户 Go 文件可以合法
+// 声明 `layout`/`material`/`op` 等。登记时按 taken 集合与已登记名取第一个
+// 空闲名（`pkg`、`pkg_2`、`pkg_3`……，升序确定性），重命名即强制写出别名；
+// 限定符的**实际引用**由发射点经 nameOf/g.q 取同一名字，不做文本替换。
 type importSet struct {
-	byPath map[string]string // 路径 → 优先包名
-	forced map[string]bool   // 路径 → 是否强制写出别名（R4-A 片2）
+	byPath map[string]string // 路径 → 有效限定符
+	forced map[string]bool   // 路径 → 是否强制写出别名（R4-A 片2 / R14-B 重命名）
+	// taken 是目标包已有包级符号名（编排层传入的事实；nil = 无冲突）。
+	taken map[string]bool
 }
 
 func newImportSet() *importSet {
 	return &importSet{byPath: make(map[string]string), forced: make(map[string]bool)}
 }
 
-// add 记录一个需要的导入。path 为导入路径，pkgName 为该包的默认名。
-func (s *importSet) add(path, pkgName string) {
-	if _, ok := s.byPath[path]; !ok {
-		s.byPath[path] = pkgName
+// newImportSetWithTaken 构造带目标包已有符号事实的 importSet（R14-B）。
+func newImportSetWithTaken(taken map[string]bool) *importSet {
+	s := newImportSet()
+	s.taken = taken
+	return s
+}
+
+// freeName 返回 default、default_2、default_3……中第一个既不在 taken、
+// 也不与已登记限定符重名的名字（升序，确定性）。
+func (s *importSet) freeName(defaultName string) string {
+	name := defaultName
+	for suffix := 2; ; suffix++ {
+		if !s.taken[name] && !s.nameRegistered(name) {
+			return name
+		}
+		name = fmt.Sprintf("%s_%d", defaultName, suffix)
 	}
+}
+
+// nameRegistered 报告某个限定符名是否已被其他路径占用。
+func (s *importSet) nameRegistered(name string) bool {
+	for _, n := range s.byPath {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// add 记录一个需要的导入。path 为导入路径，pkgName 为该包的默认名。
+// 默认名与 taken/已登记名冲突时改用第一个空闲名并强制写出别名（R14-B）。
+func (s *importSet) add(path, pkgName string) {
+	if _, ok := s.byPath[path]; ok {
+		return
+	}
+	name := s.freeName(pkgName)
+	s.byPath[path] = name
+	if name != pkgName {
+		s.forced[path] = true
+	}
+}
+
+// nameOf 返回路径的有效限定符（登记后的稳定名）。
+func (s *importSet) nameOf(path string) string {
+	return s.byPath[path]
 }
 
 // addForcedAlias 记录一个**强制使用别名**的导入（R4-A 片2）。
@@ -1545,7 +1657,7 @@ func (g *generator) registerRowClick(rf analyzer.ResolvedFor, event analyzer.Res
 //
 // 关键：遍历的是**数据源本身**（与渲染同源同序）；Key 与实参都在
 // 轮询变量 rowItem 上求值——渲染期变量是 item，两者语义一致但作用域不同。
-func (s rowClickSlot) pollCode() string {
+func (s rowClickSlot) pollCode(opQ string) string {
 	var b strings.Builder
 	b.WriteString("\t{\n")
 	b.WriteString("\t\trowItems := " + s.inExpr + "\n")
@@ -1565,7 +1677,7 @@ func (s rowClickSlot) pollCode() string {
 	b.WriteString(ind + fmt.Sprintf("if c := v.rowClicks%d[%s]; c != nil {\n", s.fieldIndex, s.keyRef()))
 	b.WriteString(ind + "\tfor c.Clicked(gtx) {\n")
 	b.WriteString(ind + "\t\tv.vm." + s.method + "(" + s.args + ")\n")
-	b.WriteString(ind + "\t\tgtx.Execute(op.InvalidateCmd{})\n")
+	b.WriteString(ind + "\t\tgtx.Execute(" + opQ + ".InvalidateCmd{})\n")
 	b.WriteString(ind + "\t}\n")
 	b.WriteString(ind + "}\n")
 	if s.guardRef() != "" {
@@ -1742,7 +1854,7 @@ func (g *generator) emitBranchAppends(b *strings.Builder, nodes []*contracts.Nod
 		if err != nil {
 			return err
 		}
-		b.WriteString(indent + "children = append(children, " + sizeWrap(c, inner, mainIsHorizontal) + ")\n")
+		b.WriteString(indent + "children = append(children, " + sizeWrap(g, c, inner, mainIsHorizontal) + ")\n")
 	}
 	return nil
 }

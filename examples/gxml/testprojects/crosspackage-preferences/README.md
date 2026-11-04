@@ -212,6 +212,54 @@ found packages other (conflict.go) and edit (doc.go) in ...\view\edit
 
 这些都由 `examples/gxml/crosspackage_project_test.go` 逐个判定，不靠文档声明。
 
+## 维护生命周期：删页、保孤儿、局部清理
+
+页面会下线。`--clean` 只清理「Manifest 登记过 ∧ 源文件真的消失 ∧ 保护头仍归本工具」
+的产物，所以删页的顺序有讲究：先删源、再看孤儿、最后清理。
+
+| 步 | 命令（在工程根执行） | 实测结果 |
+|---|---|---|
+| L1 | `goxml generate view --out-dir view --check` | 两页都未命中；`提交前检查通过：2 个目标包`；Manifest 2 条、缓存 2 条 |
+| L2 | 同一条命令再跑一次 | `跳过 …（缓存命中）`×2、`命中 2，生成 0`；字节与 mtime 零变化 |
+| L3 | 删 `view/summary/{summary.gxml,doc.go,sem_test.go}` | `summary_gen.go` 成为孤儿；Manifest **仍是 2 条**（删源不动登记） |
+| L4 | 让 `view/edit/doc.go` 编译失败，再 `goxml generate view/edit/edit.gxml --out-dir view/edit --check --clean` | rc=2；`提交前检查失败`；孤儿、Manifest、缓存逐字保留 |
+| L5 | 修好同一个包，再跑同一条命令 | `已清理 view/summary/summary_gen.go`、`清理完成：删除 1，跳过 0`；Manifest 剩 1 条 |
+| L6 | 恢复页面源与入口，`goxml generate view --out-dir view --check` | `缓存未命中 view/summary/summary_gen.go：cache-missing` → `已生成 …`；再跑一次 `命中 2，生成 0` |
+
+三个容易踩的点：
+
+1. **入口要同步去接线。** `cmd/preferences/main.go` 直接 import 两个生成包，删掉一页后
+   必须同时去掉 import、`shell` 字段、`layout.Flexed` 那一栏和 `summary.NewGoxmlSummaryView`
+   调用，否则 `go build ./cmd/preferences` 直接失败（`undefined: summary`）。改完先
+   `gofmt -l` 再构建，别把「构建失败」误当成生成失败。
+2. **`--clean` 的检查门在清理之前。** `--check` 失败时清理阶段根本不执行，孤儿、Manifest、
+   缓存一个都不会动。要验证这条，就在**存活目标**的包里注入类型错误——注意不是被删页的包。
+3. **缓存记录数不是删除判据。** 成功清掉孤儿之后，`.goxml/cache/` 里那条旧记录**允许
+   保留**，条数不变。证明「清掉了」只能看两件事：产物文件不在、Manifest 少了那条登记；
+   证明「没被误删」看文件还在且字节没变。把条数变化当成功依据，等于什么都没证明。
+
+旧缓存记录不会造成假命中：L6 恢复源之后，CLI 先按 Manifest 登记判定，登记已被清理移除，
+于是报 `cache-missing` 重新生成，而不是拿着历史记录说「命中」。这条在
+`scripts/test-crosspackage-maintenance-e2e.py` 里是硬断言。
+
+### 三条安全锁（都实测过）
+
+`--clean` 要三条同时成立才删：登记源已消失、产物保护头仍完整、保护头里的 `// Source:`
+与登记源基名一致，且没有其它**仍存活**的源声称同一输出。任何一条不成立都只跳过：
+
+```
+跳过 view/summary/summary_gen.go (保护头不符，视为用户文件)
+跳过 view/summary/summary_gen.go (保护头 Source 与登记不符，归属歧义)
+跳过 view/summary/summary_gen.go (输出仍被存活源 view/extra/summary.gxml 登记，所有权争议)
+```
+
+第一条对应「你手改过这个文件、想自己维护它」；第二条对应「同名源可能来自别处」；第三条
+对应「两个登记指向同一个产物」。三条都只打印跳过、退出码仍是 0。
+
+**范围外的存活页面本来就不会被删**：局部 `--clean` 只看「本轮没参与生成、且源已消失」的
+登记。summary 源还在时，`goxml generate view/edit/edit.gxml --out-dir view/edit --check --clean`
+的结果是 `清理完成：删除 0，跳过 0`，两页产物逐字不变。
+
 ## 模板自带的测试在测什么
 
 `view/edit/sem_test.go` 与 `view/summary/sem_test.go` 是离屏语义测试：用真实

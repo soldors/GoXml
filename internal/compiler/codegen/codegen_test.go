@@ -698,3 +698,17 @@ func TestBindingStillRejectedByAnalyzer(t *testing.T) {
 		})
 	}
 }
+
+// declTestGen 构造仅用于声明片段/包装片段生成的最小 generator
+// （R14-B：renderKeyDecl/bindCacheDecl/sizeWrap 改为经 g.q 解析限定符后，
+// 直接调用的单测用它提供 imports 与命名事实；taken 为空即无冲突行为）。
+func declTestGen(view, keyType, cacheType string, bindSlots int) *generator {
+	return &generator{
+		opts:      defaultOpts(),
+		view:      view,
+		keyType:   keyType,
+		cacheType: cacheType,
+		bindSlots: bindSlots,
+		imports:   newImportSet(),
+	}
+}

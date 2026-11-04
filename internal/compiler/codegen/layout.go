@@ -91,16 +91,17 @@ func defaultCrossAlign(tag string) contracts.CrossAlign {
 // 按名字直觉写 `layout.Center` 会直接编译失败（还好，能被发现）；
 // 真正的危险是有人为了「先跑起来」改用 `layout.Start` 兜底——
 // 那样编译通过、测试若只断言「字段存在」也会通过，但居中静默变成左对齐。
-func gioAlignment(a contracts.CrossAlign) (string, error) {
+func gioAlignment(g *generator, a contracts.CrossAlign) (string, error) {
+	ql := g.q("gioui.org/layout", "layout")
 	switch a {
 	case contracts.AlignStart:
-		return "layout.Start", nil
+		return ql + ".Start", nil
 	case contracts.AlignCenter:
-		return "layout.Middle", nil
+		return ql + ".Middle", nil
 	case contracts.AlignEnd:
-		return "layout.End", nil
+		return ql + ".End", nil
 	case contracts.AlignBaseline:
-		return "layout.Baseline", nil
+		return ql + ".Baseline", nil
 	default:
 		// 非法枚举必须明确失败，不静默退回 Start：
 		// 退回会让「未知取值」伪装成合法的左对齐，属于契约禁止的静默降级。
@@ -135,20 +136,21 @@ func gioAlignment(a contracts.CrossAlign) (string, error) {
 //
 // 另注：Gio 的枚举顺序是 SpaceEnd(0) / SpaceStart / SpaceSides / SpaceAround /
 // SpaceBetween / SpaceEvenly，与 GXML 的枚举顺序不同，故按**名字**映射，不依赖序号。
-func gioSpacing(j contracts.MainJustify) (string, error) {
+func gioSpacing(g *generator, j contracts.MainJustify) (string, error) {
+	ql := g.q("gioui.org/layout", "layout")
 	switch j {
 	case contracts.JustifyStart:
-		return "layout.SpaceEnd", nil
+		return ql + ".SpaceEnd", nil
 	case contracts.JustifyCenter:
-		return "layout.SpaceSides", nil
+		return ql + ".SpaceSides", nil
 	case contracts.JustifyEnd:
-		return "layout.SpaceStart", nil
+		return ql + ".SpaceStart", nil
 	case contracts.JustifySpaceBetween:
-		return "layout.SpaceBetween", nil
+		return ql + ".SpaceBetween", nil
 	case contracts.JustifySpaceAround:
-		return "layout.SpaceAround", nil
+		return ql + ".SpaceAround", nil
 	case contracts.JustifySpaceEvenly:
-		return "layout.SpaceEvenly", nil
+		return ql + ".SpaceEvenly", nil
 	default:
 		// 同 Align：非法枚举必须明确失败，不静默退回 SpaceEnd。
 		return "", fmt.Errorf("codegen: unsupported main-justify value %d on <%s>",
@@ -170,7 +172,7 @@ func gioSpacing(j contracts.MainJustify) (string, error) {
 //
 // 本函数的输出恒为「, <字段>: <标识符或数值>」形态，无字段时是空串，
 // 因此调用方只需无条件拼接，不需要判断。
-func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
+func flexFieldsExpr(g *generator, tag string, n *contracts.NodeIR) (string, error) {
 	if n == nil {
 		return "", nil
 	}
@@ -179,7 +181,7 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 	if justify == contracts.JustifyUnset {
 		justify = contracts.JustifyStart
 	}
-	spacing, err := gioSpacing(justify)
+	spacing, err := gioSpacing(g, justify)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +190,7 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 	if align == contracts.AlignUnset {
 		align = defaultCrossAlign(tag)
 	}
-	name, err := gioAlignment(align)
+	name, err := gioAlignment(g, align)
 	if err != nil {
 		return "", err
 	}
@@ -209,11 +211,12 @@ func flexFieldsExpr(tag string, n *contracts.NodeIR) (string, error) {
 // 也无法阻止调用方传一个与语义不符的值（比如把 `<Column>` 的 axis 写成
 // Horizontal 时，编译器不会报错，只会静默生成一个方向错误的容器）。
 // 由 bool 单向派生字符串，就只有一个事实来源。
-func axisIdent(mainIsHorizontal bool) string {
+func axisIdent(g *generator, mainIsHorizontal bool) string {
+	ql := g.q("gioui.org/layout", "layout")
 	if mainIsHorizontal {
-		return "layout.Horizontal"
+		return ql + ".Horizontal"
 	}
-	return "layout.Vertical"
+	return ql + ".Vertical"
 }
 
 // sizePlanFor 计算节点的编译期尺寸计划。
@@ -270,7 +273,7 @@ func sizePlanFor(n *contracts.NodeIR, mainIsHorizontal bool) sizelayout.Plan {
 //		<FillCross：if Max.A < 阈值 { Min.A = Max.A }>          // 无界时不抬
 //		return <inner>
 //	})
-func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
+func sizeWrap(g *generator, n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
 	// 主轴/交叉轴各对应哪个属性：Row 的主轴是 Width，Column/Page 的主轴是 Height。
 	mainSpec, crossSpec := n.Height, n.Width
 	if mainIsHorizontal {
@@ -281,10 +284,10 @@ func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
 
 	var pre strings.Builder
 	if plan.Main == sizelayout.DirectiveExact {
-		writeExactConstraint(&pre, plan.MainAxis, mainSpec.Value)
+		writeExactConstraint(g, &pre, plan.MainAxis, mainSpec.Value)
 	}
 	if plan.Cross == sizelayout.DirectiveExact {
-		writeExactConstraint(&pre, plan.CrossAxis, crossSpec.Value)
+		writeExactConstraint(g, &pre, plan.CrossAxis, crossSpec.Value)
 	}
 	if plan.Fill != nil {
 		// 无界判定的内联展开：判据 `Max < Threshold` 与 sizelayout.IsUnbounded
@@ -300,10 +303,11 @@ func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
 	body := pre.String() + "\t\t\treturn " + inner + "\n\t\t})"
 
 	// 主轴 Fill 才用 Flexed(1)；交叉轴 Fill 仍是 Rigid + 约束转换。
+	ql := g.q("gioui.org/layout", "layout")
 	if plan.Main == sizelayout.DirectiveFlex {
-		return "layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {\n" + body
+		return ql + ".Flexed(1, func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
 	}
-	return "layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n" + body
+	return ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
 }
 
 // writeExactConstraint 生成固定尺寸的两行约束。
@@ -312,7 +316,7 @@ func sizeWrap(n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
 // **不生成任何裁剪**：固定尺寸超出父容器时允许溢出（规范 §3.1.5）。
 //
 // 数值经 formatDp 输出为解析后的十进制字面量（安全准入第 1 项：不得拼接原始文本）。
-func writeExactConstraint(b *strings.Builder, axis sizelayout.Axis2D, v float32) {
+func writeExactConstraint(g *generator, b *strings.Builder, axis sizelayout.Axis2D, v float32) {
 	a := axis.String()
 	b.WriteString("\t\t\tgtx.Constraints.Min." + a + " = gtx.Dp(" + formatDp(v) + ")\n")
 	b.WriteString("\t\t\tgtx.Constraints.Max." + a + " = gtx.Constraints.Min." + a + "\n")

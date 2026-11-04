@@ -75,7 +75,7 @@ const cacheFormatVersion = 7
 // 实现，把"记录格式"与"输出规则"混在一起。R12-A 起用本标识承担后者，K7 只负责前者。
 // 首个取值 "gen-1" 有意与旧的 K4 值 "1" 不同，使**存量缓存**一次性安全 miss（这正是
 // 本任务要修的行为：升级后无需 --no-cache 即可拿到新产物）。
-const generatorOutputRevision = "gen-1"
+const generatorOutputRevision = "gen-2" // R14: deterministic import aliases in conflicting packages.
 
 // cacheIdentity 是 K4 的实际取值：语言版本 + 输出规则修订。
 // 只改取值、不改键的字段结构 ⇒ 不需要提升 cacheFormatVersion。

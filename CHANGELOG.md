@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- R14：提交前检查强制实际编译，避免 GOFLAGS 的 dry-run 误报通过；生成器对冲突的 Go 导入名分配确定性别名，输出修订升为 gen-2；跨包工程补充删除、保旧、清理及恢复的维护回归。
+
 - R13：常规多包 `generate --check` 按最多 12 个目标包分组构建，保持 Go 参数、临时输出隔离及失败保旧；双视图示例入口使用一次目录生成。混合页面补充局部缓存、动态文本及 Key 行事件的离屏回归。
 
 - R12：生成器输出规则修订进入缓存键，已有 v7 记录在升级时安全未命中；跨包 ViewModel 的导入别名取真实 Go 包名并按需消歧；一键工程报告区分提交前检查失败与后续入口构建失败。GXML 语言版本与保护头保持 v1。

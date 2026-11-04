@@ -175,7 +175,7 @@ func TestSizeWrapTemplate(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := sizeWrap(sizeNodeOf(tc.w, tc.h), "inner()", tc.mainIsHorizontal)
+			out := sizeWrap(declTestGen("GoxmlXView", "goxmlRenderKeyX", "goxmlTextCacheX", 0), sizeNodeOf(tc.w, tc.h), "inner()", tc.mainIsHorizontal)
 			kind, fn := sizeTemplate(t, out)
 
 			if kind != tc.wantKind {
@@ -214,7 +214,7 @@ func TestSizeWrapTemplate(t *testing.T) {
 // 安全准入第 1 项：数值不得以原始文本拼接。这里用 80.5 同时验证小数格式，
 // 并断言不出现指数记法（formatDp 用 'f'）。
 func TestSizeWrapFixedValueIsParsedNumber(t *testing.T) {
-	out := sizeWrap(sizeNodeOf(contracts.FixedSize(80.5), contracts.NaturalSize()), "inner()", true)
+	out := sizeWrap(declTestGen("GoxmlXView", "goxmlRenderKeyX", "goxmlTextCacheX", 0), sizeNodeOf(contracts.FixedSize(80.5), contracts.NaturalSize()), "inner()", true)
 	if !strings.Contains(out, "gtx.Dp(80.5)") {
 		t.Errorf("应生成 gtx.Dp(80.5)，实际:\n%s", out)
 	}
@@ -235,7 +235,7 @@ func TestSizeWrapDoesNotClip(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, horiz := range []bool{true, false} {
-				out := sizeWrap(sizeNodeOf(tc.w, tc.h), "inner()", horiz)
+				out := sizeWrap(declTestGen("GoxmlXView", "goxmlRenderKeyX", "goxmlTextCacheX", 0), sizeNodeOf(tc.w, tc.h), "inner()", horiz)
 				e, err := parser.ParseExpr(out)
 				if err != nil {
 					t.Fatalf("非法表达式: %v", err)
@@ -262,7 +262,7 @@ func TestSizeWrapDoesNotClip(t *testing.T) {
 // 阈值是唯一允许出现的整数，且必须等于 sizelayout.UnboundedThreshold；
 // 固定尺寸的数值来自 formatDp（在 gtx.Dp(...) 内），属用户数据而非常量。
 func TestSizeWrapNoNumericLiteralExceptThreshold(t *testing.T) {
-	out := sizeWrap(sizeNodeOf(contracts.FillSize(), contracts.FillSize()), "inner()", false)
+	out := sizeWrap(declTestGen("GoxmlXView", "goxmlRenderKeyX", "goxmlTextCacheX", 0), sizeNodeOf(contracts.FillSize(), contracts.FillSize()), "inner()", false)
 	axis, threshold, found := func() (string, string, bool) {
 		_, fn := sizeTemplate(t, out)
 		return guardThreshold(t, fn)

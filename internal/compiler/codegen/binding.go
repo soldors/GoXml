@@ -228,10 +228,16 @@ func isInteractiveTag(tag string) bool {
 //
 // shaping 层：由 Gio 内部缓存承担，项目层不维护第二份
 // （TASK-BINDING-IMPLEMENT-003 §3：先测量，Gio 内部已有 layoutCache）。
-func bindCacheDecl(view string, slots int, keyType, cacheType string) string {
+//
+// R14-B：改为 generator 方法——限定符经 g.q 解析，与 import 块同步。
+func (g *generator) bindCacheDecl() string {
+	view, slots, keyType, cacheType := g.view, g.bindSlots, g.keyType, g.cacheType
 	if slots == 0 {
 		return ""
 	}
+	ql := g.q("gioui.org/layout", "layout")
+	qm := g.q("gioui.org/widget/material", "material")
+	qop := g.q("gioui.org/op", "op")
 	return `
 // ` + cacheType + ` 是单个绑定 <Text> 的显示缓存槽位（契约 §05.2/§05.3.1）。
 //
@@ -247,11 +253,11 @@ type ` + cacheType + ` struct {
 	//
 	// 不能多槽共享：Reset 会截断数据，使所有指向它的 CallOp 失效
 	// （ADR-0009 §A1 实测：panic: slice bounds out of range）。
-	ops op.Ops
+	ops ` + qop + `.Ops
 	// call 指向本槽 ops 中的录制区间。
-	call op.CallOp
+	call ` + qop + `.CallOp
 	// dims 是录制时的布局结果（CallOp.Add 不返回尺寸）。
-	dims layout.Dimensions
+	dims ` + ql + `.Dimensions
 	// valid 表示 call 是否已有效录制。
 	valid bool
 }
@@ -266,7 +272,7 @@ type ` + cacheType + ` struct {
 //
 // ⚠️ 本方法由测试显式驱动时才能观察到更新；
 // 生产环境的自动刷新（ViewModel 变化 → UI 重绘）归 TASK-STATE-001。
-func (v *` + view + `) bindText(gtx layout.Context, th *material.Theme, slot int, s string) layout.Dimensions {
+func (v *` + view + `) bindText(gtx ` + ql + `.Context, th *` + qm + `.Theme, slot int, s string) ` + ql + `.Dimensions {
 	// 惰性初始化槽位数组。
 	if len(v.slots) != ` + strconv.Itoa(slots) + ` {
 		v.slots = make([]` + cacheType + `, ` + strconv.Itoa(slots) + `)
@@ -278,10 +284,10 @@ func (v *` + view + `) bindText(gtx layout.Context, th *material.Theme, slot int
 		return c.dims
 	}
 	c.ops.Reset()
-	m := op.Record(&c.ops)
+	m := ` + qop + `.Record(&c.ops)
 	rec := gtx
 	rec.Ops = &c.ops
-	c.dims = material.Body1(th, s).Layout(rec)
+	c.dims = ` + qm + `.Body1(th, s).Layout(rec)
 	c.call = m.Stop()
 	c.key = k
 	c.text = s

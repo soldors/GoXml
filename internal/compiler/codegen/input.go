@@ -161,7 +161,7 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 
 	// ---- 组装表达式 ----
 	var b strings.Builder
-	b.WriteString("func() layout.Dimensions {\n")
+	b.WriteString("func() " + g.q("gioui.org/layout", "layout") + ".Dimensions {\n")
 	b.WriteString(fmt.Sprintf("\t\t\t\ted := &v.input%d\n", slot.index))
 	if slot.hasSubmit {
 		b.WriteString("\t\t\t\ted.Submit = true\n")
@@ -193,12 +193,13 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 		if slot.valueExpr != "" {
 			reflectE = "\n\t\t\t\t\t\tv.applied" + idx + " = ed.Text()"
 		}
+		qw := g.q("gioui.org/widget", "widget")
 		if slot.change != "" {
-			b.WriteString("\t\t\t\t\tcase widget.ChangeEvent:\n")
+			b.WriteString("\t\t\t\t\tcase " + qw + ".ChangeEvent:\n")
 			b.WriteString("\t\t\t\t\t\t" + slot.change + reflectE + "\n")
 		}
 		if slot.submit != "" {
-			b.WriteString("\t\t\t\t\tcase widget.SubmitEvent:\n")
+			b.WriteString("\t\t\t\t\tcase " + qw + ".SubmitEvent:\n")
 			b.WriteString("\t\t\t\t\t\t" + slot.submit + reflectE + "\n")
 		}
 		b.WriteString("\t\t\t\t\t}\n")
@@ -220,7 +221,7 @@ func (g *generator) inputExpr(n *contracts.NodeIR) (string, error) {
 		b.WriteString("\t\t\t\t\tv.applied" + idx + " = cur\n")
 		b.WriteString("\t\t\t\t}\n")
 	}
-	b.WriteString(fmt.Sprintf("\t\t\t\treturn material.Editor(th, ed, %s).Layout(gtx)\n", slot.hint))
+	b.WriteString(fmt.Sprintf("\t\t\t\treturn %s.Editor(th, ed, %s).Layout(gtx)\n", g.q("gioui.org/widget/material", "material"), slot.hint))
 	b.WriteString("\t\t\t}()")
 	return b.String(), nil
 }

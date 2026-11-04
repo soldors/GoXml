@@ -85,17 +85,18 @@ func (g *generator) gridExpr(n *contracts.NodeIR) (string, error) {
 	if align == contracts.AlignUnset {
 		align = defaultCrossAlign(n.Tag)
 	}
-	alignName, err := gioAlignment(align)
+	alignName, err := gioAlignment(g, align)
 	if err != nil {
 		return "", err
 	}
 
 	var b strings.Builder
-	b.WriteString("layout.Flex{Axis: layout.Vertical" + gapFieldExpr(n) + "}.Layout(gtx")
+	ql := g.q("gioui.org/layout", "layout")
+	b.WriteString(ql + ".Flex{Axis: " + ql + ".Vertical" + gapFieldExpr(n) + "}.Layout(gtx")
 
 	for _, row := range rows {
-		b.WriteString(",\n\t\tlayout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		b.WriteString("\t\t\treturn layout.Flex{Axis: layout.Horizontal, Alignment: " + alignName +
+		b.WriteString(",\n\t\t" + ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n")
+		b.WriteString("\t\t\treturn " + ql + ".Flex{Axis: " + ql + ".Horizontal, Alignment: " + alignName +
 			gapFieldExpr(n) + "}.Layout(gtx")
 		for col := 0; col < perRow; col++ {
 			b.WriteString(",\n\t\t\t\t")
@@ -129,7 +130,7 @@ func (g *generator) gridExpr(n *contracts.NodeIR) (string, error) {
 //	    gtx.Constraints.Min.X = gtx.Dp(72)                        //   固定列精确 X
 //	    gtx.Constraints.Max.X = gtx.Constraints.Min.X
 //	    return layout.Flex{Axis: layout.Vertical}.Layout(gtx,     // ← 内层：垂直 Flex
-//	        <sizeWrap(gridCellSize(child), inner, false)>,        //   Height 语义在这里生效
+//	        <sizeWrap(g, gridCellSize(child), inner, false)>,        //   Height 语义在这里生效
 //	    )
 //	})
 //
@@ -147,20 +148,21 @@ func (g *generator) gridCellExpr(col contracts.GridColumn, child *contracts.Node
 	//
 	// 传入的是**归一后的副本**（gridCellSize），不是原始节点：Grid 单元格的
 	// Height="Fill" 必须退化为自然高度（规范 §3.1.7 :454、TASK-CODEGEN-001 :94）。
-	wrapped := sizeWrap(gridCellSize(child), inner, false)
-	body := "layout.Flex{Axis: layout.Vertical}.Layout(gtx,\n" +
+	wrapped := sizeWrap(g, gridCellSize(child), inner, false)
+	ql := g.q("gioui.org/layout", "layout")
+	body := ql + ".Flex{Axis: " + ql + ".Vertical}.Layout(gtx,\n" +
 		"\t\t\t\t" + wrapped + ",\n" +
 		"\t\t\t)"
 
 	switch col.Mode {
 	case contracts.GridColumnFixed:
 		var c strings.Builder
-		c.WriteString("layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		writeExactConstraint(&c, sizelayout.AxisX, col.Value)
+		c.WriteString(ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n")
+		writeExactConstraint(g, &c, sizelayout.AxisX, col.Value)
 		c.WriteString("\t\t\t\treturn " + body + "\n\t\t\t})")
 		return c.String(), nil
 	default: // GridColumnFlex
-		return "layout.Flexed(" + formatDp(col.Value) + ", func(gtx layout.Context) layout.Dimensions {\n" +
+		return ql + ".Flexed(" + formatDp(col.Value) + ", func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" +
 			"\t\t\t\treturn " + body + "\n\t\t\t})", nil
 	}
 }
@@ -218,15 +220,16 @@ func gridCellSize(n *contracts.NodeIR) *contracts.NodeIR {
 // 补位必须是**真实 Flex 子项**，否则该行少扣一个 Gap、弹性列会变宽
 // （规范 :307 举了这个反例）。
 func (g *generator) gridPadExpr(col contracts.GridColumn) string {
+	ql := g.q("gioui.org/layout", "layout")
 	switch col.Mode {
 	case contracts.GridColumnFixed:
 		var c strings.Builder
-		c.WriteString("layout.Rigid(func(gtx layout.Context) layout.Dimensions {\n")
-		writeExactConstraint(&c, sizelayout.AxisX, col.Value)
-		c.WriteString("\t\t\t\treturn layout.Spacer{}.Layout(gtx)\n\t\t\t})")
+		c.WriteString(ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n")
+		writeExactConstraint(g, &c, sizelayout.AxisX, col.Value)
+		c.WriteString("\t\t\t\treturn " + ql + ".Spacer{}.Layout(gtx)\n\t\t\t})")
 		return c.String()
 	default: // GridColumnFlex
-		return "layout.Flexed(" + formatDp(col.Value) + ", func(gtx layout.Context) layout.Dimensions {\n" +
-			"\t\t\t\treturn layout.Spacer{}.Layout(gtx)\n\t\t\t})"
+		return ql + ".Flexed(" + formatDp(col.Value) + ", func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" +
+			"\t\t\t\treturn " + ql + ".Spacer{}.Layout(gtx)\n\t\t\t})"
 	}
 }
