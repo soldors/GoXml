@@ -233,7 +233,7 @@ type targetPkgResolverFn func(dir string) (name string, ok bool, err error)
 // `go list -json`。env 是目标有效环境的覆写（GOENV/GOOS/GOARCH/GOEXPERIMENT/CPU），
 // 由调用方与 Analyzer/缓存共享有效环境。仅实际目录无用户非测试Go源时ok=false，
 // Go按目标配置排除所有用户文件仍为错误；不按错误文案降级至宿主MatchFile。
-func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor func(dir string) (map[string][]byte, error)) targetPkgResolverFn {
+func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error)) targetPkgResolverFn {
 	type cacheEntry struct {
 		name string
 		ok   bool
@@ -248,37 +248,24 @@ func newTargetPkgResolver(goExe, moduleRoot string, env []string, overlayFor fun
 			e = &cacheEntry{}
 			cache[key] = e
 			var overlay map[string][]byte
+			var owned map[string]bool
 			if overlayFor != nil {
-				ov, oerr := overlayFor(dir)
+				ov, ow, oerr := overlayFor(dir)
 				if oerr != nil {
 					e.err = oerr
 					e.done = true
 					return e.name, e.ok, e.err
 				}
-				overlay = ov
+				overlay, owned = ov, ow
 			}
-			// Only genuinely uninitialised directories may use the source-package fallback.
-			entries, statErr := os.ReadDir(dir)
-			if os.IsNotExist(statErr) {
-				e.done = true
-				return "", false, nil
-			}
-			if statErr != nil {
-				e.err = fmt.Errorf("读取目录 %s: %w", dir, statErr)
+			// 统一有效源探测：物理目录不存在也可由 overlay 提供；无真实用户源才回退源包名。
+			hasUser, perr := effectiveUserGoFiles(dir, overlay, owned)
+			if perr != nil {
+				e.err = perr
 				e.done = true
 				return "", false, e.err
 			}
-			count := 0
-			for _, entry := range entries {
-				name := entry.Name()
-				if entry.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
-					continue
-				}
-				if !isOwnedOldArtifact(overlay[filepath.Join(dir, name)]) {
-					count++
-				}
-			}
-			if count == 0 {
+			if !hasUser {
 				e.done = true
 				return "", false, nil
 			}
@@ -340,7 +327,7 @@ func targetNameOverlay(moduleRoot string, man *manifest, dir string) (map[string
 	return overlay, nil
 }
 
-// effectiveTargetOverlay 构造**定名阶段**实际生效的 overlay：在工具自有旧产物覆盖
+// effectiveTargetResolution 构造**定名阶段**实际生效的 overlay：在工具自有旧产物覆盖
 // （targetNameOverlay，含 //go:build ignore）之上，并入 GOFLAGS/GOENV 持久化的
 // **用户 overlay** 映射；同路径以**工具自有**为先（所有权优先）。
 //
@@ -350,25 +337,26 @@ func targetNameOverlay(moduleRoot string, man *manifest, dir string) (map[string
 // overlay）口径不一致 → 假报「多个非测试 package」/「读取包源码 不存在」。
 // 现在把用户 overlay 一起传给 go list 且用于逐文件校验，各阶段口径一致；
 // 自有旧产物过滤仍以 Manifest+保护头为所有权依据（工具项优先）。
-func effectiveTargetOverlay(moduleRoot string, man *manifest, dir, flags string) (map[string][]byte, error) {
-	owned, err := targetNameOverlay(moduleRoot, man, dir)
+// effectiveTargetResolutionWithUser 用**预先解析一次**的用户 overlay 映射构造有界结果。
+// user 由调用方在每次运行中读取一次（GOFLAGS 的 -overlay 只读一次），避免逐目录重复读盘。
+func effectiveTargetResolutionWithUser(moduleRoot string, man *manifest, dir string, user map[string][]byte) (map[string][]byte, map[string]bool, error) {
+	ownedOverlay, err := targetNameOverlay(moduleRoot, man, dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	user, err := userOverlayBytes(flags, moduleRoot)
-	if err != nil {
-		return nil, err
+	owned := make(map[string]bool, len(ownedOverlay))
+	effective := make(map[string][]byte, len(ownedOverlay))
+	for from, data := range ownedOverlay {
+		owned[from] = true
+		effective[from] = data
 	}
 	for from, data := range user {
-		if _, isOwned := owned[from]; isOwned {
-			continue // 工具自有旧产物优先
+		if owned[from] {
+			continue
 		}
-		if owned == nil {
-			owned = make(map[string][]byte)
-		}
-		owned[from] = data
+		effective[from] = data
 	}
-	return owned, nil
+	return effective, owned, nil
 }
 
 // userOverlayBytes 读取 GOFLAGS 中 -overlay= 指向的用户 overlay JSON，返回
@@ -429,11 +417,56 @@ func samePathDir(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
-// isOwnedOldArtifact 判断 overlay 替换字节是否为「工具自有旧产物」标记
-// （targetNameOverlay 生成的 //go:build ignore 占位）。
-func isOwnedOldArtifact(data []byte) bool {
-	if data == nil {
-		return false
+// isTestGoName 判断是否为测试文件（_test.go）。
+func isTestGoName(name string) bool {
+	return strings.HasSuffix(name, "_test.go")
+}
+
+// effectiveUserGoFiles 统一「有效用户 Go 源」探测：物理目录中非测试 .go 文件
+// （排除已证工具自有覆盖 owned），加上 overlay 新增（磁盘不存在、非 owned、非测试、
+// 非删除）的 .go；overlay 覆盖为删除（nil）的不计。目录不存在时仍可由 overlay 提供源。
+// 返回是否存在真实用户源，及读取目录错误（非 NotExist）。
+//
+// 所有权**只**取自 owned（Manifest+保护头+Source 证明），不做任何字节启发式，
+// 避免把合法用户输入（内容恰含 //go:build ignore / package ignore）误判为工具产物。
+func effectiveUserGoFiles(dir string, overlay map[string][]byte, owned map[string]bool) (bool, error) {
+	entries, statErr := os.ReadDir(dir)
+	dirExists := true
+	if os.IsNotExist(statErr) {
+		dirExists = false
+	} else if statErr != nil {
+		return false, fmt.Errorf("读取目录 %s: %w", dir, statErr)
 	}
-	return strings.Contains(string(data), "//go:build ignore") && strings.Contains(string(data), "package ignore")
+	if dirExists {
+		for _, e := range entries {
+			n := e.Name()
+			if e.IsDir() || filepath.Ext(n) != ".go" || isTestGoName(n) {
+				continue
+			}
+			full := filepath.Join(dir, n)
+			if owned[full] {
+				continue // 已证工具自有旧产物：不算用户源
+			}
+			if data, ok := overlay[full]; ok && data == nil {
+				continue // 用户 overlay 删除该文件
+			}
+			return true, nil
+		}
+	}
+	// overlay 新增（磁盘不存在）的非 owned 非测试 .go 也算用户源。
+	for from, data := range overlay {
+		if owned[from] || data == nil {
+			continue
+		}
+		if !samePathDir(filepath.Dir(filepath.Clean(from)), dir) {
+			continue
+		}
+		if filepath.Ext(from) != ".go" || isTestGoName(from) {
+			continue
+		}
+		if _, err := os.Stat(from); os.IsNotExist(err) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

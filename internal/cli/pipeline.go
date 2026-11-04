@@ -111,10 +111,15 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if manErr != nil {
 		return manErr
 	}
-	overlayForDir := func(dir string) (map[string][]byte, error) {
-		// R21-A：并入 GOFLAGS/GOENV 的用户 overlay（工具自有旧产物优先），
-		// 使定名阶段的 go list 与逐文件校验同 go build/--check 口径一致。
-		return effectiveTargetOverlay(moduleRoot, nameMan, dir, ctxValues.GOFLAGS)
+	// R21-A：用户 overlay **本运行只读一次**（有界），供各目录复用。
+	userOverlay, uoErr := userOverlayBytes(ctxValues.GOFLAGS, moduleRoot)
+	if uoErr != nil {
+		return uoErr
+	}
+	overlayForDir := func(dir string) (map[string][]byte, map[string]bool, error) {
+		// 并入用户 overlay（工具自有旧产物优先），使定名 go list 与逐文件校验同
+		// go build/--check 一致；owned 仅来自 Manifest+保护头+Source（无字节启发式）。
+		return effectiveTargetResolutionWithUser(moduleRoot, nameMan, dir, userOverlay)
 	}
 	// R10-A：阶段零已知目标集合后，先批量（有界分组）go list -e -json 解析全部已初始化
 	// 目标目录，把「每目录一次」降为「有界批次」。批量结果按 Dir 归因、逐目录严格校验；

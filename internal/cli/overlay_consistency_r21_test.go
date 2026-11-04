@@ -70,7 +70,7 @@ func TestEffectiveTargetOverlayMergesUserAndOwned(t *testing.T) {
 	// 用户 overlay：p/a.go -> repl(q)
 	r21Write(t, filepath.Join(root, "repl.go"), "package q\n")
 	r21Write(t, filepath.Join(root, "user.json"), `{"Replace":{"p/a.go":"repl.go"}}`)
-	eff, err := effectiveTargetOverlay(root, nil, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
+	eff, owned, err := r21Effective(t, root, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,11 @@ func TestEffectiveTargetOverlayMergesUserAndOwned(t *testing.T) {
 	if !strings.Contains(string(data), "package q") {
 		t.Fatalf("用户 overlay 字节应生效，got=%q", string(data))
 	}
+	if owned[full] {
+		t.Fatalf("用户 overlay 条目不得被判为工具自有")
+	}
 	// 无用户 overlay -> 空
-	eff2, err := effectiveTargetOverlay(root, nil, filepath.Join(root, "p"), "-mod=readonly")
+	eff2, _, err := r21Effective(t, root, filepath.Join(root, "p"), "-mod=readonly")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +129,7 @@ func TestUserOverlayRenamesPackageConsistent(t *testing.T) {
 	name, _, err := resolveTargetPackageGo(goExe, root, filepath.Join(root, "p"),
 		[]string{"GOENV=off", "GOTOOLCHAIN=local"}, nil)
 	// 注意：resolveTargetPackageGo 直接收 overlay map；这里用 effective 构造。
-	eff, eerr := effectiveTargetOverlay(root, nil, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
+	eff, _, eerr := r21Effective(t, root, filepath.Join(root, "p"), `-mod=readonly "-overlay=user.json"`)
 	if eerr != nil {
 		t.Fatal(eerr)
 	}

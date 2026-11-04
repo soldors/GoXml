@@ -40,7 +40,7 @@ type batchTargetResult struct {
 // resolveTargetPackagesBatch 批量解析 dirs（已初始化目标目录集合）。
 // overlayFor 对单个 dir 返回该目录自有旧产物 overlay（同 targetNameOverlay 语义）。
 // 返回 map[dir]batchTargetResult；无法归因/完整性问题以 error 形式放进对应或全局 err。
-func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []string, overlayFor func(dir string) (map[string][]byte, error)) (map[string]batchTargetResult, error) {
+func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error)) (map[string]batchTargetResult, error) {
 	if goExe == "" {
 		goExe = "go"
 	}
@@ -71,7 +71,7 @@ func resolveTargetPackagesBatch(goExe, moduleRoot string, env []string, dirs []s
 }
 
 // resolveOneChunk 对一组目录执行一次 go list -e -json，并把结果校验后填入 res。
-func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, overlayFor func(dir string) (map[string][]byte, error), res map[string]batchTargetResult) error {
+func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, overlayFor func(dir string) (map[string][]byte, map[string]bool, error), res map[string]batchTargetResult) error {
 	// 合并本 chunk 的 overlay：只包含本 chunk 各目录的自有旧产物。
 	mergedOverlay := map[string][]byte{}
 	// dir → 绝对目录（用于按 .Dir 归因；go list 返回绝对 Dir）。
@@ -84,52 +84,25 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 			res[d] = batchTargetResult{err: fmt.Errorf("解析目录绝对路径 %s: %w", d, err)}
 			continue
 		}
-		entries, statErr := os.ReadDir(d)
-		if os.IsNotExist(statErr) {
-			// 真实未初始化：不查询，回退源包名。
-			res[d] = batchTargetResult{ok: false}
-			continue
-		}
-		if statErr != nil {
-			res[d] = batchTargetResult{err: fmt.Errorf("读取目录 %s: %w", d, statErr)}
-			continue
-		}
 		var ov map[string][]byte
+		var owned map[string]bool
 		if overlayFor != nil {
-			o, oerr := overlayFor(d)
+			o, ow, oerr := overlayFor(d)
 			if oerr != nil {
 				res[d] = batchTargetResult{err: oerr}
 				continue
 			}
-			ov = o
+			ov, owned = o, ow
 		}
-		// 统计非自有 Go 源文件：仅排除**工具自有旧产物**（其 overlay 替换为
-		// //go:build ignore 标记），不排除用户 overlay 的替换/新增（那是用户真实输入）。
-		count := 0
-		for _, e := range entries {
-			n := e.Name()
-			if e.IsDir() || filepath.Ext(n) != ".go" || strings.HasSuffix(n, "_test.go") {
-				continue
-			}
-			if isOwnedOldArtifact(ov[filepath.Join(d, n)]) {
-				continue
-			}
-			count++
+		// 统一有效源探测：物理目录不存在也可由 overlay 提供；只排除已证工具自有产物
+		// （owned：Manifest+保护头+Source），不做字节启发式。
+		hasUser, perr := effectiveUserGoFiles(d, ov, owned)
+		if perr != nil {
+			res[d] = batchTargetResult{err: perr}
+			continue
 		}
-		// 用户 overlay 新增（磁盘不存在）的 Go 文件也算真实用户源。
-		for from, data := range ov {
-			if isOwnedOldArtifact(data) {
-				continue
-			}
-			if filepath.Dir(filepath.Clean(from)) != filepath.Clean(d) {
-				continue
-			}
-			if _, err := os.Stat(from); os.IsNotExist(err) {
-				count++
-			}
-		}
-		if count == 0 {
-			// 无真实用户源（全为旧产物/测试/空）→ 未初始化。
+		if !hasUser {
+			// 无真实用户源（全为旧产物/测试/删除/空）→ 未初始化，回退源包名。
 			res[d] = batchTargetResult{ok: false}
 			continue
 		}
