@@ -85,6 +85,9 @@ func implementedCodes() []codeEntry {
 		// Codegen（生成/后端层，第二类前缀 CODEGEN-*，见卡 §10.5.2）
 		{"CODEGEN-NAME-001", "codegen.CodeNamingExisting"},
 		{"CODEGEN-NAME-002", "codegen.CodeNamingSameBatch"},
+		{"CODEGEN-ASSET-001", "codegen.CodeAssetPath"},
+		{"CODEGEN-ASSET-002", "codegen.CodeAssetLoad"},
+		{"CODEGEN-ASSET-003", "codegen.CodeAssetLimit"},
 	}
 }
 
@@ -218,7 +221,7 @@ func TestFrozenCodesHaveNoImplementation(t *testing.T) {
 
 func TestCodeCounts(t *testing.T) {
 	const (
-		wantImpl   = 37
+		wantImpl   = 40
 		wantFrozen = 0
 		wantTotal  = wantImpl + wantFrozen
 	)
@@ -230,8 +233,8 @@ func TestCodeCounts(t *testing.T) {
 	}
 
 	body := readCatalog(t)
-	// 36 = 37 个实现态 − 1 个归集码（GXML-ATTR-003，见目录 §3）。
-	if !strings.Contains(body, "共 **36 个**激活码。") {
+	// 39 = 40 个实现态 − 1 个归集码（GXML-ATTR-003，见目录 §3）。
+	if !strings.Contains(body, "共 **39 个**激活码（实现态另含 §3 的归集码）。") {
 		t.Errorf("目录未声明激活码总数为 %d", wantTotal-1)
 	}
 }
@@ -286,8 +289,11 @@ func TestConstantValuesMatchCatalog(t *testing.T) {
 		"GXML-DEF-010":   expander.CodeRecursiveDef,
 
 		// Codegen：第二类前缀（CODEGEN-*），见卡 §10.5.2。
-		"CODEGEN-NAME-001": codegen.CodeNamingExisting,
-		"CODEGEN-NAME-002": codegen.CodeNamingSameBatch,
+		"CODEGEN-NAME-001":  codegen.CodeNamingExisting,
+		"CODEGEN-NAME-002":  codegen.CodeNamingSameBatch,
+		"CODEGEN-ASSET-001": codegen.CodeAssetPath,
+		"CODEGEN-ASSET-002": codegen.CodeAssetLoad,
+		"CODEGEN-ASSET-003": codegen.CodeAssetLimit,
 	}
 	for want, got := range actual {
 		if want != got {

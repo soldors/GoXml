@@ -32,6 +32,12 @@ import (
 // import 本仓库 internal/...，而测试用 ViewModel 恰在 internal 下。
 func rtProbe(t *testing.T, gxmlBody, probeBody string) string {
 	t.Helper()
+	return rtProbeAssets(t, gxmlBody, probeBody, nil)
+}
+
+// rtProbeAssets 与 rtProbe 相同，额外把 //go:embed 资产写入临时包目录。
+func rtProbeAssets(t *testing.T, gxmlBody, probeBody string, assets map[string][]byte) string {
+	t.Helper()
 	repoRoot := repoRootOf(t)
 
 	v := verified(t, gxmlBody)
@@ -55,6 +61,15 @@ func rtProbe(t *testing.T, gxmlBody, probeBody string) string {
 
 	if err := os.WriteFile(filepath.Join(dir, "gen.go"), out, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	for rel, data := range assets {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "probe_test.go"),
 		[]byte(rtProbeHeader+probeBody), 0o644); err != nil {

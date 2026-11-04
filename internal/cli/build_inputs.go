@@ -17,6 +17,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goxml/goxml/contracts"
+	"github.com/goxml/goxml/internal/compiler/codegen"
+	"github.com/goxml/goxml/internal/compiler/expander"
+	"github.com/goxml/goxml/internal/compiler/parser"
+	"github.com/goxml/goxml/internal/compiler/pipeline"
 )
 
 // buildInputsFingerprint 计算 GOFLAGS 引用的 overlay/modfile 内容指纹。
@@ -117,5 +123,82 @@ func buildInputsFingerprint(goflags, moduleRoot string) (string, bool) {
 		}
 	}
 
+	return b.String(), true
+}
+
+// ---- R15/R16：静态资产文件内容也进入缓存身份（K12）----
+//
+// 缺口：K3 只看目标包 **.go** 源；`<Image Src>` 引用的资产文件（PNG/JPEG）不在其中。
+// 于是"资产被删除/改坏/改错大小写"时缓存**假命中**，旧产物沿用、资产门禁不再执行
+// （历史反例：删掉 logo.png 后 generate 仍报"缓存命中"）。
+//
+// 这里解析 .gxml 的 IR、收集 Page 中**静态** Src，按目标目录读取资产文件内容算指纹，
+// 使其进入缓存键：资产内容/尺寸/存在性变化 ⇒ 键变化 ⇒ 安全 miss ⇒ 门禁重新执行。
+// 资产路径或字节读取不可用时，调用方强制 miss，由阶段一门禁给出正式诊断。
+
+// assetRefsFromSource 解析并展开 .gxml，返回 Page 中按首次出现顺序的静态 Src（未去重）。
+func assetRefsFromSource(file string, src []byte) []string {
+	doc, perr := parser.Parse(file, src)
+	if perr != nil && len(perr) > 0 && doc == nil {
+		return nil
+	}
+	if doc == nil {
+		return nil
+	}
+	res := expander.Expand(file, doc)
+	if res.Doc == nil || res.Doc.Page == nil {
+		return nil
+	}
+	var out []string
+	var walk func(n *contracts.NodeIR)
+	walk = func(n *contracts.NodeIR) {
+		if n == nil {
+			return
+		}
+		if n.Tag == "Image" {
+			for _, a := range n.Attrs {
+				if a.Name == "Src" && !a.Value.IsBinding {
+					out = append(out, a.Value.Raw)
+					break
+				}
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+		if n.If != nil {
+			for _, c := range n.If.Then {
+				walk(c)
+			}
+			for _, c := range n.If.Else {
+				walk(c)
+			}
+		}
+	}
+	walk(res.Doc.Page)
+	return out
+}
+
+// assetsFingerprint 计算静态资产引用文件内容的稳定指纹（K12 分量）。
+// 返回空串表示页面无静态资产（无需额外分量）。
+func assetsFingerprint(file string, src []byte, targetDir string) (string, bool) {
+	srcs := assetRefsFromSource(file, src)
+	if len(srcs) == 0 {
+		return "", true
+	}
+	var b strings.Builder
+	b.WriteString("assets:\n")
+	for _, raw := range srcs {
+		norm, err := codegen.NormalizeAssetSrc(raw)
+		if err != nil {
+			return "", false
+		}
+		data, ok := pipeline.ReadAssetForFingerprint(targetDir, norm)
+		if !ok {
+			return "", false
+		}
+		sum := sha256.Sum256(data)
+		b.WriteString("asset:" + norm + "=" + hex.EncodeToString(sum[:]) + "\n")
+	}
 	return b.String(), true
 }

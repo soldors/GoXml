@@ -29,6 +29,11 @@ type Config struct {
 	ModuleRoot string
 	// SourceDir 是 .gxml 所在目录，用于解析同包 ViewModel。
 	SourceDir string
+	// TargetDir 是生成文件所在包目录（绝对路径优先）。
+	//
+	// <Image Src> 按该目录解析静态资产；为空时回退 SourceDir（生成到源目录）。
+	// --out-dir 必须显式传入，否则资产会按源目录校验而与生成文件所在包不一致。
+	TargetDir string
 	// PackageName 是生成文件的 package 子句。
 	PackageName string
 	// OutputDir 是产物所在包目录（绝对路径；空表示与 SourceDir 相同）。
@@ -160,6 +165,17 @@ func (p *Prepared) Slots() (int, error) {
 	return codegen.CountBindSlots(p.Doc)
 }
 
+// AssetCount 返回页面中唯一的静态 <Image Src> 数量。
+//
+// 前端未通过时返回 0：预检只需知道是否会声明 goxmlAssets<Source>，
+// 前端错误的正确报错点是阶段一，不在这里抢报。
+func (p *Prepared) AssetCount() int {
+	if p == nil || p.Doc == nil {
+		return 0
+	}
+	return codegen.CountAssets(p.Doc)
+}
+
 // SetPackageNames supplies output package declarations from naming precheck.
 // The map is shared read-only by all candidates targeting that package.
 func (p *Prepared) SetPackageNames(names map[string]string) {
@@ -192,6 +208,12 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 		SourcePath:  p.cfg.SourcePath,
 		ModulePath:  p.modulePath,
 	}
+	// 静态资产门禁先于 Codegen：存在性、路径越界、格式与预算都在
+	// 这里一次性报出，失败不进入生成。Codegen 本身不读磁盘。
+	if diags := validateAssets(p.Doc, p.cfg, file); len(diags) > 0 {
+		res.Diags = append(res.Diags, diags...)
+		return res
+	}
 	// R4-A 片2：把「VM 所在包目录」与「产物所在包目录」（相对模块根）传给 Codegen，
 	// 供其判断同包 ViewModel 在 --out-dir 迁移后是否需要跨包 import。
 	opts.ViewModelPackageDir = relToModule(p.cfg.ModuleRoot, p.cfg.SourceDir)
@@ -208,6 +230,23 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 	}
 	out, err := gen(p.Doc, opts)
 	if err != nil {
+		// Codegen 的资产路径错误已带 Code/Span，原样上抛；
+		// 其它错误保持历史文案，避免改变既有诊断契约。
+		if ce, ok := err.(contracts.CompilerError); ok {
+			if ce.File == "" {
+				ce.File = file
+			}
+			res.Diags = append(res.Diags, ce)
+			return res
+		}
+		if ce, ok := err.(*contracts.CompilerError); ok {
+			d := *ce
+			if d.File == "" {
+				d.File = file
+			}
+			res.Diags = append(res.Diags, d)
+			return res
+		}
 		res.Diags = append(res.Diags, contracts.CompilerError{
 			File:    file,
 			Message: fmt.Sprintf("code generation failed: %v", err),
@@ -293,6 +332,17 @@ func frontEnd(file string, src []byte, cfg Config, hooks Hooks) (*analyzer.Verif
 	er := expander.Expand(file, doc)
 	if len(er.Diags) > 0 {
 		res.Diags = append(res.Diags, er.Diags...)
+		return nil, res
+	}
+
+	// ---- 2b. 资产门禁（R17-A：先于 Analyzer）----
+	//
+	// 绑定页的 VM 包若因**旧生成文件 //go:embed 指向已删除资产**而加载失败，Analyzer
+	// 会先报 GXML-ROOT-002，把资产缺失错误归到 VM 加载上（真实复现见 R17-A 证据）。
+	// 此处先用展开后的 IR 做资产门禁：资产缺失/损坏 -> CODEGEN-ASSET-*，归因准确；
+	// 与资产无关的 VM/Go 加载错误不会被误判（那时资产校验通过，交由 Analyzer 原样报出）。
+	if diags := validateAssetsDoc(er.Doc, cfg, file); len(diags) > 0 {
+		res.Diags = append(res.Diags, diags...)
 		return nil, res
 	}
 

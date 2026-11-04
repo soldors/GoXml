@@ -494,7 +494,7 @@ v1 内置基础控件标签：
 | `Text` | `Value` | `Color` |
 | `Button` | `Text` | `Enabled` |
 | `Input` | 无 | `Value`、`Hint`、`ReadOnly`、`SingleLine`、`Submit`、`MaxLen`、`Filter`（`Enabled` 见下） |
-| `Image` | `Src` | `Width`、`Height` |
+| `Image` | `Src` | `Fit`、`Width`、`Height` |
 
 控件的具体绘制实现属于组件库，不改变 GXML 语义。
 
@@ -540,6 +540,18 @@ GXML v1 **不存在自动双向绑定**（见 §9）；回写只能经 `ValueCha
 时回车不产生 `Submit` 事件。
 
 **`<For>` 内禁止使用**：见 §6.2。
+
+#### 3.2.2 `<Image>` 静态资产
+
+`Src` 是相对于生成文件所在 Go 包目录的静态路径。使用 `--out-dir` 时，
+资产随输出包目录定位。支持 PNG/JPEG，编码文件至多 1 MiB，解码像素至多
+4,194,304。拒绝绝对路径、卷名、UNC、`..`、隐藏或下划线开头的路径段以及
+控制字符。路径校验与可信构建目录的要求见
+[`ADR-0015`](adr/ADR-0015-Image控件与编译期资产嵌入.md) §2.1。
+
+`Fit` 只接受静态 `Contain`、`Cover`、`Unscaled`，默认 `Contain`。
+图片居中绘制，尺寸约束沿用 §3.1。构建通过 `//go:embed` 嵌入资产。
+缺失、损坏、越界和超限由 [诊断码目录](诊断码目录.md) §2.9 说明。
 
 ### 3.3 控制流标签
 
@@ -713,7 +725,7 @@ Click="{Save}"
 | `Text` | `Value`（必填）、`Color` | — |
 | `Button` | `Text`、`Enabled` | `Click` |
 | `Input` | `Value`、`Hint`、`ReadOnly`、`SingleLine`、`Submit`、`MaxLen`、`Filter` | `ValueChanged(value:string)`、`Submit(text:string)` |
-| `Image` | `Src` | — |
+| `Image` | `Src`（必填）、`Fit` | — |
 
 ### 5.4 自定义组件必须显式声明事件
 

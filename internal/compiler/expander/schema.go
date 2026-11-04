@@ -167,6 +167,7 @@ var builtinSchemas = map[string]*ComponentSchema{
 		Tag: "Image",
 		Properties: []PropertySchema{
 			{Name: "Src", Type: contracts.PropString},
+			{Name: "Fit", Type: contracts.PropString},
 		},
 	},
 }

@@ -1,0 +1,10 @@
+<!-- Image：Src 相对生成文件所在 Go 包目录；编译期 //go:embed，PNG/JPEG -->
+<!-- 使用前请把 logo.png / avatar.png 放到生成包目录的 assets/ 下。 -->
+<Goxml Version="1">
+  <Page Route="/image">
+    <Column Padding="16" Gap="8" Align="Center">
+      <Image Src="assets/logo.png" Width="32" Height="32"/>
+      <Image Src="assets/avatar.png" Width="Fill" Height="48" Fit="Cover"/>
+    </Column>
+  </Page>
+</Goxml>

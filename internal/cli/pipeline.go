@@ -243,6 +243,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			prep = pipeline.Prepare(d.r.sourcePath, d.r.source, pipeline.Config{
 				ModuleRoot:           moduleRoot,
 				SourceDir:            d.r.in.sourceDir,
+				TargetDir:            d.r.targetDir,
 				PackageName:          d.r.pkgName,
 				OutputDir:            d.r.targetDir,
 				ViewModelPackageName: d.r.srcPkgName,
@@ -431,6 +432,7 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 		cfg := pipeline.Config{
 			ModuleRoot:           moduleRoot,
 			SourceDir:            r.in.sourceDir,
+			TargetDir:            r.targetDir,
 			PackageName:          r.pkgName,
 			OutputDir:            r.targetDir,
 			ViewModelPackageName: r.srcPkgName,
@@ -453,6 +455,7 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			OutputPath:     r.target,
 			BindSlots:      slots,
 			BindSlotsKnown: slotsKnown,
+			HasAssets:      prep.AssetCount() > 0,
 		})
 	}
 	diags, packageNames, err := codegen.InspectPackageNames(targets)
