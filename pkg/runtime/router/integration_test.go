@@ -126,6 +126,50 @@ func TestRouterInRealEventLoop(t *testing.T) {
 	}
 }
 
+func TestRouterShutdownOnNativeDestroy(t *testing.T) {
+	r := router.New()
+	page, recorder := &countPage{}, &ctxRec{}
+	if err := r.Register("/page", recorder.factory(page, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Navigate("/page"); err != nil {
+		t.Fatal(err)
+	}
+	view, err := app.WithOnDestroy(r.View(), r.Shutdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, done := make(chan struct{}), make(chan error, 1)
+	defer func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}()
+	go func() {
+		done <- app.RunWindow(view, material.NewTheme(), app.Config{Title: "router-b2-shutdown"}, stop)
+	}()
+	waitFor(t, 5*time.Second, func() bool { return page.calls.Load() > 0 },
+		"页面未在真实事件循环中渲染")
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("窗口关闭后事件循环未退出")
+	}
+	if !errors.Is(r.Context().Err(), context.Canceled) ||
+		!errors.Is(recorder.lastCtx().Err(), context.Canceled) {
+		t.Fatal("DestroyEvent must cancel the Router and its current page")
+	}
+	if err := r.Navigate("/page"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Navigate after DestroyEvent = %v", err)
+	}
+}
+
 func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
 	deadline := time.After(d)

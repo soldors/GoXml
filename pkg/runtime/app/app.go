@@ -33,6 +33,31 @@ type View interface {
 	Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 }
 
+type destroyView struct {
+	View
+	onDestroy func()
+}
+
+// WithOnDestroy wraps a root View with an opt-in callback. Each window event
+// loop calls fn once when it receives DestroyEvent, before returning. The
+// callback runs synchronously on the event-loop goroutine and must not block.
+// Pass the returned View directly to the window entry point.
+func WithOnDestroy(view View, fn func()) (View, error) {
+	if view == nil || fn == nil {
+		return nil, fmt.Errorf("app: WithOnDestroy requires a view and callback")
+	}
+	if _, exists := view.(destroyView); exists {
+		return nil, fmt.Errorf("app: destroy callback is already set on the view")
+	}
+	return destroyView{View: view, onDestroy: fn}, nil
+}
+
+func notifyViewDestroyed(view View) {
+	if wrapped, ok := view.(destroyView); ok {
+		wrapped.onDestroy()
+	}
+}
+
 // Config 是窗口配置。
 type Config struct {
 	// Title 是窗口标题。
@@ -370,15 +395,20 @@ func RunWith(view View, th *material.Theme, cfg Config) error {
 
 // loop 驱动事件循环直到窗口关闭。
 func (a *App) loop() {
+	a.loopEvents(a.w.Event)
+}
+
+func (a *App) loopEvents(next func() event.Event) {
 	defer a.stopLateCompletion()
 	var ops op.Ops
 	for {
-		e := a.w.Event()
+		e := next()
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			// 窗口被销毁：循环结束。错误由调用方通过其它机制感知，
 			// 此处不打印，避免在库代码里直接写 stderr。
 			_ = e
+			notifyViewDestroyed(a.view)
 			return
 		case app.FrameEvent:
 			a.frame(&ops, e)
@@ -556,6 +586,7 @@ func runWindowEvents(w windowEvents, view View, th *material.Theme, stop <-chan 
 		e := w.Event()
 		switch e := e.(type) {
 		case app.DestroyEvent:
+			notifyViewDestroyed(view)
 			return nil
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)

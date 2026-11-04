@@ -102,8 +102,6 @@ type Router struct {
 	dropped atomic.Int64
 
 	// rootCtx 是 Router 级 Context，页面 Context 由它派生。
-	// B1 没有生产侧取消源（DestroyEvent 通知属 app.go 集成，未授权），
-	// 因此 v1 的 rootCtx 实际不会在生产路径被取消。
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
 }
@@ -245,15 +243,28 @@ func (r *Router) SetInvalidator(inv Invalidator) error {
 	return nil
 }
 
-// shutdown 是隔离原型。关闭与导航结果提交共用状态锁，只有显式经过
-// shutdown 的取消受该顺序保证。rootCancel 幂等。
-func (r *Router) shutdown() {
+// Shutdown cancels the Router and page contexts and discards pending work
+// without waiting for another frame. It is safe to call more than once or
+// concurrently. If shutdown wins the state lock before a navigation result
+// can commit, that result is dropped without changing the page or NavError.
+func (r *Router) Shutdown() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rootCancel()
+	r.dropPendingLocked()
 }
 
-// Context 返回 Router 级 Context。B1 无生产取消源；页面 Context 由它派生。
+func (r *Router) dropPendingLocked() {
+	n := len(r.queue)
+	r.queue = nil
+	if r.pendingNav != "" {
+		n++
+		r.pendingNav = ""
+	}
+	r.dropped.Add(int64(n))
+}
+
+// Context 返回 Router 级 Context。页面 Context 由它派生。
 func (r *Router) Context() context.Context { return r.rootCtx }
 
 // View 返回根 View——把它交给 app.Run / RunWith / NewApp 即完成接入，
@@ -273,18 +284,8 @@ func (v routerView) Layout(gtx layout.Context, th *material.Theme) layout.Dimens
 func (r *Router) drain() {
 	if r.rootCtx.Err() != nil {
 		r.mu.Lock()
-		n := len(r.queue)
-		r.queue = nil
-		pending := r.pendingNav
-		r.pendingNav = ""
+		r.dropPendingLocked()
 		r.mu.Unlock()
-		// R16-B（F-02 口径统一）：drain 侧丢弃的 pendingNav 也是「被丢弃的
-		// 请求」，与入口侧丢弃、队列丢弃共用 DroppedCount 口径（线程模型 §4：
-		// 丢弃并记录诊断——B1 独立验收报告 F-02 的复现与修复）。
-		if pending != "" {
-			n++
-		}
-		r.dropped.Add(int64(n))
 		return
 	}
 	for {
@@ -295,7 +296,11 @@ func (r *Router) drain() {
 		if len(fns) == 0 {
 			break
 		}
-		for _, fn := range fns {
+		for i, fn := range fns {
+			if r.rootCtx.Err() != nil {
+				r.dropped.Add(int64(len(fns) - i))
+				return
+			}
 			// R17-B candidateRef：F-08 边界声明——fn 执行循环无界：
 			// fn 内再 Dispatch 会在同帧继续执行（线程模型 §4 未禁止）。
 			fn()
