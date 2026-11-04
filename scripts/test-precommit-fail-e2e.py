@@ -422,9 +422,10 @@ def case_entry_check_fails(ctx):
     if res['rc'] != 4:
         fails.append('E1 应以业务失败退 4，实得 %d（stderr=%r）' % (res['rc'], res['stderr'][-300:]))
     names = [s['name'] for s in data['stages']]
-    want = ['copy', 'build-cli', 'generate:view/edit/edit.gxml']
+    # R13-C：一键入口改成一次目录 generate，阶段名从两个 generate:<file> 变为一个 generate:<dir>。
+    want = ['copy', 'build-cli', 'generate:view']
     if names != want:
-        fails.append('E1 失败阶段应停在 generate:edit，实际阶段序列 %r（build-entry/test 不得启动）' % (names,))
+        fails.append('E1 失败阶段应停在 generate:view（批次），实际阶段序列 %r（build-entry/test 不得启动）' % (names,))
     gen = [s for s in data['stages'] if s['name'].startswith('generate:')]
     for s in gen:
         if s.get('rc') == 0:
@@ -435,6 +436,9 @@ def case_entry_check_fails(ctx):
         if s.get('checkFailureObserved') is not True:
             fails.append('E1 generate 阶段 checkFailureObserved 应为 true（原生检查已执行并失败）：%r'
                          % s.get('checkFailureObserved'))
+        if s.get('checkTargets') is not None:
+            fails.append('E1 检查失败时不应有目标包计数（计数只来自通过标记）：%r'
+                         % s.get('checkTargets'))
         raw = read_raw_of(s)
         if '提交前检查失败' not in raw['err']:
             fails.append('E1 generate 阶段 stderr 应含「提交前检查失败」：%r' % raw['err'][-200:])
@@ -446,14 +450,14 @@ def case_entry_check_fails(ctx):
     if '已执行并失败' not in (chk.get('note') or ''):
         fails.append('E1 check.note 应写明「原生提交前检查已执行并失败」：%r' % chk.get('note'))
     v = data.get('verdict') or {}
-    if v.get('code') != 4 or (v.get('detail') or {}).get('stage') != 'generate:view/edit/edit.gxml':
-        fails.append('E1 verdict 应写明实际失败阶段 generate:edit：%r' % v)
+    if v.get('code') != 4 or (v.get('detail') or {}).get('stage') != 'generate:view':
+        fails.append('E1 verdict 应写明实际失败阶段 generate:view：%r' % v)
     if not os.path.isfile(os.path.join(out, 'view', 'edit', 'edit_gen.go')):
         pass  # 正确：不落产物
     else:
         fails.append('E1 检查失败却落了 edit_gen.go')
     if os.path.isfile(os.path.join(out, 'view', 'summary', 'summary_gen.go')):
-        fails.append('E1 第一条 generate 失败后不应继续 summary')
+        fails.append('E1 批次检查失败时两页产物都不得落盘（含 summary）')
     if os.path.exists(os.path.join(out, '.goxml', 'generate-manifest.json')):
         fails.append('E1 检查失败不得落 Manifest')
     if os.path.exists(os.path.join(out, '.goxml', 'cache')) and \
@@ -530,8 +534,8 @@ def case_entry_fixed_passes(ctx):
         fails.append('E3 修好后应全过，实得 rc=%d（stderr=%r）' % (res['rc'], res['stderr'][-300:]))
         return fails
     names = [s['name'] for s in data['stages']]
-    want = ['copy', 'build-cli', 'generate:view/edit/edit.gxml',
-            'generate:view/summary/summary.gxml', 'build-entry', 'test']
+    # R13-C：一次目录 generate 覆盖两页（阶段名是一个 generate:<dir>）。
+    want = ['copy', 'build-cli', 'generate:view', 'build-entry', 'test']
     if names != want:
         fails.append('E3 阶段序列应完整：%r' % (names,))
     for s in data['stages']:

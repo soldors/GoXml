@@ -68,7 +68,7 @@ python scripts/verify-projects.py crosspackage-preferences \
 |---|---|---|
 | `copy` | 复制模板、`*.go.txt`→`*.go`、替换占位符、补 `go.sum` | 工程目录；模板源码不改 |
 | `build-cli` | `go build ./cmd/goxml` | `<工程>/.verify-projects/goxml.exe` |
-| `generate:<view>` | 原生 CLI 逐个生成 View | `view/edit/edit_gen.go`、`view/summary/summary_gen.go` |
+| `generate:<dir>` | 原生 CLI **一次目录生成**覆盖本批全部 View | `view/edit/edit_gen.go`、`view/summary/summary_gen.go` |
 | `build-entry` | **只构建**窗口入口 | `<工程>/.verify-projects/preferences.exe` |
 | `test` | 可选离屏语义测试（`--skip-tests` 可跳过） | 每阶段一个证据目录 |
 
@@ -86,6 +86,10 @@ python scripts/verify-projects.py crosspackage-preferences \
 - `--check` 转发给 `generate`，在提交候选生成物之前执行目标包编译检查，成功后仍正常写盘。
   缓存全命中也会检查；它不是 dry-run。报告只有在每个生成阶段实际成功且带检查成功标记时
   才记 `passed=true`；兼容旧 CLI 时缺标记记 `null`，不能把已转发当作已检查。
+- 两个 View 由**一次目录 generate** 覆盖（`generate view --out-dir view`），不是逐页两条
+  命令：批次的检查在写盘前统一执行，任一目标包编不过时两页的旧产物、Manifest、成功缓存
+  都保持原样；逐页调用会留下一页新、一页旧的混合状态。报告里 `generate:<dir>` 阶段的
+  `checkTargets` 是这次检查覆盖的目标包数（本项目为 2）。
 - `--log-dir` 如显式指定，必须不存在；输出目录拒绝后不会写入他人的日志目录。
   `--json` 不覆盖已有报告或重解析目标，失败时只更新本轮确实拥有的证据文件。
 - 入口脚本是 Python（标准库），只在 Windows + 本机 Go 工具链上实测过，**不宣称**
@@ -118,9 +122,10 @@ sed -i 's|__MODULE__|example.com/my-prefs|g' go.mod cmd/preferences/main.go \
     view/edit/sem_test.go view/summary/sem_test.go
 sed -i 's|__GOXML_DIR__|D:/Codes/Goxml|g' go.mod
 
-# 5) 生成两个视图（各自一条命令，各自一个包）
-/tmp/goxml generate view/edit/edit.gxml
-/tmp/goxml generate view/summary/summary.gxml
+# 5) 一次目录生成两个视图（发现根=输出根=view，产物仍落在 view/edit 与 view/summary）
+#    目录模式按「输出根 + 相对路径」映射，所以 --out-dir 要与输入目录一致；
+#    写成 `--out-dir .` 会把产物放到 ./edit/edit_gen.go（不是模板里的位置）。
+/tmp/goxml generate view --out-dir view
 
 # 6) 离线构建整个工程（只构建，不运行）
 CGO_ENABLED=0 GOFLAGS=-mod=readonly go build ./...

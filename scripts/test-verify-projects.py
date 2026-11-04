@@ -31,6 +31,8 @@ C2 覆盖：
         --work-root "D:/delivery/work" --report "D:/delivery/out/test-verify-projects.json"
 """
 import argparse
+import contextlib
+import io
 import hashlib
 import importlib.util
 import json
@@ -578,8 +580,8 @@ def case_full_pipeline(ctx, tool):
     with open(report, encoding='utf-8') as fh:
         data = json.load(fh)
     names = [s['name'] for s in data['stages']]
-    want = ['copy', 'build-cli', 'generate:view/edit/edit.gxml',
-            'generate:view/summary/summary.gxml', 'build-entry', 'test']
+    # R13-C：生成阶段是一次目录 generate（覆盖 edit/summary 两页），不再是两条逐页命令。
+    want = ['copy', 'build-cli', 'generate:view', 'build-entry', 'test']
     if names != want:
         fails.append('阶段顺序不符：%r' % (names,))
     for stage in data['stages']:
@@ -839,6 +841,17 @@ def case_review_check_status(ctx, tool):
         actual = tool.check_markers(stdout.encode('utf-8'), stderr.encode('utf-8'))
         if actual != expected:
             return ['check 标记识别错误：%r，期望 %r' % (actual, expected)]
+    counts = [
+        (success + '\r\n', 1),
+        ('已生成 ' + success + '.go', None),
+        ('提交前检查通过：0 个目标包', None),
+        (success + '\n' + success, None),
+        ('已生成 ' + success + '.go\n提交前检查通过：2 个目标包', 2),
+    ]
+    for stdout, expected in counts:
+        count = tool.check_targets(stdout.encode('utf-8'))
+        if count != expected:
+            return ['check 目标计数错误：%r，期望 %r' % (count, expected)]
     if tool.check_status([a], False) != {'forwarded': False}:
         return ['未请求check却声称已转发']
     return []
@@ -976,6 +989,62 @@ def case_review_runner_report_exclusive(ctx, tool):
 
 
 CASES.append(('review-runner-report-exclusive', case_review_runner_report_exclusive))
+
+def case_review_batch_runner_fail_closed(ctx, tool):
+    spec = importlib.util.spec_from_file_location(
+        'batch_review', os.path.join(ctx.repo, 'scripts', 'test-crosspackage-batch-e2e.py'))
+    batch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(batch)
+
+    def releases_bad(case):
+        case.fail('release-error-sentinel')
+        return []
+
+    def report_race(case):
+        with open(ctx.path('raced.json'), 'xb') as fh:
+            fh.write(b'FOREIGN REPORT')
+        return []
+
+    scenarios = [
+        ('busy', lambda case: ['SKIP: lock-busy-sentinel'], 'INCOMPLETE', 1),
+        ('release-failure', releases_bad, 'FAIL', 1),
+        ('raced', report_race, None, 2),
+    ]
+    for name, run, status, want in scenarios:
+        batch.CASES = [(name, run)]
+        report = ctx.path(name + '.json')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                rc = batch.main(['--repo', ctx.repo, '--work-root', ctx.path(name),
+                                 '--report', report])
+            except SystemExit as exc:
+                rc = exc.code
+        if rc != want:
+            return ['batch runner %s rc=%r，期望 %r' % (name, rc, want)]
+        with open(report, 'rb') as fh:
+            raw = fh.read()
+        if status is None:
+            if raw != b'FOREIGN REPORT':
+                return ['batch runner 覆盖了并发创建的外部报告']
+        else:
+            result = json.loads(raw)
+            if result['status'] != status:
+                return ['batch runner %s 状态错误：%s' % (name, result['status'])]
+            if name == 'release-failure' and 'release-error-sentinel' not in result['cases'][name]['failures']:
+                return ['batch runner 丢弃了运行期记录的清理失败']
+
+    scope = ctx.path('scope')
+    os.mkdir(scope)
+    for name in ('home.GXML', 'readme.md'):
+        with open(os.path.join(scope, name), 'xb'):
+            pass
+    if tool.discover_gxml(scope) != ['home.GXML']:
+        return ['Python 与 Go 的 .gxml 扩展名匹配不一致']
+    return []
+
+
+CASES.append(('review-batch-runner-fail-closed', case_review_batch_runner_fail_closed))
+
 
 
 def main(argv):

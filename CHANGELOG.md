@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- R13：常规多包 `generate --check` 按最多 12 个目标包分组构建，保持 Go 参数、临时输出隔离及失败保旧；双视图示例入口使用一次目录生成。混合页面补充局部缓存、动态文本及 Key 行事件的离屏回归。
+
 - R12：生成器输出规则修订进入缓存键，已有 v7 记录在升级时安全未命中；跨包 ViewModel 的导入别名取真实 Go 包名并按需消歧；一键工程报告区分提交前检查失败与后续入口构建失败。GXML 语言版本与保护头保持 v1。
 
 - R11：既有`generate --check`落实为本批最终候选的提交前构建检查，全命中也检查，失败保留旧产物与Manifest；生成代码移除验收计数器，测试副本注入保留判别力；新增跨包工程一键复制/生成/构建/离屏验收脚本，日志与报告按本轮所有权保护。默认generate、Input/For规则及缓存格式不变。

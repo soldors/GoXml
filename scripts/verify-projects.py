@@ -3,7 +3,7 @@
 r"""把 testprojects 里的工程模板变成可构建工程：一条命令完成复制、占位符替换、
 真实生成、构建、可选离屏测试。
 
-它替代的是教程里那串手动步骤（find 改名、sed 填占位符、逐条 generate、go build），
+它替代的是教程里那串手动步骤（find 改名、sed 填占位符、一次目录 generate、go build），
 **不是** `goxml init`/`watch`，也不新增业务工程：模板、教程、测试仍是同一份材料
 （`examples/gxml/testprojects/<project>/`），这里只是把「照着做」变成「跑一次」。
 
@@ -323,9 +323,33 @@ def discover_gxml(out_dir):
     for dirpath, dirnames, filenames in os.walk(out_dir):
         dirnames.sort()
         for name in sorted(filenames):
-            if name.endswith('.gxml'):
+            if name.lower().endswith('.gxml'):
                 found.append(os.path.relpath(os.path.join(dirpath, name), out_dir).replace('\\', '/'))
     return sorted(found)
+
+
+def common_parent_dir(rels):
+    """本批 .gxml 的共同父目录（项目相对路径，`/` 分隔）；根目录返回 `.`。
+
+    目录模式的输出映射是 `outRoot + dirname(rel 相对发现根)`（CLI 的
+    `resolveInput`），所以要让目录模式的落点与「逐文件 `--out-dir dirname(file)`」
+    完全一致，必须让 **发现根 = 输出根 = 共同父目录**：
+
+        generate view --out-dir view     # rel=edit/edit.gxml → view/edit/edit_gen.go
+        generate view/edit/edit.gxml --out-dir view/edit   # 同一个文件
+
+    反例（错用工程根做输出根）：`generate view --out-dir .` 会把产物写到
+    `./edit/edit_gen.go`——路径对不上模板，Go 包也不在原来那个包里。
+    """
+    parts = [rel.split('/')[:-1] for rel in rels]
+    if not parts:
+        return '.'
+    common = []
+    for layer in zip(*parts):
+        if len(set(layer)) != 1:
+            break
+        common.append(layer[0])
+    return '/'.join(common) if common else '.'
 
 
 # ---------------------------------------------------------------- 阶段执行
@@ -628,15 +652,28 @@ def test_verdict(markers):
 
 
 def check_markers(stdout, stderr):
-    stdout_lines = stdout.decode('utf-8', 'replace').splitlines()
     stderr_lines = stderr.decode('utf-8', 'replace').splitlines()
     # The first top-level diagnostic identifies the failed phase. Paths and
     # nested compiler diagnostics can contain the same words.
     first_error = next((line for line in stderr_lines if line.startswith('goxml generate: ')), '')
     return (
-        any(re.fullmatch(r'提交前检查通过：[1-9][0-9]* 个目标包', line) for line in stdout_lines),
+        check_targets(stdout) is not None,
         first_error == 'goxml generate: 提交前检查失败：目标包未能通过编译（本批未写入任何产物/Manifest/缓存）',
     )
+
+
+def check_targets(raw_stdout):
+    """`提交前检查通过：N 个目标包` 里的 N；没有该标记返回 None。
+
+    R13-C 起一键入口用**一次目录 generate** 覆盖全部 View，这个数字就是「本次检查
+    实际覆盖几个目标包」：两页同批时应为 2，逐页调用时每条命令只会报 1。
+    它把「只启动一次 generate」从 argv 数量延伸到检查覆盖面，两者一起才说明批次是真的。
+    """
+    text = raw_stdout.decode('utf-8', 'replace')
+    markers = [m for line in text.splitlines()
+               if (m := re.fullmatch(r'提交前检查通过：([1-9][0-9]*) 个目标包', line))]
+    counts = [int(m.group(1)) for m in markers]
+    return counts[0] if len(counts) == 1 else None
 
 
 def observe_check_markers(stage):
@@ -646,12 +683,15 @@ def observe_check_markers(stage):
     * checkFailureObserved：可信的退出码 2 与 stderr 的原生编译失败首行同时成立。
     R12-C：只有两者都在失败路径上留痕，「参数已转发」与「原生检查已执行并失败」
     才能在一键入口的报告里区分开。
+    R13-C：再记 checkTargets（检查覆盖的目标包数），供「一次批覆盖两页」取证。
     """
-    passed, failed = check_markers(read_raw(stage.get('stdout')), read_raw(stage.get('stderr')))
+    stdout = read_raw(stage.get('stdout'))
+    passed, failed = check_markers(stdout, read_raw(stage.get('stderr')))
     stage['checkReported'] = passed
     stage['checkFailureObserved'] = (
         failed and stage['rcSource'] == 'observed' and stage['rc'] == 2 and stage['infraOk']
     )
+    stage['checkTargets'] = check_targets(stdout) if passed else None
 
 
 def check_status(stages, requested):
@@ -687,6 +727,43 @@ def prepare_project(report, repo, project, module, out_dir):
     if not report['gxml']:
         raise Refused(EXIT_RECORD, '复制后工程里没有任何 .gxml，模板不完整：%s' % out_dir)
     return copied
+
+
+def run_generate_stage(report, procmod, name, argv, out_dir, log_dir, timeout, observe):
+    """跑一次 generate 阶段；带 --check 时把观察标记记到阶段上（成功/失败都记）。"""
+    try:
+        stage = run_stage(report, procmod, name, argv, out_dir, log_dir, timeout,
+                          procmod.GO_ENV_FIXED)
+    except Refused:
+        # run_stage 已把失败阶段记入 report；失败路径同样要留 --check 的观察证据。
+        if observe and report['stages'] and report['stages'][-1].get('name') == name:
+            observe_check_markers(report['stages'][-1])
+        raise
+    if observe:
+        observe_check_markers(stage)
+    return stage
+
+
+def generate_batch(report, procmod, cli_path, out_dir, log_dir, args):
+    """一次目录 generate 覆盖本批全部 View（R13-C）。
+
+    为什么不是逐页调用（R12-C 的形态）：
+
+    * **只启动一次**：两个 View 同属一个模块、一个 Manifest，一条命令就能覆盖；
+    * **全或无**：`--check` 在整批候选齐备、写盘之前统一执行，任一目标包编不过则
+      **两页的旧产物、Manifest、成功缓存都保持原样**——逐页调用做不到这一点：第一页
+      成功即已落盘，第二页失败就留下「一页新、一页旧」的混合状态（本轮实测，
+      dev-log 有对照数据）；
+    * **检查覆盖面是两页**：`提交前检查通过：2 个目标包`，逐页调用只会各报 1。
+
+    发现根与输出根都取共同父目录，落点才与逐文件模式一致（见 `common_parent_dir`）。
+    """
+    batch_dir = common_parent_dir(report['gxml'])
+    argv = [cli_path, 'generate', batch_dir, '--out-dir', batch_dir]
+    if args.check:
+        argv.append('--check')
+    return run_generate_stage(report, procmod, 'generate:' + batch_dir, argv,
+                              out_dir, log_dir, args.timeout, args.check)
 
 
 def run(args, report, repo, project, module, out_dir, run_id):
@@ -753,22 +830,8 @@ def run(args, report, repo, project, module, out_dir, run_id):
                   [args.go, 'build', '-o', cli_path, './cmd/goxml'],
                   repo, log_dir, args.timeout, procmod.GO_ENV_FIXED)
 
-        # 2) 原生 CLI 生成每个 View（各一条命令、各自一个包）
-        for rel in report['gxml']:
-            argv = [cli_path, 'generate', rel, '--out-dir', os.path.dirname(rel)]
-            if args.check:
-                argv.append('--check')
-            try:
-                stage = run_stage(report, procmod, 'generate:' + rel, argv,
-                                  out_dir, log_dir, args.timeout, procmod.GO_ENV_FIXED)
-            except Refused:
-                # run_stage records a failed stage before raising Refused.
-                if args.check and report['stages'] and \
-                        report['stages'][-1].get('name') == 'generate:' + rel:
-                    observe_check_markers(report['stages'][-1])
-                raise
-            if args.check:
-                observe_check_markers(stage)
+        # 2) 一次目录 generate 覆盖本批全部 View（R13-C；发现根=输出根=共同父目录）
+        generate_batch(report, procmod, cli_path, out_dir, log_dir, args)
 
         # 3) 只构建窗口入口——**永不执行**（执行就会开原生窗口）
         entry = PROJECTS[project]['entry']

@@ -33,6 +33,11 @@ import (
 // precommitCheckTimeout 是提交前检查子进程的上限（编译整批目标包）。
 const precommitCheckTimeout = 180 * time.Second
 
+// precommitBatchSize 是单次 `go build` 覆盖的目标包数上限（R13-A 有界分组）。
+//
+// 多包组用 Go 的空设备输出检查编译和链接。单包组使用自有临时输出路径。
+const precommitBatchSize = 12
+
 // precommitCandidate 是一个目标包在本批中的候选来源。
 type precommitCandidate struct {
 	// dir 是目标包目录（绝对路径）。
@@ -92,7 +97,7 @@ func checkPrecommitCandidates(goExe, moduleRoot string, cands []precommitCandida
 		g.contents[filepath.Clean(c.output)] = content
 	}
 
-	// 2) 自有临时工作区：overlay 替换文件、overlay JSON、子进程 cwd 全在这里。
+	// 2) 自有临时工作区：overlay 替换文件、overlay JSON 与单包输出。
 	workDir, err := os.MkdirTemp("", "goxml-precommit-")
 	if err != nil {
 		return fmt.Errorf("创建提交前检查临时目录失败: %w", err)
@@ -127,13 +132,42 @@ func checkPrecommitCandidates(goExe, moduleRoot string, cands []precommitCandida
 		}
 	}
 
-	// Go overlay supports virtual directories. Keep each real target import path
-	// even before its directory exists, so cross-candidate imports and internal/
-	// rules are checked at their eventual identity, never an unrelated shadow path.
-	// Preserve moduleRoot cwd for relative GOFLAGS paths. Compile one package at
-	// a time into our own output, avoiding collisions between same-named mains.
-	for _, key := range order {
-		if err := runGoBuildCheck(goExe, moduleRoot, overlayPath, []string{groups[key].dir}, workDir); err != nil {
+	// Go overlay 支持虚拟目录：即使目标目录还不存在，也保留它**真实的 import path**，
+	// 让跨候选引用与 internal/ 规则在最终身份上被检查，而不是换了路径。
+	//
+	fields, err := goFlagsSplit(flags)
+	if err != nil {
+		return fmt.Errorf("解析检查 GOFLAGS: %w", err)
+	}
+	buildMode := "default"
+	for _, field := range fields {
+		flag := strings.TrimPrefix(field, "-")
+		if value, ok := strings.CutPrefix(strings.TrimPrefix(flag, "-"), "buildmode="); ok {
+			buildMode = value
+		}
+	}
+	batchSize := precommitBatchSize
+	if buildMode != "default" {
+		// Explicit build modes can require a single package. Keep the previous
+		// per-package check for these contexts.
+		batchSize = 1
+	}
+	for start := 0; start < len(order); start += batchSize {
+		end := start + batchSize
+		if end > len(order) {
+			end = len(order)
+		}
+		pkgs := make([]string, 0, end-start)
+		for _, key := range order[start:end] {
+			pkgs = append(pkgs, groups[key].dir)
+		}
+		// Explicit -o overrides any caller output path in GOFLAGS. Go treats
+		// its null device as a request to check without publishing a binary.
+		outputFile := os.DevNull
+		if len(pkgs) == 1 {
+			outputFile = filepath.Join(workDir, fmt.Sprintf("out-%03d", start))
+		}
+		if err := precommitBuildFunc(goExe, moduleRoot, overlayPath, pkgs, outputFile); err != nil {
 			return err
 		}
 	}
@@ -141,13 +175,18 @@ func checkPrecommitCandidates(goExe, moduleRoot string, cands []precommitCandida
 	return nil
 }
 
+// precommitBuildFunc 是执行一次 go build 检查的接缝（默认 runGoBuildCheck）。
+// 存在的唯一理由与仓库既有 pipelineFunc 相同：让测试**统计构建调用次数**，用执行计数
+// 证明有界分组真的减少了调用，而不是拿耗时推断。生产环境从不改写它。
+var precommitBuildFunc = runGoBuildCheck
+
 // runGoBuildCheck 执行一次 `go build`（仅编译），失败时把真实原因带回。
-func runGoBuildCheck(goExe, workDir, overlayPath string, pkgs []string, outputDirs ...string) error {
+func runGoBuildCheck(goExe, workDir, overlayPath string, pkgs []string, outputFile string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), precommitCheckTimeout)
 	defer cancel()
 	args := []string{"build"}
-	if len(outputDirs) > 0 {
-		args = append(args, "-o", filepath.Join(outputDirs[0], "check.out"))
+	if outputFile != "" {
+		args = append(args, "-o", outputFile)
 	}
 	if overlayPath != "" {
 		args = append(args, "-overlay", overlayPath)
@@ -155,7 +194,8 @@ func runGoBuildCheck(goExe, workDir, overlayPath string, pkgs []string, outputDi
 	args = append(args, pkgs...)
 	cmd := exec.CommandContext(ctx, goExe, args...)
 	cmd.Dir = workDir
-	// 环境与本次生成使用的权威上下文一致（继承实测环境；不叠加宿主标签推断）。
+	// Retain the original GOFLAGS and GOENV so quoted values keep their
+	// meaning. The explicit merged -overlay takes precedence over GOFLAGS.
 	cmd.Env = append(cmdEnvBase(), "GOTOOLCHAIN=local")
 	var stderr, stdout strings.Builder
 	cmd.Stderr = &stderr

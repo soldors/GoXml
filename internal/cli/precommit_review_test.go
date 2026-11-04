@@ -52,7 +52,7 @@ func TestReviewCheckShadowLeak(t *testing.T) {
 func TestReviewCheckCauseLost(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist.exe")
-	err := runGoBuildCheck(missing, dir, "", []string{"."})
+	err := runGoBuildCheck(missing, dir, "", []string{"."}, "")
 	if err == nil {
 		t.Fatal("expected launch failure")
 	}
