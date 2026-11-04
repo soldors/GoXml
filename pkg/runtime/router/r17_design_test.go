@@ -247,13 +247,14 @@ func TestR17TwoInstanceCloseIsolation(t *testing.T) {
 	}
 }
 
-// TestR17ApplyNavigationAfterCancelDecisionInput 决策表「取消顺序」的现状输入
-// （受控复现，非缺陷断言）：pending 导航被接受后、帧首入口检查**之后**发生
-// 关闭时，applyNavigation 仍会以**已取消**的根 Context 构造页面并切换。
+// TestR17ApplyNavigationAfterCancelDecisionInput 决策表「取消顺序」：
+// pending 导航被接受后、drain 入口检查之后落下关闭的中间态。
 //
-// B1 契约未定义该中间态（drain 仅入口单次检查；B1 报告 F-08 邻域）——
-// 本测试只锁定现状作为裁决输入，不断言对错；语义变更属候选
-// （candidateRef：applyNavigation 前复查 rootCtx，见 B2 决策表「取消顺序」）。
+// 【分支差异】本测试在两个 ref 上断言不同语义（同一受控场景）：
+//   - readyRef（现状锁定）：applyNavigation 以已取消根 Context 构造并切换；
+//   - candidateRef（本分支，复查原型）：放弃刚构造页、保持旧页、丢弃 +1。
+//
+// 最终语义由负责人裁决后二选一归并；未批准前候选不得进 readyRef。
 func TestR17ApplyNavigationAfterCancelDecisionInput(t *testing.T) {
 	f := newR17(t)
 	r := f.r
@@ -276,16 +277,22 @@ func TestR17ApplyNavigationAfterCancelDecisionInput(t *testing.T) {
 	r.rootCancel()
 	r.applyNavigation()
 
-	if got := r.Current(); got != "/b" {
-		t.Fatalf("现状应锁定为切换生效：Current=%q", got)
+	// candidateRef 语义（复查原型）：放弃刚构造页、保持旧页、丢弃 +1。
+	if got := r.Current(); got != "/a" {
+		t.Fatalf("候选语义应保持旧页：Current=%q", got)
 	}
 	if pb.constructed.Load() != 1 {
-		t.Fatalf("现状应锁定为构造 1 次：实际 %d", pb.constructed.Load())
+		t.Fatalf("工厂应恰好执行 1 次（构造后才复查）：实际 %d", pb.constructed.Load())
 	}
-	if err := pb.selfCtx.Err(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("现状输入：新页 Context 应已随根取消，实际 %v", err)
+	if pb.selfCtx == nil || pb.selfCtx.Err() == nil {
+		t.Fatal("候选语义：被放弃页的 Context 应已随根取消")
 	}
-	if pb.selfCtx == nil {
-		t.Fatal("夹具错误：页面 Context 未捕获")
+	if got := r.DroppedCount(); got != 1 {
+		t.Fatalf("候选语义：放弃的构造应计入丢弃，实际 %d", got)
 	}
+	if r.NavError() != nil {
+		t.Fatalf("关闭边界不是构造失败，不得写 NavError：实际 %v", r.NavError())
+	}
+	_ = errors.Is
+	_ = context.Canceled
 }

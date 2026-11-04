@@ -64,6 +64,9 @@ type Invalidator interface {
 //
 // 返回 error 表示页面创建失败：本次导航整体放弃——旧页面保持运行
 // （Context 不取消），Router 记录 NavError。不存在半提交状态。
+//
+// 调用约束：工厂在帧内的 UI 线程执行，**不得阻塞**（线程模型 §1.5；
+// R17-B candidateRef：F-07 注释补齐）。
 type PageFactory func(ctx context.Context) (View, error)
 
 // Router 是单窗口路由核心。零值不可用，用 New 构造。
@@ -75,7 +78,8 @@ type Router struct {
 	// pendingNav 是尚未在 UI 线程应用的最新导航请求；同帧多次导航
 	// 合并为最后一个（线程模型 §4「多个更新可以在同一帧合并」），
 	// 被合并的中间页面不会被构造（避免重复生命周期）。
-	hasPending bool
+	// 「是否有待定导航」由 pendingNav=="" 承载（空路径不可注册，router.go
+	// Register 已拒绝 ""——R17-B candidateRef：删除 F-01 死字段）。
 	pendingNav string
 
 	// current / page 仅在 UI 线程（drain 中）写入；读取经 mu 保护，
@@ -160,13 +164,11 @@ func (r *Router) Navigate(path string) error {
 		return fmt.Errorf("%w: %q", ErrPathNotRegistered, path)
 	}
 	if path == r.current {
-		r.hasPending = false
 		r.pendingNav = ""
 		r.mu.Unlock()
 		return nil
 	}
 	r.pendingNav = path
-	r.hasPending = true
 	inv := r.inv
 	r.mu.Unlock()
 	if inv != nil {
@@ -241,6 +243,13 @@ func (r *Router) SetInvalidator(inv Invalidator) error {
 	return nil
 }
 
+// shutdown 是一次性关闭的隔离原型（R17-B candidateRef）：幂等包装
+// rootCancel，语义与 N 次调用 rootCancel 等价。**未导出**——导出公开
+// Shutdown() 属 B2 任务卡草案 B2-1，前置门槛 G1（负责人批准）未满足。
+func (r *Router) shutdown() {
+	r.rootCancel()
+}
+
 // Context 返回 Router 级 Context。B1 无生产取消源；页面 Context 由它派生。
 func (r *Router) Context() context.Context { return r.rootCtx }
 
@@ -264,7 +273,6 @@ func (r *Router) drain() {
 		n := len(r.queue)
 		r.queue = nil
 		pending := r.pendingNav
-		r.hasPending = false
 		r.pendingNav = ""
 		r.mu.Unlock()
 		// R16-B（F-02 口径统一）：drain 侧丢弃的 pendingNav 也是「被丢弃的
@@ -285,6 +293,8 @@ func (r *Router) drain() {
 			break
 		}
 		for _, fn := range fns {
+			// R17-B candidateRef：F-08 边界声明——fn 执行循环无界：
+			// fn 内再 Dispatch 会在同帧继续执行（线程模型 §4 未禁止）。
 			fn()
 		}
 	}
@@ -300,7 +310,6 @@ func (r *Router) applyNavigation() {
 	r.mu.Lock()
 	req := r.pendingNav
 	r.pendingNav = ""
-	r.hasPending = false
 	factory := r.registry[req]
 	r.mu.Unlock()
 	if req == "" {
@@ -317,6 +326,14 @@ func (r *Router) applyNavigation() {
 	if err != nil {
 		cancel()
 		r.setNavErr(fmt.Errorf("router: 导航到 %q 失败: %w", req, err))
+		return
+	}
+	// R17-B candidateRef（决策表「取消顺序」原型）：工厂执行期间根 Context
+	// 被取消时，放弃刚构造的页面（其 Context 已随根死亡），按丢弃计数并
+	// 保持旧页运行——待裁决后再定稿语义，未批准前不进 readyRef。
+	if r.rootCtx.Err() != nil {
+		cancel()
+		r.dropped.Add(1)
 		return
 	}
 	r.mu.Lock()

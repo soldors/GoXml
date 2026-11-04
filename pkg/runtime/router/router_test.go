@@ -409,9 +409,8 @@ func (f invFunc) Invalidate() { f() }
 // 授权 §4.12：与项目既有 View / Gio 帧入口兼容（结构化形状 + 合成帧渲染）。
 // app.View 的冻结形状见运行时入口契约 §2：Layout(gtx, th)；
 // 本断言证明 router 根 View 与该形状逐字一致（不导入 pkg/runtime/app）。
-var _ interface {
-	Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
-} = (*routerView)(nil)
+// R17-B candidateRef：F-05 自指形状断言已删除（与 View 接口定义同构，断言力≈0；
+// 真实兼容由集成测试与 r16_acceptance_test 的宿主组合测试承担）。
 
 func TestRootViewRendersCurrentPageOnly(t *testing.T) {
 	r := New()
