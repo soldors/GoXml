@@ -15,8 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-
-	"github.com/goxml/goxml/internal/compiler/codegen"
 )
 
 // cacheDirName / cacheDir 是缓存目录（契约 §11：`.goxml/cache/`）。
@@ -218,6 +216,6 @@ func newCacheRecord(keyHash, source, output, sourceHash, outputHash string) cach
 		Output:          output,
 		SourceHash:      sourceHash,
 		OutputHash:      outputHash,
-		CompilerVersion: codegen.GoxmlVersion,
+		CompilerVersion: cacheIdentity(), // 记录 K4 = 语言版本 + 输出规则修订（R12-A）
 	}
 }

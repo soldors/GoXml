@@ -42,7 +42,7 @@
 | K1 源内容 | `.gxml` 字节的 SHA-256 | 语言输入 | 已有 `inputHashOf` |
 | K2 `<Def>` 内容 | v1 视为被 K1 覆盖 | 字段展开影响产物 | 同 K1；**跨文件 Def 尚未支持，支持时必须拆出 K2** |
 | K3 包源码指纹 | 目标包目录内 `*.go`（**排除** `*_test.go` 与「已登记/本批计划」的生成产物）按相对路径排序后逐文件喂入 | 包名解析来自包源码；契约 §11 要求 | 新增 |
-| K4 生成器版本 | `codegen.GoxmlVersion` | 生成逻辑变化必须失效 | 已有 |
+| K4 生成器版本 | `GoxmlVersion + "+" + generatorOutputRevision` | 生成代码的字节规则变化时提升输出修订 | 已实现 |
 | K5 CLI 选项 | 解析出的 `packageName`（含默认推导结果）；`Check` 不影响产物故不入键 | 包名直接写进产物 | 新增 |
 | K6 输出路径 | 产物项目相对路径 + 头里 `SourcePath` | 保护头 `// Source:` 是产物内容 | 新增 |
 | K7 缓存格式版本 | `cacheFormatVersion = 1` | 缓存语义演进 | 新增 |

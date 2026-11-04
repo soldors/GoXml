@@ -817,14 +817,28 @@ def case_boundary_timeout(ctx, tool):
 
 
 def case_review_check_status(ctx, tool):
-    a = {'name': 'generate:a', 'rc': 0, 'infraOk': True, 'checkReported': True}
+    a = {'name': 'generate:a', 'started': True, 'rc': 0, 'infraOk': True,
+         'checkReported': True}
     b = dict(a, name='generate:b')
-    tests = [([], None), ([a, b], True), ([a, dict(b, checkReported=False)], None),
-             ([dict(a, rc=2)], False), ([dict(a, infraOk=False)], False)]
-    for stages, expected in tests:
+    tests = [([], False, None), ([dict(a, started=False)], False, None),
+             ([a, b], True, True), ([a, dict(b, checkReported=False)], True, None),
+             ([dict(a, rc=2)], True, False), ([dict(a, infraOk=False)], True, False)]
+    for stages, forwarded, passed in tests:
         status = tool.check_status(stages, True)
-        if status['forwarded'] is not True or status['passed'] is not expected:
+        if status['forwarded'] is not forwarded or status['passed'] is not passed:
             return ['check报告未区分转发/实际成功/失败：%r' % status]
+    success = '提交前检查通过：1 个目标包'
+    failure = 'goxml generate: 提交前检查失败：目标包未能通过编译（本批未写入任何产物/Manifest/缓存）'
+    cases = [
+        (success + '\r\n', '', (True, False)),
+        ('', failure + '\nundefined: bad', (False, True)),
+        ('已生成 ' + success + '.go', 'goxml generate: 缺少文件 提交前检查失败.gxml', (False, False)),
+        ('', 'goxml generate: 解析失败\n' + failure, (False, False)),
+    ]
+    for stdout, stderr, expected in cases:
+        actual = tool.check_markers(stdout.encode('utf-8'), stderr.encode('utf-8'))
+        if actual != expected:
+            return ['check 标记识别错误：%r，期望 %r' % (actual, expected)]
     if tool.check_status([a], False) != {'forwarded': False}:
         return ['未请求check却声称已转发']
     return []

@@ -127,6 +127,8 @@ type VerifiedDoc struct {
 type ViewModelRef struct {
 	// PkgDir 是模块根相对目录，如 "internal/models"。同包（即 .gxml 所在包）时为空串。
 	PkgDir string
+	// PackageName is the Go package that declares Name.
+	PackageName string
 	// Name 是类型名。
 	Name string
 }
@@ -150,12 +152,12 @@ func (v *VerifiedDoc) ViewModel() (ViewModelRef, bool) {
 // vmRef 把 *ViewModelType 转换为不含 go/types 的引用。
 //
 // 为什么需要转换：Codegen 需要知道 vm 参数的类型名，但 types.Named 属于
-// Analyzer 内部，不得泄漏。这里只保留 PkgDir 与 Name（来自已解析的 TypeExpr）。
+// Analyzer 内部，不得泄漏。引用保留声明位置、类型名与声明包名。
 func vmRef(vm *ViewModelType) ViewModelRef {
 	if vm == nil {
 		return ViewModelRef{}
 	}
-	return ViewModelRef{PkgDir: vm.Expr.PkgDir, Name: vm.Expr.Name}
+	return ViewModelRef{PkgDir: vm.Expr.PkgDir, Name: vm.Expr.Name, PackageName: vm.PackageName}
 }
 
 // Document 返回已验证的结构 IR。

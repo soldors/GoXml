@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"go/format"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,15 +55,12 @@ type Options struct {
 	// OutputPackageDir 是产物所在包相对模块根的目录（`/` 分隔；空串表示「与源同目录」）。
 	// 当它 != ViewModelPackageDir 时，同包 ViewModel 必须跨包 import。
 	OutputPackageDir string
-	// ViewModelPackageName 是 ViewModel 所在包的真实 Go 包名（可选）。
-	//
-	// 用于两处：
-	//   - 生成 import 的**默认名/别名**：目录名不保证是合法标识符（如含 `-`），
-	//     且包名可能≠目录名；用真实包名作限定符与别名才与 Go 语义一致。
-	//   - 与 OutputPackageDir 判等（同包）时无需 import。
-	// 为空时回退到 filepath.Base(ViewModelPackageDir)（仅在为合法标识符时）。
-	// 由调用方（内部 pipeline，用 packageDirName 从源目录解析）填入；Codegen 不读盘。
+
+	// ViewModelPackageName is the source package name for same-package callers
+	// that lack a package name in the verified ViewModel reference.
 	ViewModelPackageName string
+	// PackageNames contains declarations in the output package reserved by precheck.
+	PackageNames map[string]string
 }
 
 // GoxmlVersion 是保护头与 Manifest 共用的语言版本字段（契约 §3.1）。
@@ -1133,19 +1131,21 @@ func (g *generator) vmTypeExpr() (string, error) {
 			"codegen: ViewModel %s is in package %q but Options.ModulePath is empty",
 			g.vmRef.Name, vmPkgDir)
 	}
-	// 限定符/别名：优先用调用方提供的真实包名；否则回退目录名（仅当为合法标识符）。
-	alias := g.opts.ViewModelPackageName
+	alias := g.vmRef.PackageName
+	if alias == "" && (g.vmRef.PkgDir == "" || normalize(g.vmRef.PkgDir) == normalize(g.opts.ViewModelPackageDir)) {
+		alias = g.opts.ViewModelPackageName
+	}
 	if alias == "" {
 		base := filepath.Base(vmPkgDir)
 		if !isValidGoIdent(base) {
 			return "", fmt.Errorf(
-				"codegen: ViewModel 目录 %q 的目录名不是合法 Go 标识符且未提供 Options.ViewModelPackageName，无法确定限定符",
+				"codegen: ViewModel 目录 %q 的目录名不是合法 Go 标识符且未提供包名，无法确定限定符",
 				vmPkgDir)
 		}
 		alias = base
 	}
 	if !isValidGoIdent(alias) {
-		return "", fmt.Errorf("codegen: Options.ViewModelPackageName %q 不是合法 Go 标识符", alias)
+		return "", fmt.Errorf("codegen: ViewModel 包名 %q 不是合法 Go 标识符", alias)
 	}
 	// 强制写显式别名：Codegen 不读盘、不知目标包真实包名，显式写出 `alias "import/path"`
 	// 使限定符与别名绑定一致（无论真实包名如何）。别名=真实包名（由调用方提供）时
@@ -1159,9 +1159,16 @@ func (g *generator) vmTypeExpr() (string, error) {
 	if existing, ok := g.imports.byPath[importPath]; ok {
 		alias = existing
 	} else {
+		// Reserve generated names even when sibling outputs are not part of this batch.
+		// Otherwise a warm sibling alias can conflict with a newly generated declaration.
+		if (strings.HasPrefix(alias, "Goxml") || strings.HasPrefix(alias, "NewGoxml")) && strings.HasSuffix(alias, "View") ||
+			strings.HasPrefix(alias, "goxmlRenderKey") || strings.HasPrefix(alias, "goxmlTextCache") {
+			alias = "vm_" + alias
+		}
 		preferred := alias
 		for suffix := 2; ; suffix++ {
-			used := false
+			_, declared := g.opts.PackageNames[alias]
+			used := declared || alias == "init" || types.Universe.Lookup(alias) != nil
 			for _, n := range g.imports.byPath {
 				if n == alias {
 					used = true

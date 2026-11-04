@@ -255,7 +255,7 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 		SourceHash:        r.sourceHash,
 		PackageName:       r.pkgName,
 		BuildFlags:        os.Getenv("GOFLAGS"),
-		CompilerVersion:   codegen.GoxmlVersion,
+		CompilerVersion:   cacheIdentity(), // K4 = 语言版本 + 输出规则修订（R12-A）
 		PackageSources:    sources,
 		DependencySources: deps,
 		BuildContext:      buildCtx,
@@ -323,7 +323,7 @@ func explainMiss(r *resolvedInput, key string, index map[string]cacheRecord) cac
 		return reasonMissing
 	}
 	switch {
-	case prev.CompilerVersion != codegen.GoxmlVersion:
+	case prev.CompilerVersion != cacheIdentity():
 		return reasonCompilerVersionChanged
 	case prev.SourceHash != r.sourceHash:
 		return reasonInputChanged

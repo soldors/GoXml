@@ -267,6 +267,8 @@ type ViewModelType struct {
 	Named *types.Named
 	// ImportPath 是所在包的导入路径。
 	ImportPath string
+	// PackageName is the package that declares the referenced name, including aliases.
+	PackageName string
 }
 
 // ResolveViewModel 解析 ViewModel 声明并定位 Go 类型。
@@ -320,7 +322,7 @@ func (e *TypeEnv) ResolveViewModel(decl contracts.ViewModelDecl) (*ViewModelType
 			decl.Value, expr.Name, importPath, resolved.String())
 	}
 
-	return &ViewModelType{Expr: expr, Named: named, ImportPath: importPath}, nil
+	return &ViewModelType{Expr: expr, Named: named, ImportPath: importPath, PackageName: pkg.Name}, nil
 }
 
 // importPathFor 把声明转换为导入路径。

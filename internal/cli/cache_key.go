@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/goxml/goxml/internal/compiler/codegen"
 )
 
 // cacheFormatVersion 是缓存记录与缓存键的格式版本（K7）。
@@ -45,6 +47,48 @@ import (
 // （GOAMD64/GOARM/GOARM64/GO386/GOMIPS/GOMIPS64/GOPPC64/GORISCV64/GOWASM）；
 // 目标包名/选文件身份改由 go list 权威计算。旧 v6 记录键变化自然安全 miss，无迁移。
 const cacheFormatVersion = 7
+
+// generatorOutputRevision 是**生成器输出规则**的内部修订标识（R12-A，K4 的一部分）。
+//
+// 它回答的问题只有一个：**生成器写出的字节规则有没有变**。
+// 与另外两个版本各司其职，互不替代：
+//   - GXML 语言版本（codegen.GoxmlVersion，= "1"）：.gxml 语法/语义的对外版本，
+//     同时进保护头 `// Goxml-Version: 1`；不因生成器内部实现变化而变。
+//   - cacheFormatVersion（K7）：缓存**记录/键的格式**（字段、规范化方式）。只有
+//     记录结构本身变化才提升。
+//   - generatorOutputRevision（本标识）：生成器**输出内容规则**。产物字节规则一变
+//     （例如改变了生成代码的结构、默认值、布局常量、绑定代码形态等），就把它 +1，
+//     于是 K4 取值改变 → 所有旧缓存键失配 → 旧记录安全 miss，用户无需 --no-cache。
+//
+// 什么时候必须提升它（输出字节会变的情形）：
+//   - 生成代码的结构/模板变化（类型/方法/字段、命名规则）；
+//   - 生成代码里的默认常量、默认样式/布局/占位值变化；
+//   - 绑定/事件接线代码形态变化；
+//   - 任何会让同一输入产出不同**内容字节**的实现改动。
+//
+// 什么时候**不必**提升：
+//   - 只改了错误文案、日志、注释不影响产物；
+//   - 只改了 CLI 判定逻辑但不改产物字节（如本任务的缓存键接线本身）；
+//   - GXML 语言版本变化（那由 GoxmlVersion/K1 及显式语义变更覆盖）。
+//
+// 取值与历史：历史上这些"输出规则升级"都靠手动提升 cacheFormatVersion（v3/v4/v5/v6/v7）
+// 实现，把"记录格式"与"输出规则"混在一起。R12-A 起用本标识承担后者，K7 只负责前者。
+// 首个取值 "gen-1" 有意与旧的 K4 值 "1" 不同，使**存量缓存**一次性安全 miss（这正是
+// 本任务要修的行为：升级后无需 --no-cache 即可拿到新产物）。
+const generatorOutputRevision = "gen-1"
+
+// cacheIdentity 是 K4 的实际取值：语言版本 + 输出规则修订。
+// 只改取值、不改键的字段结构 ⇒ 不需要提升 cacheFormatVersion。
+func cacheIdentity() string {
+	if cacheIdentityOverride != "" {
+		return cacheIdentityOverride
+	}
+	return codegen.GoxmlVersion + "+" + generatorOutputRevision
+}
+
+// cacheIdentityOverride 是**仅测试用**接缝：让测试模拟「生成器输出规则升级」，
+// 端到端验证「修订变化 ⇒ 旧记录安全 miss」。生产代码从不写它（恒为空）。
+var cacheIdentityOverride string
 
 // cacheKeyInput 是缓存键的全部输入，均为**已解析的纯数据**。
 //
@@ -71,6 +115,10 @@ type cacheKeyInput struct {
 	BuildFlags string
 
 	// CompilerVersion 是生成器版本，即 K4。
+	//
+	// R12-A：K4 的取值改为 cacheIdentity()（= GXML 语言版本 + 内部断言输出修订
+	// generatorOutputRevision），使**生成器输出规则**变化时缓存键自然改变、旧记录
+	// 安全 miss，而不必再借用 K7 缓存格式版本或要求用户 --no-cache。
 	CompilerVersion string
 
 	// PackageSources 是目标包的相关 Go 源码指纹，即 K3。

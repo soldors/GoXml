@@ -627,14 +627,46 @@ def test_verdict(markers):
     return None
 
 
+def check_markers(stdout, stderr):
+    stdout_lines = stdout.decode('utf-8', 'replace').splitlines()
+    stderr_lines = stderr.decode('utf-8', 'replace').splitlines()
+    # The first top-level diagnostic identifies the failed phase. Paths and
+    # nested compiler diagnostics can contain the same words.
+    first_error = next((line for line in stderr_lines if line.startswith('goxml generate: ')), '')
+    return (
+        any(re.fullmatch(r'提交前检查通过：[1-9][0-9]* 个目标包', line) for line in stdout_lines),
+        first_error == 'goxml generate: 提交前检查失败：目标包未能通过编译（本批未写入任何产物/Manifest/缓存）',
+    )
+
+
+def observe_check_markers(stage):
+    """把 --check 的两个观察标记记到 generate 阶段上（成功/失败路径都要记）。
+
+    * checkReported：stdout 出现「提交前检查通过」（原生检查真的执行并成功）；
+    * checkFailureObserved：可信的退出码 2 与 stderr 的原生编译失败首行同时成立。
+    R12-C：只有两者都在失败路径上留痕，「参数已转发」与「原生检查已执行并失败」
+    才能在一键入口的报告里区分开。
+    """
+    passed, failed = check_markers(read_raw(stage.get('stdout')), read_raw(stage.get('stderr')))
+    stage['checkReported'] = passed
+    stage['checkFailureObserved'] = (
+        failed and stage['rcSource'] == 'observed' and stage['rc'] == 2 and stage['infraOk']
+    )
+
+
 def check_status(stages, requested):
     """Differentiate flag forwarding from a new CLI's observed check success."""
     if not requested:
         return {'forwarded': False}
     generated = [s for s in stages if s.get('name', '').startswith('generate:')]
-    if any(s.get('rc') != 0 or not s.get('infraOk') for s in generated):
-        return {'forwarded': True, 'passed': False,
-                'note': '生成子进程失败或收口未证，未证明提交前检查通过'}
+    if not any(s.get('started') for s in generated):
+        return {'forwarded': False, 'passed': None, 'note': '尚未启动带 --check 的生成子进程'}
+    failed = [s for s in generated if s.get('rc') != 0 or not s.get('infraOk')]
+    if failed:
+        note = '生成子进程失败或收口未证，未证明提交前检查通过'
+        if any(s.get('checkFailureObserved') for s in failed):
+            note = '生成子进程失败，且观察到原生提交前检查已执行并失败'
+        return {'forwarded': True, 'passed': False, 'note': note}
     if generated and all(s.get('checkReported') is True for s in generated):
         return {'forwarded': True, 'passed': True,
                 'note': '每个生成子进程均成功并输出提交前检查通过标记'}
@@ -726,10 +758,17 @@ def run(args, report, repo, project, module, out_dir, run_id):
             argv = [cli_path, 'generate', rel, '--out-dir', os.path.dirname(rel)]
             if args.check:
                 argv.append('--check')
-            stage = run_stage(report, procmod, 'generate:' + rel, argv,
-                              out_dir, log_dir, args.timeout, procmod.GO_ENV_FIXED)
+            try:
+                stage = run_stage(report, procmod, 'generate:' + rel, argv,
+                                  out_dir, log_dir, args.timeout, procmod.GO_ENV_FIXED)
+            except Refused:
+                # run_stage records a failed stage before raising Refused.
+                if args.check and report['stages'] and \
+                        report['stages'][-1].get('name') == 'generate:' + rel:
+                    observe_check_markers(report['stages'][-1])
+                raise
             if args.check:
-                stage['checkReported'] = '提交前检查通过' in read_raw(stage['stdout']).decode('utf-8', 'replace')
+                observe_check_markers(stage)
 
         # 3) 只构建窗口入口——**永不执行**（执行就会开原生窗口）
         entry = PROJECTS[project]['entry']

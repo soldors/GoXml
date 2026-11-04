@@ -86,3 +86,62 @@ func TestVMExprCrossPkgMissingModulePathErrors(t *testing.T) {
 		t.Fatal("跨包缺 ModulePath 应报错")
 	}
 }
+
+// R12-B：VM 声明在源目录之外（页面在 edit 包、VM 在 model 包）时，限定符必须取
+// VM 目录解析出的真实包名（VMPackageName），不得沿用源目录包名（ViewModelPackageName）。
+// 基线行为是 alias=ViewModelPackageName（页面包名）→ `import edit ".../model"`，
+// 可编译但误导阅读（R10 反例）。
+func TestVMExprCrossDirUsesVMPackageNameNotSourceName(t *testing.T) {
+	g := vmGen(Options{
+		ModulePath:           "example.com/m",
+		ViewModelPackageDir:  "view/edit",
+		OutputPackageDir:     "view/edit",
+		ViewModelPackageName: "edit", // 源目录真实包名——R12-B 前被错误用于 VM 限定符
+	}, analyzer.ViewModelRef{PkgDir: "model", Name: "VM", PackageName: "vmodel"})
+	got, err := g.vmTypeExpr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "vmodel.VM" {
+		t.Fatalf("跨目录 VM 限定符应取 VM 包真实名 vmodel.VM，实际 %q", got)
+	}
+	rendered := g.imports.render()
+	if !strings.Contains(rendered, `vmodel "example.com/m/model"`) {
+		t.Fatalf("应强制别名 import vmodel \"example.com/m/model\":\n%s", rendered)
+	}
+	if strings.Contains(rendered, `edit "`) || strings.Contains(rendered, `edit "example.com/m/model"`) {
+		t.Fatalf("源目录包名不得泄漏为 VM 限定符（R12-B 反例）:\n%s", rendered)
+	}
+}
+
+// VMPackageName 未接线（直接调用 Codegen 的库用户）时回退目录名：
+// 与 GXML 声明文法的限定符一致（用户写的就是 model.VM）。
+func TestVMExprCrossDirFallsBackToDirBase(t *testing.T) {
+	g := vmGen(Options{ModulePath: "example.com/m", OutputPackageDir: "out"},
+		analyzer.ViewModelRef{PkgDir: "model", Name: "VM"})
+	got, err := g.vmTypeExpr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "model.VM" || !strings.Contains(g.imports.render(), `model "example.com/m/model"`) {
+		t.Fatalf("无 VMPackageName 应回退目录名: %s\n%s", got, g.imports.render())
+	}
+}
+
+// 同包 VM（含 --out-dir 迁移）：ViewModelPackageName（源目录真实包名）仍是
+// VM 包名，行为不变——它只在同包分支使用。
+func TestVMExprSamePkgStillUsesSourcePkgName(t *testing.T) {
+	g := vmGen(Options{
+		ModulePath:           "example.com/m",
+		ViewModelPackageDir:  "view/edit",
+		OutputPackageDir:     "gen",
+		ViewModelPackageName: "editpkg",
+	}, analyzer.ViewModelRef{Name: "VM"})
+	got, err := g.vmTypeExpr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "editpkg.VM" || !strings.Contains(g.imports.render(), `editpkg "example.com/m/view/edit"`) {
+		t.Fatalf("同包 VM 应沿用源包名: %s\n%s", got, g.imports.render())
+	}
+}

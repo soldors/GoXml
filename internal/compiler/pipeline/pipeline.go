@@ -124,7 +124,8 @@ type Prepared struct {
 	Status analyzer.Status
 	Diags  []contracts.CompilerError
 	// modulePath 由前端构造类型环境时带出，Codegen 需要。
-	modulePath string
+	modulePath   string
+	packageNames map[string]string
 }
 
 // Prepare 只跑编译前端（parse→expand→analyze→verify），不进入 Codegen。
@@ -157,6 +158,12 @@ func (p *Prepared) Slots() (int, error) {
 		return 0, fmt.Errorf("编译前端未通过（状态 %v，%d 条诊断），无法确定绑定槽位数", st, n)
 	}
 	return codegen.CountBindSlots(p.Doc)
+}
+
+// SetPackageNames supplies output package declarations from naming precheck.
+// The map is shared read-only by all candidates targeting that package.
+func (p *Prepared) SetPackageNames(names map[string]string) {
+	p.packageNames = names
 }
 
 // RunPrepared 在已准备好的前端结果上执行 Codegen 并产出 Artifact。
@@ -194,6 +201,7 @@ func RunPrepared(p *Prepared, hooks Hooks) *Result {
 	}
 	opts.OutputPackageDir = relToModule(p.cfg.ModuleRoot, outDir)
 	opts.ViewModelPackageName = p.cfg.ViewModelPackageName
+	opts.PackageNames = p.packageNames
 	gen := hooks.Generate
 	if gen == nil {
 		gen = codegen.Generate

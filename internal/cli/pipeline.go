@@ -453,11 +453,14 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			BindSlotsKnown: slotsKnown,
 		})
 	}
-	diags, err := codegen.CheckNamingConflicts(targets)
+	diags, packageNames, err := codegen.InspectPackageNames(targets)
 	if err != nil {
 		return fmt.Errorf("包级符号预检失败: %w", err)
 	}
 	if len(diags) == 0 {
+		for _, r := range rs {
+			preparedFE[r].SetPackageNames(packageNames[filepath.Clean(r.targetDir)])
+		}
 		return nil
 	}
 	for _, dg := range diags {

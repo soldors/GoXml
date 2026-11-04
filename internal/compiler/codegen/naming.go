@@ -122,6 +122,10 @@ func generatedPackageSymbols(sourcePath string, bindSlots int, slotsKnown bool) 
 //   - 自己的上一版产物（OutputPath 指向的文件，或保护头 `// Source:` 归一化后等于本次 SourcePath 的生成物）；
 //   - `_test.go`（不参与构建）。
 func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
+	return inspectNamingConflicts(targets, nil)
+}
+
+func inspectNamingConflicts(targets []NamingTarget, packageNames map[string]map[string]string) ([]namingConflict, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
@@ -203,6 +207,9 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 		if err != nil {
 			return nil, err
 		}
+		if packageNames != nil {
+			packageNames[dir] = existing
+		}
 		for _, i := range idxs {
 			for _, sym := range symbolsByTarget[i] {
 				owner, taken := existing[sym]
@@ -256,15 +263,23 @@ func detectNamingConflicts(targets []NamingTarget) ([]namingConflict, error) {
 // 位置信息为零值：命名冲突是**包级**事实，不落在 .gxml 的某个行列，
 // `CompilerError.Error()` 会输出 `file:0:0: CODE: message`。
 func CheckNamingConflicts(targets []NamingTarget) ([]contracts.CompilerError, error) {
-	conflicts, err := detectNamingConflicts(targets)
+	diags, _, err := InspectPackageNames(targets)
+	return diags, err
+}
+
+// InspectPackageNames returns conflict diagnostics and the existing package
+// declarations in each output directory.
+func InspectPackageNames(targets []NamingTarget) ([]contracts.CompilerError, map[string]map[string]string, error) {
+	packageNames := make(map[string]map[string]string)
+	conflicts, err := inspectNamingConflicts(targets, packageNames)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]contracts.CompilerError, 0, len(conflicts))
 	for _, c := range conflicts {
 		out = append(out, conflictDiagnostic(c))
 	}
-	return out, nil
+	return out, packageNames, nil
 }
 
 // conflictDiagnostic 把一条冲突转成诊断（语义冻结于卡 §10.5.2）。
