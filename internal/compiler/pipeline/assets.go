@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,45 +49,9 @@ func validateAssets(v *analyzer.VerifiedDoc, cfg Config, file string) []contract
 
 	out := make([]contracts.CompilerError, 0, len(refs))
 	for _, ref := range refs {
-		full, err := assetPathInPackage(rootAbs, ref.Path)
-		if err != nil {
-			out = append(out, codegen.AssetPathDiagnostic(file, ref, err))
-			continue
-		}
-		// 边界证明先于任何内容读取。包内组件若是符号链接或 junction，
-		// 词法路径仍在包内但字节来自包外；此时直接结构化失败，不去解析
-		// 目标再判断（filepath.EvalSymlinks 对 Windows junction 会报错，
-		// 也可能返回未解析的 junction 叶而不报错，两者都不能当作证据）。
-		if err := assetBoundaryProblem(rootAbs, ref.Path); err != nil {
-			out = append(out, codegen.AssetPathDiagnostic(file, ref, err))
-			continue
-		}
-		// 拼写证明先于 Stat：大小写不敏感的平台会照常 Stat/ReadFile 成功，
-		// 生成的 //go:embed 要到大小写敏感平台的 go build 阶段才失败。
-		if err := assetSpellingProblem(rootAbs, ref.Path); err != nil {
-			out = append(out, codegen.AssetPathDiagnostic(file, ref, err))
-			continue
-		}
-		// 先 stat 再读：目录/设备文件不应进入 ReadFile；超大文件也不应
-		// 先被完整读进内存再被 ValidateAssetBytes 拒绝。
-		info, err := os.Stat(full)
-		if err != nil {
-			out = append(out, codegen.AssetReadDiagnostic(file, ref, err))
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			out = append(out, codegen.AssetReadDiagnostic(file, ref,
-				fmt.Errorf("%s is not a regular file", ref.Path)))
-			continue
-		}
-		if info.Size() > codegen.MaxAssetBytes {
-			out = append(out, contracts.NewError(file, ref.Span, codegen.CodeAssetLimit,
-				"asset %q is %d bytes; limit is %d", ref.Path, info.Size(), codegen.MaxAssetBytes))
-			continue
-		}
-		data, err := os.ReadFile(full)
-		if err != nil {
-			out = append(out, codegen.AssetReadDiagnostic(file, ref, err))
+		data, diag := readAssetBytes(rootAbs, file, ref)
+		if diag != nil {
+			out = append(out, *diag)
 			continue
 		}
 		if diag, invalid := codegen.ValidateAssetBytes(file, ref, data); invalid {
@@ -94,6 +59,69 @@ func validateAssets(v *analyzer.VerifiedDoc, cfg Config, file string) []contract
 		}
 	}
 	return out
+}
+
+// ReadAssetForFingerprint reads an asset through the same path and byte-budget
+// checks as the generation gate. Format validation remains in validateAssets.
+func ReadAssetForFingerprint(root, rel string) ([]byte, bool) {
+	norm, err := codegen.NormalizeAssetSrc(rel)
+	if err != nil || root == "" {
+		return nil, false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false
+	}
+	data, diag := readAssetBytes(rootAbs, "", codegen.AssetRef{Path: norm})
+	return data, diag == nil
+}
+
+func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contracts.CompilerError) {
+	full, err := assetPathInPackage(rootAbs, ref.Path)
+	if err == nil {
+		err = assetBoundaryProblem(rootAbs, ref.Path)
+	}
+	if err == nil {
+		err = assetSpellingProblem(rootAbs, ref.Path)
+	}
+	if err != nil {
+		d := codegen.AssetPathDiagnostic(file, ref, err)
+		return nil, &d
+	}
+	readError := func(err error) ([]byte, *contracts.CompilerError) {
+		d := codegen.AssetReadDiagnostic(file, ref, err)
+		return nil, &d
+	}
+	tooLarge := func(size int64) ([]byte, *contracts.CompilerError) {
+		d := contracts.NewError(file, ref.Span, codegen.CodeAssetLimit,
+			"asset %q is %d bytes; limit is %d", ref.Path, size, codegen.MaxAssetBytes)
+		return nil, &d
+	}
+
+	info, err := os.Stat(full)
+	if err != nil {
+		return readError(err)
+	}
+	if !info.Mode().IsRegular() {
+		return readError(fmt.Errorf("%s is not a regular file", ref.Path))
+	}
+	if info.Size() > codegen.MaxAssetBytes {
+		return tooLarge(info.Size())
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return readError(err)
+	}
+	defer f.Close()
+	// LimitReader keeps growth after Stat from bypassing the byte budget.
+	data, err := io.ReadAll(io.LimitReader(f, codegen.MaxAssetBytes+1))
+	if err != nil {
+		return readError(err)
+	}
+	if len(data) > codegen.MaxAssetBytes {
+		return tooLarge(int64(len(data)))
+	}
+	return data, nil
 }
 
 // assetPathInPackage 把归一化相对路径拼到包目录，并复核未逃逸。

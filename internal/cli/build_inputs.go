@@ -22,6 +22,7 @@ import (
 	"github.com/goxml/goxml/internal/compiler/codegen"
 	"github.com/goxml/goxml/internal/compiler/expander"
 	"github.com/goxml/goxml/internal/compiler/parser"
+	"github.com/goxml/goxml/internal/compiler/pipeline"
 )
 
 // buildInputsFingerprint 计算 GOFLAGS 引用的 overlay/modfile 内容指纹。
@@ -133,8 +134,7 @@ func buildInputsFingerprint(goflags, moduleRoot string) (string, bool) {
 //
 // 这里解析 .gxml 的 IR、收集 Page 中**静态** Src，按目标目录读取资产文件内容算指纹，
 // 使其进入缓存键：资产内容/尺寸/存在性变化 ⇒ 键变化 ⇒ 安全 miss ⇒ 门禁重新执行。
-// 解析失败/前端有诊断 ⇒ 返回 ok=true 且空指纹（不在此处抢报；让阶段一按既有语义处理）。
-// 无法读取资产（缺失/损坏）⇒ 指纹含"缺失/不可读"标记（键仍稳定），miss 后由门禁给正式诊断。
+// 资产路径或字节读取不可用时，调用方强制 miss，由阶段一门禁给出正式诊断。
 
 // assetRefsFromSource 解析并展开 .gxml，返回 Page 中按首次出现顺序的静态 Src（未去重）。
 func assetRefsFromSource(file string, src []byte) []string {
@@ -181,61 +181,24 @@ func assetRefsFromSource(file string, src []byte) []string {
 
 // assetsFingerprint 计算静态资产引用文件内容的稳定指纹（K12 分量）。
 // 返回空串表示页面无静态资产（无需额外分量）。
-func assetsFingerprint(file string, src []byte, targetDir string) string {
+func assetsFingerprint(file string, src []byte, targetDir string) (string, bool) {
 	srcs := assetRefsFromSource(file, src)
 	if len(srcs) == 0 {
-		return ""
+		return "", true
 	}
 	var b strings.Builder
 	b.WriteString("assets:\n")
 	for _, raw := range srcs {
 		norm, err := codegen.NormalizeAssetSrc(raw)
 		if err != nil {
-			// 非法 Src 不入指纹（门禁会按 ASSET-001 报错；此处不抢报）。
-			b.WriteString("invalid:" + raw + "\n")
-			continue
+			return "", false
 		}
-		full := filepath.Join(targetDir, filepath.FromSlash(norm))
-		data, rerr := os.ReadFile(full)
-		if rerr != nil {
-			// 缺失/不可读：记稳定标记，使"存在→缺失"改变键（=> miss => 门禁报错）。
-			b.WriteString("missing:" + norm + "\n")
-			continue
+		data, ok := pipeline.ReadAssetForFingerprint(targetDir, norm)
+		if !ok {
+			return "", false
 		}
 		sum := sha256.Sum256(data)
 		b.WriteString("asset:" + norm + "=" + hex.EncodeToString(sum[:]) + "\n")
-		// Windows 文件系统大小写不敏感：改错大小写时 ReadFile 仍成功、字节相同。
-		// 把**磁盘实际拼写**也纳入键，使大小写错拼触发安全 miss => 门禁按 ASSET-001 报错。
-		if actual, ok := onDiskSpelling(targetDir, norm); ok {
-			b.WriteString("spelling:" + norm + "=>" + actual + "\n")
-		}
 	}
-	return b.String()
-}
-
-// onDiskSpelling 返回 rel（/ 分隔）在 targetDir 下的**实际磁盘拼写**。
-// 逐段读取目录项并按大小写不敏感匹配，返回真实名字；用于让"大小写错拼"进入缓存键。
-func onDiskSpelling(targetDir, rel string) (string, bool) {
-	segs := strings.Split(rel, "/")
-	cur := targetDir
-	actual := make([]string, 0, len(segs))
-	for _, seg := range segs {
-		entries, err := os.ReadDir(cur)
-		if err != nil {
-			return "", false
-		}
-		found := ""
-		for _, e := range entries {
-			if strings.EqualFold(e.Name(), seg) {
-				found = e.Name()
-				break
-			}
-		}
-		if found == "" {
-			return "", false
-		}
-		actual = append(actual, found)
-		cur = filepath.Join(cur, found)
-	}
-	return strings.Join(actual, "/"), true
+	return b.String(), true
 }

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goxml/goxml/internal/compiler/codegen"
 )
 
 func r16PNG(t *testing.T, w, h int) []byte {
@@ -128,17 +130,26 @@ func TestAssetFingerprintUnit(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a", "logo.png"), "AAAA")
 	src := []byte(`<Goxml Version="1"><Page Route="/"><Image Src="a/logo.png"/></Page></Goxml>`)
-	f1 := assetsFingerprint("home.gxml", src, root)
-	if f1 == "" {
+	f1, ok := assetsFingerprint("home.gxml", src, root)
+	if !ok || f1 == "" {
 		t.Fatal("含静态资产应有指纹")
 	}
 	// 无资产
-	if got := assetsFingerprint("home.gxml", []byte(`<Goxml Version="1"><Page Route="/"><Text Value="x"/></Page></Goxml>`), root); got != "" {
+	if got, ok := assetsFingerprint("home.gxml", []byte(`<Goxml Version="1"><Page Route="/"><Text Value="x"/></Page></Goxml>`), root); !ok || got != "" {
 		t.Fatalf("无资产应为空指纹: %q", got)
 	}
 	// 内容变化 -> 指纹变化
 	mustWrite(t, filepath.Join(root, "a", "logo.png"), "BBBB")
-	if f2 := assetsFingerprint("home.gxml", src, root); f2 == f1 {
+	if f2, ok := assetsFingerprint("home.gxml", src, root); !ok || f2 == f1 {
 		t.Fatal("资产内容变化应改变指纹")
+	}
+}
+
+func TestAssetCacheIdentity_OversizedAssetIsUnsafe(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, filepath.Join(root, "large.png"), make([]byte, codegen.MaxAssetBytes+1))
+	src := []byte(`<Goxml Version="1"><Page Route="/"><Image Src="large.png"/></Page></Goxml>`)
+	if fp, ok := assetsFingerprint("home.gxml", src, root); ok || fp != "" {
+		t.Fatalf("oversized asset must disable cache lookup: ok=%v fp=%q", ok, fp)
 	}
 }
