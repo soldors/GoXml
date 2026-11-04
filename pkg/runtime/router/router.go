@@ -263,9 +263,16 @@ func (r *Router) drain() {
 		r.mu.Lock()
 		n := len(r.queue)
 		r.queue = nil
+		pending := r.pendingNav
 		r.hasPending = false
 		r.pendingNav = ""
 		r.mu.Unlock()
+		// R16-B（F-02 口径统一）：drain 侧丢弃的 pendingNav 也是「被丢弃的
+		// 请求」，与入口侧丢弃、队列丢弃共用 DroppedCount 口径（线程模型 §4：
+		// 丢弃并记录诊断——B1 独立验收报告 F-02 的复现与修复）。
+		if pending != "" {
+			n++
+		}
 		r.dropped.Add(int64(n))
 		return
 	}
