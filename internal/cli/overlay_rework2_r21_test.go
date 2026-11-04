@@ -35,6 +35,20 @@ func TestR21OverlayEmptyKeyFailClosed(t *testing.T) {
 	}
 }
 
+func TestR21OverlayPreservesPathCase(t *testing.T) {
+	root := t.TempDir()
+	r21Write(t, filepath.Join(root, "overlay.json"),
+		`{"Replace":{"Other/file.go":"missing-a.go","other/file.go":"missing-b.go"}}`)
+	got, err := userOverlayMap("-overlay=overlay.json", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[filepath.Join(root, "Other", "file.go")] != filepath.Join(root, "missing-a.go") ||
+		got[filepath.Join(root, "other", "file.go")] != filepath.Join(root, "missing-b.go") {
+		t.Fatalf("overlay keys with different case must keep their own mappings: %v", got)
+	}
+}
+
 // TestR21OverlayUnusedMissingReplacementNotBlocking ③：未选中缺失替换不阻断；返回路径映射不预读。
 func TestR21OverlayUnusedMissingReplacementNotBlocking(t *testing.T) {
 	root := t.TempDir()

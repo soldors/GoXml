@@ -25,9 +25,11 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -404,8 +406,8 @@ func userOverlayMap(flags, moduleRoot string) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(cfg.Replace))
 	seenFrom := make(map[string]string, len(cfg.Replace)) // normFrom -> 原始 from（诊断）
-	for rawFrom, to := range cfg.Replace {
-		if strings.TrimSpace(rawFrom) == "" {
+	for _, rawFrom := range slices.Sorted(maps.Keys(cfg.Replace)) {
+		if rawFrom == "" {
 			return nil, fmt.Errorf("用户 overlay 含空路径键（overlay %s）", path)
 		}
 		norm := rawFrom
@@ -413,11 +415,12 @@ func userOverlayMap(flags, moduleRoot string) (map[string]string, error) {
 			norm = filepath.Join(moduleRoot, norm)
 		}
 		norm = filepath.Clean(norm)
-		if prev, dup := seenFrom[strings.ToLower(norm)]; dup {
+		// Go compares absolute overlay keys exactly, even on Windows.
+		if prev, dup := seenFrom[norm]; dup {
 			return nil, fmt.Errorf("用户 overlay 路径归一化后重复：%q 与 %q（overlay %s）", prev, rawFrom, path)
 		}
-		seenFrom[strings.ToLower(norm)] = rawFrom
-		toNorm := to
+		seenFrom[norm] = rawFrom
+		toNorm := cfg.Replace[rawFrom]
 		if toNorm != "" && !filepath.IsAbs(toNorm) {
 			toNorm = filepath.Join(moduleRoot, toNorm)
 		}
