@@ -110,6 +110,21 @@ func TestAssetGateBeforeAnalyzer_UnrelatedVMErrorPreserved(t *testing.T) {
 	}
 }
 
+func TestAssetGateBeforeAnalyzer_AssetAndVMErrors(t *testing.T) {
+	root := p17Project(t, true)
+	mustWriteFile(t, filepath.Join(root, "vm.go"), "package ui\n\ntype VM struct{ Title string }\n\nfunc (v *VM) Inc() { var _ int = \"bad\" }\n")
+	src, err := os.ReadFile(filepath.Join(root, "home.gxml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ModuleRoot: root, SourceDir: root, TargetDir: root, PackageName: "ui", SourcePath: "home.gxml"}
+	prepared := Prepare("home.gxml", src, cfg, Hooks{})
+	got := codesOf(RunPrepared(prepared, Hooks{}).Diags)
+	if len(got) != 1 || got[0] != "CODEGEN-ASSET-002" {
+		t.Fatalf("资产和 VM 同时出错时应先报资产错误，实际诊断：%v", got)
+	}
+}
+
 // p17PNG 生成一张最小合法 PNG。
 func p17PNG(t *testing.T, w, h int) []byte {
 	t.Helper()
