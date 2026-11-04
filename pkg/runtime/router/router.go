@@ -153,11 +153,12 @@ func (r *Router) Register(path string, f PageFactory) error {
 // 异步语义：待定导航在下一帧由 UI 线程应用；页面创建失败时本次导航
 // 整体放弃并记录 NavError（见 PageFactory）。
 func (r *Router) Navigate(path string) error {
-	if r.rootCtx.Err() != nil {
-		r.dropped.Add(1)
-		return fmt.Errorf("router: 已关闭: %w", r.rootCtx.Err())
-	}
 	r.mu.Lock()
+	if err := r.rootCtx.Err(); err != nil {
+		r.mu.Unlock()
+		r.dropped.Add(1)
+		return fmt.Errorf("router: 已关闭: %w", err)
+	}
 	_, ok := r.registry[path]
 	if !ok {
 		r.mu.Unlock()
@@ -204,11 +205,12 @@ func (r *Router) Dispatch(fn func()) {
 	if fn == nil {
 		return
 	}
+	r.mu.Lock()
 	if r.rootCtx.Err() != nil {
+		r.mu.Unlock()
 		r.dropped.Add(1)
 		return
 	}
-	r.mu.Lock()
 	r.queue = append(r.queue, fn)
 	inv := r.inv
 	r.mu.Unlock()
@@ -243,10 +245,11 @@ func (r *Router) SetInvalidator(inv Invalidator) error {
 	return nil
 }
 
-// shutdown 是一次性关闭的隔离原型（R17-B candidateRef）：幂等包装
-// rootCancel，语义与 N 次调用 rootCancel 等价。**未导出**——导出公开
-// Shutdown() 属 B2 任务卡草案 B2-1，前置门槛 G1（负责人批准）未满足。
+// shutdown 是隔离原型。关闭与导航结果提交共用状态锁，只有显式经过
+// shutdown 的取消受该顺序保证。rootCancel 幂等。
 func (r *Router) shutdown() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.rootCancel()
 }
 
@@ -323,20 +326,21 @@ func (r *Router) applyNavigation() {
 	ctx, cancel := context.WithCancel(r.rootCtx)
 	// 不持锁调用工厂：页面构造函数允许回查 Current / NavError。
 	page, err := factory(ctx)
-	if err != nil {
-		cancel()
-		r.setNavErr(fmt.Errorf("router: 导航到 %q 失败: %w", req, err))
-		return
-	}
-	// R17-B candidateRef（决策表「取消顺序」原型）：工厂执行期间根 Context
-	// 被取消时，放弃刚构造的页面（其 Context 已随根死亡），按丢弃计数并
-	// 保持旧页运行——待裁决后再定稿语义，未批准前不进 readyRef。
+	// 复查和发布共享同一临界区。显式关闭在先时，成功和失败结果都
+	// 作为一次丢弃，保持当前页和最近一次导航错误。
+	r.mu.Lock()
 	if r.rootCtx.Err() != nil {
+		r.mu.Unlock()
 		cancel()
 		r.dropped.Add(1)
 		return
 	}
-	r.mu.Lock()
+	if err != nil {
+		r.navErr = fmt.Errorf("router: 导航到 %q 失败: %w", req, err)
+		r.mu.Unlock()
+		cancel()
+		return
+	}
 	oldCancel := r.pageCancel
 	r.current = req
 	r.page = page
