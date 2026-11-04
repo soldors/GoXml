@@ -1,6 +1,8 @@
 //go:build goxml_router_native_window
 
-// This test opens a native window and is only for explicitly authorized runs.
+// F-06 方案 A：仅外部测试包 router_test 可导入 pkg/runtime/app。
+// 生产包和包内测试保持独立。本用例会创建原生窗口，仅在授权运行时
+// 显式启用 goxml_router_native_window 构建标签。
 
 package router_test
 
