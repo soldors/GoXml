@@ -103,17 +103,30 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 			}
 			ov = o
 		}
-		// 统计非自有 Go 源文件（排除 overlay 覆盖的旧产物、_test.go）。
+		// 统计非自有 Go 源文件：仅排除**工具自有旧产物**（其 overlay 替换为
+		// //go:build ignore 标记），不排除用户 overlay 的替换/新增（那是用户真实输入）。
 		count := 0
 		for _, e := range entries {
 			n := e.Name()
 			if e.IsDir() || filepath.Ext(n) != ".go" || strings.HasSuffix(n, "_test.go") {
 				continue
 			}
-			if _, owned := ov[filepath.Join(d, n)]; owned {
+			if isOwnedOldArtifact(ov[filepath.Join(d, n)]) {
 				continue
 			}
 			count++
+		}
+		// 用户 overlay 新增（磁盘不存在）的 Go 文件也算真实用户源。
+		for from, data := range ov {
+			if isOwnedOldArtifact(data) {
+				continue
+			}
+			if filepath.Dir(filepath.Clean(from)) != filepath.Clean(d) {
+				continue
+			}
+			if _, err := os.Stat(from); os.IsNotExist(err) {
+				count++
+			}
 		}
 		if count == 0 {
 			// 无真实用户源（全为旧产物/测试/空）→ 未初始化。
@@ -138,6 +151,10 @@ func resolveOneChunk(goExe, moduleRoot string, env []string, chunk []string, ove
 	if len(mergedOverlay) > 0 {
 		repl := make(map[string]string, len(mergedOverlay))
 		for p, b := range mergedOverlay {
+			if b == nil {
+				repl[p] = ""
+				continue
+			}
 			tmp, terr := writeOverlayReplacementFile(b)
 			if terr != nil {
 				return fmt.Errorf("写 overlay 替换文件失败: %w", terr)
@@ -253,12 +270,21 @@ func validateBatchObject(dir string, p goListPkgObj, overlay map[string][]byte) 
 			return "", nil, fmt.Errorf("invalid selected Go filename %q", filename)
 		}
 		full := filepath.Join(dir, filename)
-		data, err := readPackageFile(full)
-		if err != nil {
-			return "", nil, fmt.Errorf("读取包源码 %s: %w", full, err)
-		}
+		// R21-A：overlay 优先（与单查/ go list / go build 一致），支持 overlay 新增文件。
+		var data []byte
 		if replacement, ok := overlay[full]; ok {
+			if replacement == nil {
+				// 用户 overlay 删除（空目标）：该文件应视为不存在。go list 通常已排除；
+				// 若仍列出则跳过包子句校验，避免把「删除」误判成非法包。
+				continue
+			}
 			data = replacement
+		} else {
+			rd, err := readPackageFile(full)
+			if err != nil {
+				return "", nil, fmt.Errorf("读取包源码 %s: %w", full, err)
+			}
+			data = rd
 		}
 		parsed, perr := parser.ParseFile(token.NewFileSet(), full, data, parser.PackageClauseOnly)
 		if perr != nil {

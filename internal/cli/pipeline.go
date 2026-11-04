@@ -112,7 +112,9 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		return manErr
 	}
 	overlayForDir := func(dir string) (map[string][]byte, error) {
-		return targetNameOverlay(moduleRoot, nameMan, dir)
+		// R21-A：并入 GOFLAGS/GOENV 的用户 overlay（工具自有旧产物优先），
+		// 使定名阶段的 go list 与逐文件校验同 go build/--check 口径一致。
+		return effectiveTargetOverlay(moduleRoot, nameMan, dir, ctxValues.GOFLAGS)
 	}
 	// R10-A：阶段零已知目标集合后，先批量（有界分组）go list -e -json 解析全部已初始化
 	// 目标目录，把「每目录一次」降为「有界批次」。批量结果按 Dir 归因、逐目录严格校验；
