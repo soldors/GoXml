@@ -21,6 +21,69 @@ func imageSrc(asset string) []byte {
 	return []byte(`<Goxml Version="1"><Page Route="/"><Image Src="` + asset + `" Width="16" Height="16"/></Page></Goxml>`)
 }
 
+func TestImageFingerprintUsesAssetBoundary(t *testing.T) {
+	root := t.TempDir()
+	valid := pipelineTestPNG(t, 2, 2)
+	mustWriteFile(t, filepath.Join(root, "logo.png"), string(valid))
+	mustWriteFile(t, filepath.Join(root, "large.png"), string(make([]byte, codegen.MaxAssetBytes+1)))
+	if err := os.Mkdir(filepath.Join(root, "directory.png"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := ReadAssetForFingerprint(root, "logo.png"); !ok || !bytes.Equal(got, valid) {
+		t.Fatalf("合法资产的缓存指纹应读取原始字节，ok=%v", ok)
+	}
+	for _, path := range []string{"LOGO.png", "missing.png", "large.png", "directory.png", "../logo.png"} {
+		t.Run(path, func(t *testing.T) {
+			if data, ok := ReadAssetForFingerprint(root, path); ok || data != nil {
+				t.Fatalf("无效路径不得提供缓存指纹，ok=%v bytes=%d", ok, len(data))
+			}
+		})
+	}
+	if data, ok := ReadAssetForFingerprint("", "logo.png"); ok || data != nil {
+		t.Fatalf("缺少目标目录时不得提供缓存指纹，ok=%v bytes=%d", ok, len(data))
+	}
+}
+
+func TestPreparedImageRechecksAssetBeforeGeneration(t *testing.T) {
+	cfg := baseCfg(t)
+	cfg.TargetDir = t.TempDir()
+	path := filepath.Join(cfg.TargetDir, "logo.png")
+	mustWriteFile(t, path, string(pipelineTestPNG(t, 2, 2)))
+	src := []byte(`<Goxml Version="1"><Page Route="/"><Column><Image Src="logo.png"/><Image Src="logo.png"/></Column></Page></Goxml>`)
+
+	p := Prepare("dashboard.gxml", src, cfg, Hooks{})
+	if p.Doc == nil || p.AssetCount() != 1 {
+		t.Fatalf("两个相同 Src 只应准备一个资产，诊断: %v", p.Diags)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	result := RunPrepared(p, Hooks{})
+	if result.OK() {
+		t.Fatal("准备后被删除的资产不应生成产物")
+	}
+	assertDiagCode(t, result, codegen.CodeAssetLoad)
+
+	missing := Prepare("dashboard.gxml", src, cfg, Hooks{})
+	if missing.Doc != nil || missing.AssetCount() != 0 {
+		t.Fatalf("前置校验失败的页面不应参与命名预检，诊断: %v", missing.Diags)
+	}
+}
+
+func TestImageGateRejectsMissingAssetDirectory(t *testing.T) {
+	cfg := baseCfg(t)
+	cfg.SourceDir, cfg.TargetDir = "", ""
+	result := Run("dashboard.gxml", imageSrc("logo.png"), cfg, Hooks{})
+	if result.OK() {
+		t.Fatal("缺少资产目录不应生成产物")
+	}
+	assertDiagCode(t, result, codegen.CodeAssetLoad)
+	if !strings.Contains(strings.Join(msgs(result), "\n"), "target package directory is not configured") {
+		t.Fatalf("应明确指出缺少资产目录，诊断: %v", msgs(result))
+	}
+}
+
 func TestRunImageAssetGate(t *testing.T) {
 	cfg := baseCfg(t)
 	cfg.TargetDir = t.TempDir()
