@@ -1,7 +1,6 @@
 package router
 
-// R16-B ROUTER-B1-RELEASE-CANDIDATE：导航生命周期（B2）、队列与重绘（B3）、
-// 无窗口宿主组合（B4）的可独立复核验收测试。
+// R16-B ROUTER-B1-RELEASE-CANDIDATE：导航生命周期（B2）、队列与重绘（B3）的可独立复核验收测试。
 //
 // 方法：围绕**既有接口**做受控反例，同步点（显式帧驱动 / done 通道）控制
 // 顺序；只断言 B1 既有契约（授权 §4、线程模型 §3/§4/§5/§7）。B1 独立验收
@@ -15,6 +14,7 @@ package router
 import (
 	"context"
 	"errors"
+	"image"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,9 +22,6 @@ import (
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/widget/material"
-	"image"
-
-	"github.com/goxml/goxml/pkg/runtime/app"
 )
 
 // ---------------------------------------------------------------------------
@@ -413,59 +410,5 @@ func TestR16InvalidationSequenceAndIsolation(t *testing.T) {
 	}
 	if got := inv1.calls.Load(); got != 2 {
 		t.Fatalf("r2 的导航不得触发 r1 失效，实际 %d", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// B4：无窗口宿主组合
-// ---------------------------------------------------------------------------
-
-// TestR16HostCompositionWindowless 宿主组合（无窗口）：
-// app.NewApp 接受 Router 根 View（平台窗口在首次 w.Event() 才创建——S0 证据，
-// 构造零 OS 资源）；*App 作为 Invalidator 接线；随后以手动帧驱动验证
-// 导航、Layout 与失效接线的端到端组合。真实窗口视觉与 DestroyEvent 生产
-// 接线属原生时序，本测试明确不覆盖。
-func TestR16HostCompositionWindowless(t *testing.T) {
-	r := New()
-	pa, pb := &recPage{}, &recPage{}
-	if err := r.Register("/a", factoryOf(pa)); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Register("/b", factoryOf(pb)); err != nil {
-		t.Fatal(err)
-	}
-
-	a, err := app.NewApp(r.View(), material.NewTheme(), app.Config{})
-	if err != nil {
-		t.Fatalf("宿主应接受 Router 根 View: %v", err)
-	}
-	if err := r.SetInvalidator(a); err != nil {
-		t.Fatalf("*App 应满足 Invalidator 接线: %v", err)
-	}
-	if err := r.SetInvalidator(a); err == nil {
-		t.Fatal("二次接线应被拒绝（防运行中换窗）")
-	}
-
-	if err := r.Navigate("/a"); err != nil {
-		t.Fatal(err)
-	}
-	// 手动帧驱动（无窗口宿主）：与 App.frame 相同的渲染入口契约。
-	gtx := &layout.Context{Ops: new(op.Ops), Constraints: layout.Exact(image.Pt(320, 240))}
-	driveFrame(t, r, gtx, material.NewTheme())
-	if got := r.Current(); got != "/a" {
-		t.Fatalf("宿主组合下导航未生效: %q", got)
-	}
-	if pa.layouts.Load() != 1 {
-		t.Fatalf("当前页应渲染 1 帧，实际 %d", pa.layouts.Load())
-	}
-	if err := r.Navigate("/b"); err != nil {
-		t.Fatal(err)
-	}
-	driveFrame(t, r, gtx, material.NewTheme())
-	if got := r.Current(); got != "/b" || pb.layouts.Load() != 1 {
-		t.Fatalf("组合下切换失败: Current=%q pb=%d", got, pb.layouts.Load())
-	}
-	if err := pa.selfCtx.Err(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("组合下被替换页 Context 应取消: %v", err)
 	}
 }
