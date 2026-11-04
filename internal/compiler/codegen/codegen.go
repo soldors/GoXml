@@ -1008,7 +1008,7 @@ func (g *generator) assemble(body string) (string, error) {
 		for _, p := range g.assets {
 			b.WriteString("//go:embed " + quote(p) + "\n")
 		}
-		b.WriteString("var " + g.assetVar + " embed.FS\n\n")
+		b.WriteString("var " + g.assetVar + " " + g.q("embed", "embed") + ".FS\n\n")
 	}
 	b.WriteString("// " + g.view + " 是 " + baseName(g.opts.SourcePath) + " 的生成视图。\n")
 	b.WriteString("type " + g.view + " struct {\n")
@@ -1060,7 +1060,7 @@ func (g *generator) assemble(body string) (string, error) {
 	// 静态 Image 资产：构造期解码一次，Layout 只回放 ImageOp。
 	for i, p := range g.assets {
 		b.WriteString(fmt.Sprintf("\t// img%d 是 <Image Src=%q> 的解码结果。\n", i, p))
-		b.WriteString(fmt.Sprintf("\timg%d paint.ImageOp\n", i))
+		b.WriteString(fmt.Sprintf("\timg%d %s.ImageOp\n", i, g.q("gioui.org/op/paint", "paint")))
 	}
 	b.WriteString("}\n\n")
 	// 构造函数：按页面类型分两种形态（状态更新契约 §1.4）。
@@ -1088,7 +1088,7 @@ func (g *generator) assemble(body string) (string, error) {
 		b.WriteString("\t}\n")
 		if len(g.assets) > 0 {
 			b.WriteString("\tv := &" + g.view + "{vm: vm}\n")
-			writeImageDecode(&b, g.assets, g.assetVar, "\t", true)
+			g.writeImageDecode(&b, "\t", true)
 			b.WriteString("\treturn v, nil\n")
 		} else {
 			b.WriteString("\treturn &" + g.view + "{vm: vm}, nil\n")
@@ -1176,7 +1176,7 @@ func (v *`+g.view+`) rowClick%d(key %s) *`+qw+`.Clickable {
 	if len(g.assets) > 0 {
 		b.WriteString("func New" + g.view + "() *" + g.view + " {\n")
 		b.WriteString("\tv := &" + g.view + "{}\n")
-		writeImageDecode(&b, g.assets, g.assetVar, "\t", false)
+		g.writeImageDecode(&b, "\t", false)
 		b.WriteString("\treturn v\n")
 		b.WriteString("}\n\n")
 	} else {
@@ -1280,7 +1280,8 @@ func (g *generator) vmTypeExpr() (string, error) {
 		// Reserve generated names even when sibling outputs are not part of this batch.
 		// Otherwise a warm sibling alias can conflict with a newly generated declaration.
 		if (strings.HasPrefix(alias, "Goxml") || strings.HasPrefix(alias, "NewGoxml")) && strings.HasSuffix(alias, "View") ||
-			strings.HasPrefix(alias, "goxmlRenderKey") || strings.HasPrefix(alias, "goxmlTextCache") {
+			strings.HasPrefix(alias, "goxmlRenderKey") || strings.HasPrefix(alias, "goxmlTextCache") ||
+			strings.HasPrefix(alias, "goxmlAssets") {
 			alias = "vm_" + alias
 		}
 		preferred := alias

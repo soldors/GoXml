@@ -217,6 +217,10 @@ func TestGenerateImageWithImportConflict(t *testing.T) {
 var image = 1
 var layout = 2
 var paint = 3
+var widget = 4
+var bytes = 5
+var embed = 6
+var fmt = 7
 `
 	if err := os.WriteFile(filepath.Join(dir, "user_conflict.go"), []byte(user), 0o644); err != nil {
 		t.Fatal(err)
@@ -238,7 +242,7 @@ var paint = 3
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	code := Run([]string{"generate", filepath.Join(dir, "home.gxml")}, &out, &errb)
+	code := Run([]string{"generate", filepath.Join(dir, "home.gxml"), "--check"}, &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("含导入冲突的工程应成功（R14 别名消歧），rc=%d；stderr:\n%s", code, errb.String())
 	}

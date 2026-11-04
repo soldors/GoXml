@@ -13,8 +13,7 @@ import (
 // 的红线冲突，因此明确拒绝而不是生成一个空占位。
 //
 // 尺寸（Width/Height）由外层 sizeWrap 统一处理；这里只回答「用哪个 Gio 原语」。
-// Fit 固定为 Contain：在用户给定尺寸内等比缩放且不裁剪；Position 居中。
-// 若将来需要 Cover/平铺，应新增显式属性并走契约变更，不得在这里猜测。
+// Fit 默认 Contain，支持静态 Cover 和 Unscaled；Position 居中。
 func (g *generator) imageExpr(n *contracts.NodeIR) (string, error) {
 	if len(n.Children) > 0 {
 		return "", fmt.Errorf("codegen: <Image> must not have children")
@@ -59,9 +58,9 @@ func (g *generator) imageExpr(n *contracts.NodeIR) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	g.imports.add("gioui.org/widget", "widget")
 	return fmt.Sprintf(
-		"widget.Image{Src: v.img%d, Fit: %s, Position: layout.Center}.Layout(gtx)", slot, fitExpr), nil
+		"%s.Image{Src: v.img%d, Fit: %s, Position: %s.Center}.Layout(gtx)",
+		g.q("gioui.org/widget", "widget"), slot, fitExpr, g.q("gioui.org/layout", "layout")), nil
 }
 
 // imageFitExpr 把静态 Fit 属性映射为 Gio widget.Fit 标识符。
@@ -78,16 +77,17 @@ func (g *generator) imageFitExpr(n *contracts.NodeIR) (string, error) {
 		}
 	}
 	raw, ok := staticAttr(n, "Fit")
+	widget := g.q("gioui.org/widget", "widget")
 	if !ok {
-		return "widget.Contain", nil
+		return widget + ".Contain", nil
 	}
 	switch strings.TrimSpace(raw) {
 	case "Contain":
-		return "widget.Contain", nil
+		return widget + ".Contain", nil
 	case "Cover":
-		return "widget.Cover", nil
+		return widget + ".Cover", nil
 	case "Unscaled":
-		return "widget.Unscaled", nil
+		return widget + ".Unscaled", nil
 	default:
 		return "", contracts.NewError(g.opts.SourcePath, n.Span, "",
 			"<Image Fit> expects Contain, Cover or Unscaled, got %q", raw)
@@ -103,29 +103,32 @@ func (g *generator) imageFitExpr(n *contracts.NodeIR) (string, error) {
 // 失败只能 panic。该失败在正常链路不可达：pipeline 已在生成前用
 // image.DecodeConfig 校验过同一批字节；panic 是生成文件被篡改/损坏的
 // 不变式护栏，不是用户输入错误处理路径。
-func writeImageDecode(b *strings.Builder, assets []string, assetVar, indent string, returnsError bool) {
-	for i, p := range assets {
+func (g *generator) writeImageDecode(b *strings.Builder, indent string, returnsError bool) {
+	bytesPkg := g.q("bytes", "bytes")
+	imagePkg := g.q("image", "image")
+	paintPkg := g.q("gioui.org/op/paint", "paint")
+	for i, p := range g.assets {
 		raw := fmt.Sprintf("raw%d", i)
 		img := fmt.Sprintf("img%d", i)
 		pathLit := quote(p)
 
-		b.WriteString(indent + raw + ", err := " + assetVar + ".ReadFile(" + pathLit + ")\n")
+		b.WriteString(indent + raw + ", err := " + g.assetVar + ".ReadFile(" + pathLit + ")\n")
 		b.WriteString(indent + "if err != nil {\n")
 		if returnsError {
-			b.WriteString(indent + "\treturn nil, fmt.Errorf(\"goxml: read embedded asset %q: %w\", " + pathLit + ", err)\n")
+			b.WriteString(indent + "\treturn nil, " + g.q("fmt", "fmt") + ".Errorf(\"goxml: read embedded asset %q: %w\", " + pathLit + ", err)\n")
 		} else {
 			b.WriteString(indent + "\tpanic(\"goxml: read embedded asset \" + " + pathLit + " + \": \" + err.Error())\n")
 		}
 		b.WriteString(indent + "}\n")
 
-		b.WriteString(indent + img + ", _, err := image.Decode(bytes.NewReader(" + raw + "))\n")
+		b.WriteString(indent + img + ", _, err := " + imagePkg + ".Decode(" + bytesPkg + ".NewReader(" + raw + "))\n")
 		b.WriteString(indent + "if err != nil {\n")
 		if returnsError {
-			b.WriteString(indent + "\treturn nil, fmt.Errorf(\"goxml: decode embedded asset %q: %w\", " + pathLit + ", err)\n")
+			b.WriteString(indent + "\treturn nil, " + g.q("fmt", "fmt") + ".Errorf(\"goxml: decode embedded asset %q: %w\", " + pathLit + ", err)\n")
 		} else {
 			b.WriteString(indent + "\tpanic(\"goxml: decode embedded asset \" + " + pathLit + " + \": \" + err.Error())\n")
 		}
 		b.WriteString(indent + "}\n")
-		b.WriteString(indent + "v.img" + fmt.Sprint(i) + " = paint.NewImageOp(" + img + ")\n")
+		b.WriteString(indent + "v.img" + fmt.Sprint(i) + " = " + paintPkg + ".NewImageOp(" + img + ")\n")
 	}
 }
