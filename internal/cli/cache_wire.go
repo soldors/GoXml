@@ -255,6 +255,12 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 			}
 		}
 	}
+	// K12（R16-A）：<Image Src> 静态资产文件内容也进键——避免"资产被删/改坏/改错大小写"
+	// 时缓存假命中、跳过资产门禁。资产内容/存在性变化 ⇒ 键变化 ⇒ 安全 miss ⇒ 门禁重跑。
+	// 无静态资产时 assetsFingerprint 返回空串，不影响普通工程。
+	if af := assetsFingerprint(r.sourcePath, r.source, r.targetDir); af != "" {
+		buildInputs = buildInputs + af
+	}
 	return cacheKey(cacheKeyInput{
 		SourceRel:         r.sourceRel,
 		OutputRel:         r.outputRel,
