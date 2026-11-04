@@ -58,7 +58,21 @@ type AssetRef struct {
 // 只遍历 Page：未使用的 <Def> 体内的 Image 不应进入 manifest 或二进制。
 // 绑定 Src 不在此返回——它会在 Codegen 的 imageExpr 中被明确拒绝。
 func AssetRefs(v *analyzer.VerifiedDoc) []AssetRef {
-	if v == nil || v.Document() == nil || v.Document().Page == nil {
+	if v == nil || v.Document() == nil {
+		return nil
+	}
+	return AssetRefsFromDoc(v.Document())
+}
+
+// AssetRefsFromDoc 是 AssetRefs 的 IR 版本：在**仅展开、尚未类型检查**的
+// DocumentIR 上收集静态 Image 资产引用。
+//
+// 存在理由（R17-A）：绑定页的 VM 包若因**旧生成文件的 //go:embed 指向已删除资产**
+// 而加载失败，Analyzer 会先报 GXML-ROOT-002，把资产缺失错误地归到 VM 加载上。
+// 在 Analyzer 之前用本函数跑资产门禁，可让「资产缺失/损坏」得到 CODEGEN-ASSET-*
+// 的准确归属；其它（与资产无关的）VM/Go 加载错误不受影响，仍由 Analyzer 原样报出。
+func AssetRefsFromDoc(doc *contracts.DocumentIR) []AssetRef {
+	if doc == nil || doc.Page == nil {
 		return nil
 	}
 	seen := make(map[string]bool)
@@ -88,7 +102,7 @@ func AssetRefs(v *analyzer.VerifiedDoc) []AssetRef {
 			}
 		}
 	}
-	walk(v.Document().Page)
+	walk(doc.Page)
 	return out
 }
 

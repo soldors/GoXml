@@ -335,6 +335,17 @@ func frontEnd(file string, src []byte, cfg Config, hooks Hooks) (*analyzer.Verif
 		return nil, res
 	}
 
+	// ---- 2b. 资产门禁（R17-A：先于 Analyzer）----
+	//
+	// 绑定页的 VM 包若因**旧生成文件 //go:embed 指向已删除资产**而加载失败，Analyzer
+	// 会先报 GXML-ROOT-002，把资产缺失错误归到 VM 加载上（真实复现见 R17-A 证据）。
+	// 此处先用展开后的 IR 做资产门禁：资产缺失/损坏 -> CODEGEN-ASSET-*，归因准确；
+	// 与资产无关的 VM/Go 加载错误不会被误判（那时资产校验通过，交由 Analyzer 原样报出）。
+	if diags := validateAssetsDoc(er.Doc, cfg, file); len(diags) > 0 {
+		res.Diags = append(res.Diags, diags...)
+		return nil, res
+	}
+
 	// ---- 3. Analyzer ----
 	env, err := loadEnv(cfg, hooks)
 	if err != nil {

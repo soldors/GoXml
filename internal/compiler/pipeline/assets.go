@@ -22,7 +22,19 @@ import (
 // 资产根目录是生成文件所在的 Go 包目录（TargetDir），不是 .gxml 源目录：
 // //go:embed 的匹配范围由生成文件所在包决定，两者在 --out-dir 下可能不同。
 func validateAssets(v *analyzer.VerifiedDoc, cfg Config, file string) []contracts.CompilerError {
-	refs := codegen.AssetRefs(v)
+	return validateAssetRefs(codegen.AssetRefs(v), cfg, file)
+}
+
+// validateAssetsDoc 在**仅展开、未类型检查**的 IR 上做同一资产门禁（R17-A）。
+//
+// 用途：在 Analyzer 之前先跑资产校验，使「资产缺失/损坏」得到 CODEGEN-ASSET-* 的
+// 准确归属，而不是被旧生成文件 //go:embed 的 Go 包加载失败抢先报成 GXML-ROOT-002。
+// 与 validateAssets 共用同一校验实现，语义完全一致。
+func validateAssetsDoc(doc *contracts.DocumentIR, cfg Config, file string) []contracts.CompilerError {
+	return validateAssetRefs(codegen.AssetRefsFromDoc(doc), cfg, file)
+}
+
+func validateAssetRefs(refs []codegen.AssetRef, cfg Config, file string) []contracts.CompilerError {
 	if len(refs) == 0 {
 		return nil
 	}
