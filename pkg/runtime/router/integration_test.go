@@ -1,3 +1,7 @@
+//go:build goxml_router_native_window
+
+// This test opens a native window and is only for explicitly authorized runs.
+
 package router_test
 
 import (
