@@ -174,7 +174,19 @@ func TestNamingCodeConstantsUseContractsPrefix(t *testing.T) {
 
 	// 扫**所有**导出的 Code* 常量，而不是硬编码两个名字——
 	// 否则将来新增 CODEGEN-NAME-003 时会静默逃出这条约束（复审 N-1）。
-	const wantPrefix = "CodePrefixCodegenName"
+	//
+	// 前缀按常量语义分组：CodeNaming* → CODEGEN-NAME；CodeAsset* → CODEGEN-ASSET。
+	// 两组都不得内联字面量，也不得错用对方前缀。
+	wantPrefixFor := func(name string) (string, bool) {
+		switch {
+		case strings.HasPrefix(name, "CodeNaming"):
+			return "CodePrefixCodegenName", true
+		case strings.HasPrefix(name, "CodeAsset"):
+			return "CodePrefixCodegenAsset", true
+		default:
+			return "", false
+		}
+	}
 
 	checked := 0
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -184,6 +196,13 @@ func TestNamingCodeConstantsUseContractsPrefix(t *testing.T) {
 		}
 		for _, id := range vs.Names {
 			if !strings.HasPrefix(id.Name, "Code") || !id.IsExported() {
+				continue
+			}
+			wantPrefix, known := wantPrefixFor(id.Name)
+			if !known {
+				// 新增 Code* 常量必须在本测试登记所属前缀组，
+				// 否则它会静默逃出「不得内联 / 不得混用前缀」的约束。
+				t.Errorf("%s 未登记所属前缀组（CodeNaming*/CodeAsset*）", id.Name)
 				continue
 			}
 			checked++
@@ -220,5 +239,5 @@ func TestNamingCodeConstantsUseContractsPrefix(t *testing.T) {
 	if checked == 0 {
 		t.Fatalf("未在 %s 中找到任何导出的 Code* 常量", path)
 	}
-	t.Logf("已校验 %d 个导出 Code* 常量均使用 contracts.%s 拼接", checked, wantPrefix)
+	t.Logf("已校验 %d 个导出 Code* 常量均使用 contracts 前缀常量拼接", checked)
 }

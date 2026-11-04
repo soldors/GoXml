@@ -35,6 +35,14 @@ import (
 // genModuleWithProbe 在临时模块中运行生成代码 + 探测测试。
 func genModuleWithProbe(t *testing.T, genSource []byte, probe string) (string, error) {
 	t.Helper()
+	return genModuleWithProbeAssets(t, genSource, probe, nil)
+}
+
+// genModuleWithProbeAssets 与 genModuleWithProbe 相同，并写入 //go:embed 资产。
+//
+// assets 的键是相对临时包目录的路径（与生成文件中的 Src 一致）。
+func genModuleWithProbeAssets(t *testing.T, genSource []byte, probe string, assets map[string][]byte) (string, error) {
+	t.Helper()
 	repoRoot := repoRootOf(t)
 	dir := t.TempDir()
 
@@ -43,6 +51,15 @@ func genModuleWithProbe(t *testing.T, genSource []byte, probe string) (string, e
 	}
 	if err := os.WriteFile(filepath.Join(dir, "probe_test.go"), []byte(probe), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	for rel, data := range assets {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	gomod := "module gotest\n\ngo 1.26.0\n\nrequire gioui.org v0.10.3\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
@@ -88,6 +105,7 @@ func testGtx(ops *op.Ops, w, h int) layout.Context {
 
 var _ = math.Float32bits
 var _ = system.LTR
+var _ = material.NewTheme
 `
 
 // TestCacheReplaysAtRuntime 是 A4-T3 的运行时证据：

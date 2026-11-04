@@ -7,9 +7,10 @@
 //
 // 当前实现范围：静态 Page/Text 整页固化、Column/Row/Page 布局、`<Spacer>` 占位、
 // `<Grid>` 网格（列定义、行优先换行、补位单元格、Gap 双轴）、
-// `<Text>`/`<Button>` 的绑定读取与 Click 事件、`<If>`/`<For>` 内联展开，
+// `<Text>`/`<Button>` 的绑定读取与 Click 事件、`<Input>` 受控输入、
+// `<Image>` 静态资产（//go:embed）、`<If>`/`<For>` 内联展开，
 // 以及 `Width`/`Height`/`Align`/`Justify`/`Gap` 的映射。
-// `<Expanded>` 与 `<Input>`/`<Image>` 尚未实现，见输出契约 §4.6。
+// `<Expanded>` 尚未实现，见输出契约 §4.6。
 package codegen
 
 import (
@@ -164,6 +165,10 @@ func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
+	assetVar, err := assetSymbol(opts.SourcePath)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	vmRef, _ := v.ViewModel()
 
@@ -181,13 +186,15 @@ func generateWithSlots(v *analyzer.VerifiedDoc, opts Options) ([]byte, int, erro
 	taken[cacheType] = true
 
 	g := &generator{
-		opts:      opts,
-		view:      view,
-		keyType:   keyType,
-		cacheType: cacheType,
-		imports:   newImportSetWithTaken(taken),
-		facts:     v.Facts(),
-		vmRef:     vmRef,
+		opts:       opts,
+		view:       view,
+		keyType:    keyType,
+		cacheType:  cacheType,
+		assetVar:   assetVar,
+		assetSlots: make(map[string]int),
+		imports:    newImportSetWithTaken(taken),
+		facts:      v.Facts(),
+		vmRef:      vmRef,
 	}
 
 	// 页面是生成的主体。没有 Page 时不应走到这里——Parser 保证存在，
@@ -250,7 +257,13 @@ type generator struct {
 	// 固定名 renderKey/textCache 会在同包多文件时重复声明。
 	keyType   string
 	cacheType string
-	imports   *importSet
+	// assetVar 是本文件 embed.FS 变量名（goxmlAssets<Source>）；无资产时为空。
+	assetVar string
+	// assets 是按首次出现顺序记录的静态 Image 资产（已归一化路径）。
+	assets []string
+	// assetSlots 把资产路径映射到 img<n> 字段序号，重复 Src 共用一次解码。
+	assetSlots map[string]int
+	imports    *importSet
 	// facts 是 Analyzer 已验证的语义事实。绑定路径与目标类型都取自此处，
 	// Codegen **不得**自行解析绑定路径。
 	facts *analyzer.Facts
@@ -753,6 +766,9 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		}
 		return leafDecorationExpr(g, n, inner), nil
 
+	case "Image":
+		return g.imageExpr(n)
+
 	case "Column":
 		// 嵌套容器在闭包内，使用闭包的 gtx（其 Ops 已是帧/cacheOps）。
 		fields, err := flexFieldsExpr(g, n.Tag, n)
@@ -961,6 +977,15 @@ func (g *generator) assemble(body string) (string, error) {
 		// 构造函数的 nil 校验使用 fmt.Errorf。
 		g.imports.add("fmt", "fmt")
 	}
+	if len(g.assets) > 0 {
+		// 构造期从 embed.FS 读取并解码一次；Layout 只回放 paint.ImageOp。
+		g.imports.add("bytes", "bytes")
+		g.imports.add("embed", "embed")
+		g.imports.add("image", "image")
+		g.imports.add("gioui.org/op/paint", "paint")
+		g.imports.addBlank("image/jpeg")
+		g.imports.addBlank("image/png")
+	}
 
 	// vm 类型：仅当页面含绑定时需要（构造函数参数与 View 字段）。
 	//
@@ -976,6 +1001,15 @@ func (g *generator) assemble(body string) (string, error) {
 	b.WriteString("package " + g.opts.PackageName + "\n\n")
 	b.WriteString(g.imports.render())
 	b.WriteString("\n")
+	if len(g.assets) > 0 {
+		if g.assetVar == "" {
+			return "", fmt.Errorf("codegen: assets were registered without an embed variable name")
+		}
+		for _, p := range g.assets {
+			b.WriteString("//go:embed " + quote(p) + "\n")
+		}
+		b.WriteString("var " + g.assetVar + " embed.FS\n\n")
+	}
 	b.WriteString("// " + g.view + " 是 " + baseName(g.opts.SourcePath) + " 的生成视图。\n")
 	b.WriteString("type " + g.view + " struct {\n")
 	if g.usesVM {
@@ -1023,6 +1057,11 @@ func (g *generator) assemble(body string) (string, error) {
 			b.WriteString(line + "\n")
 		}
 	}
+	// 静态 Image 资产：构造期解码一次，Layout 只回放 ImageOp。
+	for i, p := range g.assets {
+		b.WriteString(fmt.Sprintf("\t// img%d 是 <Image Src=%q> 的解码结果。\n", i, p))
+		b.WriteString(fmt.Sprintf("\timg%d paint.ImageOp\n", i))
+	}
 	b.WriteString("}\n\n")
 	// 构造函数：按页面类型分两种形态（状态更新契约 §1.4）。
 	//
@@ -1047,7 +1086,13 @@ func (g *generator) assemble(body string) (string, error) {
 		b.WriteString("\tif vm == nil {\n")
 		b.WriteString("\t\treturn nil, " + g.q("fmt", "fmt") + ".Errorf(\"goxml: New" + g.view + " requires a non-nil ViewModel; a binding page cannot render without state\")\n")
 		b.WriteString("\t}\n")
-		b.WriteString("\treturn &" + g.view + "{vm: vm}, nil\n")
+		if len(g.assets) > 0 {
+			b.WriteString("\tv := &" + g.view + "{vm: vm}\n")
+			writeImageDecode(&b, g.assets, g.assetVar, "\t", true)
+			b.WriteString("\treturn v, nil\n")
+		} else {
+			b.WriteString("\treturn &" + g.view + "{vm: vm}, nil\n")
+		}
 		b.WriteString("}\n\n")
 		b.WriteString("// Layout 渲染页面（统一 View 接口，状态更新契约 §1）。\n")
 		b.WriteString("//\n")
@@ -1128,7 +1173,15 @@ func (v *`+g.view+`) rowClick%d(key %s) *`+qw+`.Clickable {
 		b.WriteString(g.bindCacheDecl())
 		return b.String(), nil
 	}
-	b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
+	if len(g.assets) > 0 {
+		b.WriteString("func New" + g.view + "() *" + g.view + " {\n")
+		b.WriteString("\tv := &" + g.view + "{}\n")
+		writeImageDecode(&b, g.assets, g.assetVar, "\t", false)
+		b.WriteString("\treturn v\n")
+		b.WriteString("}\n\n")
+	} else {
+		b.WriteString("func New" + g.view + "() *" + g.view + " { return &" + g.view + "{} }\n\n")
+	}
 
 	ql := g.q("gioui.org/layout", "layout")
 	qm := g.q("gioui.org/widget/material", "material")
@@ -1343,13 +1396,14 @@ func (g *generator) cacheFieldLines() []string {
 // 限定符的**实际引用**由发射点经 nameOf/g.q 取同一名字，不做文本替换。
 type importSet struct {
 	byPath map[string]string // 路径 → 有效限定符
+	blanks map[string]bool   // 仅执行 init 的导入（如 image/png 注册解码器）
 	forced map[string]bool   // 路径 → 是否强制写出别名（R4-A 片2 / R14-B 重命名）
 	// taken 是目标包已有包级符号名（编排层传入的事实；nil = 无冲突）。
 	taken map[string]bool
 }
 
 func newImportSet() *importSet {
-	return &importSet{byPath: make(map[string]string), forced: make(map[string]bool)}
+	return &importSet{byPath: make(map[string]string), blanks: make(map[string]bool), forced: make(map[string]bool)}
 }
 
 // newImportSetWithTaken 构造带目标包已有符号事实的 importSet（R14-B）。
@@ -1394,6 +1448,14 @@ func (s *importSet) add(path, pkgName string) {
 	}
 }
 
+// addBlank 记录一个 `_ "path"` 导入（只为注册 init 副作用，如 image/png）。
+func (s *importSet) addBlank(path string) {
+	if s.blanks == nil {
+		s.blanks = make(map[string]bool)
+	}
+	s.blanks[path] = true
+}
+
 // nameOf 返回路径的有效限定符（登记后的稳定名）。
 func (s *importSet) nameOf(path string) string {
 	return s.byPath[path]
@@ -1416,11 +1478,17 @@ func (s *importSet) addForcedAlias(path, alias string) {
 // render 生成 import 块。
 //
 // 排序规则：先按别名（空别名视为包名），再按路径——保证相同输入
-// 产生逐字节相同的输出（契约 §6 确定性）。
+// 产生逐字节相同的输出（契约 §6 确定性）。blank 导入单独排序并置于最前。
 func (s *importSet) render() string {
-	if len(s.byPath) == 0 {
+	if len(s.byPath) == 0 && len(s.blanks) == 0 {
 		return ""
 	}
+
+	var blanks []string
+	for p := range s.blanks {
+		blanks = append(blanks, p)
+	}
+	sort.Strings(blanks)
 
 	type entry struct {
 		path string
@@ -1465,6 +1533,9 @@ func (s *importSet) render() string {
 
 	var b strings.Builder
 	b.WriteString("import (\n")
+	for _, p := range blanks {
+		b.WriteString("\t_ " + quote(p) + "\n")
+	}
 	for _, e := range entries {
 		if e.name != e.orig || s.forced[e.path] {
 			b.WriteString("\t" + e.name + " " + quote(e.path) + "\n")

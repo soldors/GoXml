@@ -59,6 +59,14 @@ const (
 	//
 	// 号段与语义的唯一权威清单见 诊断码目录.md §1.1 / §2.8。
 	CodePrefixCodegenName = "CODEGEN-NAME" // 生成符号与包级声明冲突
+
+	// CodePrefixCodegenAsset 是生成层的**构建输入**错误：<Image Src> 指向的
+	// 静态资产无法安全解析、读取或解码。
+	//
+	// 它同样不复用 GXML-*：资产是否存在、格式是否支持属于构建环境事实，
+	// 不是 .gxml 源文本本身的语法错误；修复动作是改资产文件或路径。
+	// 号段与语义见 诊断码目录.md §2.9。
+	CodePrefixCodegenAsset = "CODEGEN-ASSET"
 )
 
 // CompilerError 编译器统一诊断错误。

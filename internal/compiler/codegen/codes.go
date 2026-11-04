@@ -28,4 +28,23 @@ const (
 	//
 	// 消息：`sources %q and %q both generate symbol %q`
 	CodeNamingSameBatch = contracts.CodePrefixCodegenName + "-002"
+
+	// CodeAssetPath：<Image Src> 不是安全的包内相对路径。
+	//
+	// 触发：空路径、绝对路径、卷名/UNC、`..` 越界、隐藏/下划线段
+	// （Go //go:embed 默认不包含它们），或绑定属性（v1 只接受静态字面量）。
+	// 修复动作：改 Src 或把资产放进目标包目录。
+	CodeAssetPath = contracts.CodePrefixCodegenAsset + "-001"
+
+	// CodeAssetLoad：资产不存在、不可读、不是普通文件，或格式不支持/损坏。
+	//
+	// 触发：CLI/pipeline 无法 ReadFile、image.DecodeConfig 失败，或格式
+	// 不是 PNG/JPEG。修复动作：修正路径、权限或转换资产格式。
+	CodeAssetLoad = contracts.CodePrefixCodegenAsset + "-002"
+
+	// CodeAssetLimit：资产超过编译期体积或像素预算。
+	//
+	// 触发：编码后字节数 > MaxAssetBytes，或解码尺寸 > MaxAssetPixels。
+	// 修复动作：缩小资产或（经契约修订后）调整预算。
+	CodeAssetLimit = contracts.CodePrefixCodegenAsset + "-003"
 )

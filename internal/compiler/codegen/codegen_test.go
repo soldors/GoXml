@@ -513,12 +513,12 @@ func TestPageWithMultipleChildrenFails(t *testing.T) {
 }
 
 func TestUnsupportedTagFails(t *testing.T) {
-	// Column/Row/Text/Button 已支持；未支持的标签仍需明确失败。
-	// 用 <Image>（Schema 中存在，但 Codegen 未实现）作为样本。
-	v := verified(t, `<Column><Image Src="x.png"/></Column>`)
+	// Column/Row/Text/Button/Input/Image 已支持；未支持的标签仍需明确失败。
+	// 用 <Expanded>（Parser/Expander 接受，但 Codegen 未实现）作为样本。
+	v := verified(t, `<Column><Expanded><Text Value="a"/></Expanded></Column>`)
 	_, err := Generate(v, defaultOpts())
 	if err == nil {
-		t.Fatal("<Image> 在本切片不支持，应失败")
+		t.Fatal("<Expanded> 在本切片不支持，应失败")
 	}
 	if !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("错误信息应说明不支持: %v", err)

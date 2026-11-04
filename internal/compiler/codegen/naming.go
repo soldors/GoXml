@@ -54,6 +54,12 @@ type NamingTarget struct {
 	// 这个字段存在的原因：预检发生在任何解析之前（阶段零 C），
 	// 它自己拿不到这个事实；而"保守"在接线之后等于"合法工程生成不了"。
 	BindSlotsKnown bool
+	// HasAssets 表示源页面含静态 <Image Src>，产物会声明
+	// goxmlAssets<Source>（embed.FS 变量）。
+	//
+	// 预检若漏报该符号，用户包内同名声明会被 Go 编译以
+	// "goxmlAssetsHome redeclared" 的形式发现，而不是在写盘前得到定位。
+	HasAssets bool
 }
 
 // namingConflictKind 是冲突来源分类（诊断文案与后续诊断码要按它区分）。
@@ -94,6 +100,15 @@ type namingConflict struct {
 // 塌缩仍然照旧被拦：`a-b.gxml` 与 `a_b.gxml` 的 view / key 类型同名，
 // 即使两者的缓存类型都不计入，冲突依旧成立（卡 §8.1 A4）。
 func generatedPackageSymbols(sourcePath string, bindSlots int, slotsKnown bool) ([]string, error) {
+	return generatedPackageSymbolsWithAssets(sourcePath, bindSlots, slotsKnown, false)
+}
+
+// generatedPackageSymbolsWithAssets 在旧集合上加入 embed.FS 变量。
+//
+// hasAssets 由编译前端确定（Prepared.AssetCount）；静态页含 <Image> 时
+// 产物会声明 goxmlAssets<Source>，预检必须把它算作占用，否则同名用户
+// 声明会拖到 go build 才以 redeclared 暴露。
+func generatedPackageSymbolsWithAssets(sourcePath string, bindSlots int, slotsKnown, hasAssets bool) ([]string, error) {
 	view, err := viewSymbol(sourcePath)
 	if err != nil {
 		return nil, err
@@ -109,7 +124,27 @@ func generatedPackageSymbols(sourcePath string, bindSlots int, slotsKnown bool) 
 	if !slotsKnown || bindSlots > 0 {
 		syms = append(syms, cacheType)
 	}
+	if hasAssets {
+		assetVar, err := assetSymbol(sourcePath)
+		if err != nil {
+			return nil, err
+		}
+		syms = append(syms, assetVar)
+	}
 	return syms, nil
+}
+
+// assetSymbol 派生生成文件内的 embed.FS 变量名：goxmlAssets<Source>。
+func assetSymbol(sourcePath string) (string, error) {
+	suffix, err := sourceSymbolSuffix(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	name := "goxmlAssets" + suffix
+	if !isGoIdent(name) {
+		return "", fmt.Errorf("codegen: SourcePath %q yields an invalid symbol %q", sourcePath, name)
+	}
+	return name, nil
 }
 
 // detectNamingConflicts 执行预检：只读磁盘，不写任何文件。
@@ -132,7 +167,7 @@ func inspectNamingConflicts(targets []NamingTarget, packageNames map[string]map[
 
 	symbolsByTarget := make([][]string, len(targets))
 	for i, t := range targets {
-		syms, err := generatedPackageSymbols(t.SourcePath, t.BindSlots, t.BindSlotsKnown)
+		syms, err := generatedPackageSymbolsWithAssets(t.SourcePath, t.BindSlots, t.BindSlotsKnown, t.HasAssets)
 		if err != nil {
 			return nil, fmt.Errorf("预检 %s: %w", t.SourcePath, err)
 		}
