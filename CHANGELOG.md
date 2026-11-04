@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- R15：缓存 v8 记录 Go 有效配置引用的 overlay、替换源和替代模块文件指纹；For 显式拒绝遮蔽内置 append 的循环变量；新增跨包任务板工程与真实离屏验收，列表与摘要共享同一模型。
+
 - R14：提交前检查强制实际编译，避免 GOFLAGS 的 dry-run 误报通过；生成器对冲突的 Go 导入名分配确定性别名，输出修订升为 gen-2；跨包工程补充删除、保旧、清理及恢复的维护回归。
 
 - R13：常规多包 `generate --check` 按最多 12 个目标包分组构建，保持 Go 参数、临时输出隔离及失败保旧；双视图示例入口使用一次目录生成。混合页面补充局部缓存、动态文本及 Key 行事件的离屏回归。

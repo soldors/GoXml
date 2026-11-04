@@ -94,6 +94,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	}
 	// A measurable workspace can still generate; only cache reuse is unsafe.
 	cacheCtx, cacheCtxErr := ctxValues.cacheString()
+	cacheBuildInputs, buildInputsOK := buildInputsFingerprint(ctxValues.GOFLAGS, moduleRoot)
 	pkgCtxt, ctxErr := buildContextFromMeasured(ctxValues)
 	if ctxErr != nil {
 		return fmt.Errorf("解析有效 Go 构建上下文失败: %w", ctxErr)
@@ -172,7 +173,8 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		r.goExe = goExe
 		r.cacheContext = cacheCtx
 		r.cacheContextReady = true
-		r.dependencyUnsafe = cacheCtxErr != nil
+		r.cacheBuildInputs = cacheBuildInputs
+		r.dependencyUnsafe = cacheCtxErr != nil || !buildInputsOK
 	}
 
 	type decision struct {

@@ -1,0 +1,15 @@
+<!-- 跨包任务板 · 摘要视图（只读）。
+     与 list.gxml 声明**同一个** ViewModel（model.Board），但本页不接任何事件、
+     不放任何按钮：只绑定总数、完成数与合并显示串。
+     入口把同一个 *model.Board 交给两个生成视图，所以列表里点「切换/删除」之后，
+     本页下一帧就显示新的计数——不需要任何显式的同步代码。 -->
+<Goxml Version="1" ViewModel="model.Board">
+  <Page Route="/taskboard/summary">
+    <Column Padding="12" Gap="6">
+      <Text Value="任务板 · 摘要（只读）" Background="#EFEFEF" Padding="4"/>
+      <Text Value="{TotalText}" Background="#FFFFFF" Padding="4"/>
+      <Text Value="{DoneText}" Background="#FFFBE6" Padding="4"/>
+      <Text Value="{SummaryText}" Background="#F7F7F7" Padding="4"/>
+    </Column>
+  </Page>
+</Goxml>

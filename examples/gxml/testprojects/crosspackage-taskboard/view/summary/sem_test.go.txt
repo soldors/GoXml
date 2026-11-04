@@ -1,0 +1,252 @@
+package summary
+
+// 跨包任务板 · 摘要视图的离屏语义测试（写在临时 module 的 view/summary 包里）。
+//
+// 这一份测的是**跨视图**的事实，不是单页事实：
+//   - 两个生成视图（list / summary）持有同一个 *model.Board；
+//   - 列表里点「切换」之后，摘要视图**渲染出来的文本**下一帧就变；
+//   - 两个独立工程实例（各自一份模型 + 两个视图）互不串状态。
+//
+// 为什么写在 summary 包里：摘要视图的文本槽位（slots[i].text）是**包内**字段，
+// 只有本包能读到「渲染出来的到底是什么字」。断言读槽位而不是只读模型，
+// 才能区分「模型变了」和「摘要真的跟着变」。
+//
+// 交互一律经同一个 input.Router 投递真实事件（点击），与 cmd/taskboard 的入口
+// 共用一套组合方式；直接调模型方法只用于布置前置状态。
+
+import (
+	"fmt"
+	"image"
+	"sort"
+	"strings"
+	"testing"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/list"
+)
+
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW = 640
+	frameH = 900
+)
+
+// both 是「两个生成视图 + 一个模型 + 一个 Router」的组合，与 cmd/taskboard
+// 的入口同构：上下排，列表在上、摘要在下。组合方式属于入口，不属于框架。
+type both struct {
+	l *list.GoxmlListView
+	s *GoxmlSummaryView
+}
+
+func (b *both) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return b.l.Layout(gtx, th)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return b.s.Layout(gtx, th)
+		}),
+	)
+}
+
+type harness struct {
+	m      *model.Board
+	both   *both
+	l      *list.GoxmlListView
+	s      *GoxmlSummaryView
+	r      input.Router
+	gtx    layout.Context
+	frames int
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	m := model.NewBoard()
+	l, err := list.NewGoxmlListView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewGoxmlSummaryView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{m: m, l: l, s: s, both: &both{l: l, s: s}}
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.both.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y int) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// rendered 读**生成产物**的文本槽位，而不是读模型字段。
+func rendered(v *GoxmlSummaryView) []string {
+	out := make([]string, 0, len(v.slots))
+	for i := range v.slots {
+		out = append(out, v.slots[i].text)
+	}
+	return out
+}
+
+func hasText(v *GoxmlSummaryView, want string) bool {
+	for _, got := range rendered(v) {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+// combinedPos 用**黑盒探测**定位列表里的按钮：点一下再看模型 LastAction。
+//
+// 摘要包看不到 list 包的内部按钮字段，所以只能这样探；这也更接近用户视角。
+// 组合布局与单页布局几何不同，因此这里必须重新扫，不能复用 list 包的坐标。
+var combinedPos map[string][2]int
+
+func discover(t *testing.T) map[string][2]int {
+	t.Helper()
+	if combinedPos != nil {
+		return combinedPos
+	}
+	out := map[string][2]int{}
+	for y := 0; y <= 320; y += 4 {
+		for x := 240; x <= frameW-12; x += 8 {
+			h := newHarness(t)
+			h.frame()
+			// 每个探针都是全新 harness，LastAction 本来就是空；仍然显式清零，
+			// 让「有值 ⟺ 这一击命中了接线」成为这条扫描的固定语义，
+			// 以后即使给探针加了前置动作（prepare）也不会退化成残留。
+			h.m.LastAction = ""
+			h.click(x, y)
+			act := h.m.LastAction
+			if act != "" {
+				if _, ok := out[act]; !ok {
+					out[act] = [2]int{x, y}
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("组合布局扫描不到任何列表按钮：离屏环境限制，不是用例通过")
+	}
+	combinedPos = out
+	acts := make([]string, 0, len(out))
+	for act := range out {
+		acts = append(acts, act)
+	}
+	sort.Strings(acts)
+	parts := make([]string, 0, len(acts))
+	for _, act := range acts {
+		parts = append(parts, act+"="+fmt.Sprint(out[act]))
+	}
+	t.Logf("OBS 组合布局实测接线数=%d %s", len(out), strings.Join(parts, " "))
+	return out
+}
+
+func posOf(t *testing.T, pos map[string][2]int, action string) [2]int {
+	t.Helper()
+	p, ok := pos[action]
+	if !ok {
+		t.Fatalf("组合几何下扫不到「%s」接线：实得 %v", action, pos)
+	}
+	return p
+}
+
+// TestTaskboardListSummaryFollowsSharedModel：列表改状态，摘要**渲染文本**跟着变。
+func TestTaskboardListSummaryFollowsSharedModel(t *testing.T) {
+	pos := discover(t)
+	toggle2 := posOf(t, pos, "toggle:2")
+
+	h := newHarness(t)
+	h.frame()
+	// 生成产物层面的共享实例判据：摘要视图持有的就是入口创建的那个指针。
+	if h.s.vm != h.m {
+		t.Fatal("摘要视图没有持有共享的 *model.Board")
+	}
+	if !hasText(h.s, "总数：3") || !hasText(h.s, "完成：1") || !hasText(h.s, "总数：3，完成：1") {
+		t.Fatalf("初始摘要渲染文本不符：%v", rendered(h.s))
+	}
+
+	h.click(toggle2[0], toggle2[1])
+	if h.m.LastAction != "toggle:2" || h.m.Done != 2 {
+		t.Fatalf("列表切换未落到共享模型：LastAction=%q Done=%d", h.m.LastAction, h.m.Done)
+	}
+	h.frame() // 事件轮询在 Layout 顶部，本帧已重录；再走一帧确认不是偶然
+	if !hasText(h.s, "完成：2") || !hasText(h.s, "总数：3，完成：2") {
+		t.Fatalf("摘要没有跟着共享模型更新：%v", rendered(h.s))
+	}
+	if hasText(h.s, "完成：1") {
+		t.Fatalf("摘要仍残留旧计数：%v", rendered(h.s))
+	}
+	t.Log("TASKBOARD-DONE TestTaskboardListSummaryFollowsSharedModel")
+}
+
+// TestTaskboardSummaryRendersCounts：摘要页静态渲染出的三串文本与真实状态逐字一致。
+func TestTaskboardSummaryRendersCounts(t *testing.T) {
+	h := newHarness(t)
+	h.frame()
+	if h.m.Total != 3 || h.m.Done != 1 {
+		t.Fatalf("初始真实状态应 3/1，实得 %d/%d", h.m.Total, h.m.Done)
+	}
+	want := []string{"总数：3", "完成：1", "总数：3，完成：1"}
+	for _, w := range want {
+		if !hasText(h.s, w) {
+			t.Fatalf("摘要缺少渲染文本 %q：实得 %v", w, rendered(h.s))
+		}
+	}
+	if len(rendered(h.s)) != 3 {
+		t.Fatalf("摘要应有 3 个绑定槽位，实得 %d：%v", len(rendered(h.s)), rendered(h.s))
+	}
+	t.Log("TASKBOARD-DONE TestTaskboardSummaryRendersCounts")
+}
+
+// TestTaskboardSummaryInstancesIsolated：两个工程实例的摘要互不串状态。
+func TestTaskboardSummaryInstancesIsolated(t *testing.T) {
+	pos := discover(t)
+	toggle1 := posOf(t, pos, "toggle:1")
+
+	h1, h2 := newHarness(t), newHarness(t)
+	h1.frame()
+	h2.frame()
+	if h1.m == h2.m || h1.s == h2.s {
+		t.Fatal("两个实例不应共享模型或视图对象")
+	}
+	h1.click(toggle1[0], toggle1[1])
+	if h1.m.LastAction != "toggle:1" || h1.m.Done != 0 {
+		t.Fatalf("实例 1 切换失败：LastAction=%q Done=%d", h1.m.LastAction, h1.m.Done)
+	}
+	h1.frame()
+	if !hasText(h1.s, "完成：0") {
+		t.Fatalf("实例 1 摘要未更新：%v", rendered(h1.s))
+	}
+	if h2.m.Done != 1 || !hasText(h2.s, "完成：1") {
+		t.Fatalf("实例 1 的事件串到了实例 2 的摘要：Done=%d 文本=%v",
+			h2.m.Done, rendered(h2.s))
+	}
+	t.Log("TASKBOARD-DONE TestTaskboardSummaryInstancesIsolated")
+}

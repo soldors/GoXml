@@ -612,7 +612,14 @@ func hasIfChild(children []*contracts.NodeIR) bool {
 // checkLoopVarName 拒绝与生成代码标识符冲突的循环变量名。
 func checkLoopVarName(name string) error {
 	switch name {
-	case "v", "th", "gtx", "items", "children", "rec", "k", "ops":
+	case "v", "th", "gtx", "items", "children", "rec", "k", "ops",
+		// R15-B：`append` 是循环体作用域内生成代码**实际调用**的内置函数——
+		// For 内联展开会生成 `children = append(children, sizeWrap(...))`，
+		// 循环变量同名时该调用解析到循环变量，go build 失败
+		//（cannot call append (variable of struct type Row)）。
+		// 判据仍是契约 §6.1 的「与生成代码使用的标识符冲突」，不是内置函数
+		// 一刀切：len/make/new 等在该作用域内未被生成代码使用，保持合法。
+		"append":
 		return fmt.Errorf(
 			"codegen: <For> variable %q collides with an identifier used by generated code; rename it", name)
 	}

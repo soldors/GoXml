@@ -1,0 +1,11 @@
+// Package summary 是任务板摘要（只读）视图的包。
+//
+// 与 view/list/doc.go 同因：生成前目录里必须已经有一个可定名的 Go 包，
+// 否则 CLI 以「没有可定名的非测试 Go 源文件: package directory is uninitialized」
+// 退出码 2 拒绝生成（`代码生成输出契约.md` §3.2）。
+//
+// 本页没有任何事件与输入控件，但 ViewModel 仍是**跨包**的（model.Board），
+// 所以产物 summary_gen.go 同样会 import "…/model"。
+//
+// 复制模板时把本文件改名为 doc.go。
+package summary

@@ -1,0 +1,22 @@
+<!-- 跨包任务板 · 列表视图。
+     ViewModel 指向**另一个包**（model.Board，路径相对模块根），所以生成代码
+     落在本目录的 package list 里，而类型定义在 model 包。
+     只用已批准语法：Text / Button / Column / Row / For（Each/In/Key）；
+     行事件实参取 {task.ID}（稳定业务键），不取行索引；不引入 If / Input。
+     每行两个按钮：切换完成态、删除该行；顶部一个「重排」按钮用于打乱顺序。 -->
+<Goxml Version="1" ViewModel="model.Board">
+  <Page Route="/taskboard/list">
+    <Column Padding="12" Gap="6">
+      <Text Value="任务板 · 列表" Background="#EFEFEF" Padding="4"/>
+      <Button Text="重排" Click="Reorder" Background="#E8F5E9" Padding="4"/>
+      <For Each="task" In="{Items}" Key="{task.ID}">
+        <Row Gap="6" Align="Center">
+          <Text Value="{task.Title}" Width="Fill" Background="#FFFFFF" Padding="4"/>
+          <Text Value="{task.Status}" Background="#F7F7F7" Padding="4"/>
+          <Button Text="切换" Click="Toggle(task.ID)" Background="#EEF5FF" Padding="4"/>
+          <Button Text="删除" Click="Remove(task.ID)" Background="#FBE9E7" Padding="4"/>
+        </Row>
+      </For>
+    </Column>
+  </Page>
+</Goxml>

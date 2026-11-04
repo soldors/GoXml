@@ -12,6 +12,7 @@
 //	K5 CLI 选项    cacheKeyInput.PackageName
 //	K6 输出路径    OutputRel + SourcePath（后者进保护头，属产物内容）
 //	K7 缓存格式    cacheFormatVersion
+//	K11 构建输入文件内容  cacheKeyInput.BuildInputs（overlay JSON/替换源/modfile）
 package cli
 
 import (
@@ -46,7 +47,10 @@ import (
 // v7（R9-A S1）：K10 缓存上下文新增 GOEXPERIMENT raw delta + CPU 特性
 // （GOAMD64/GOARM/GOARM64/GO386/GOMIPS/GOMIPS64/GOPPC64/GORISCV64/GOWASM）；
 // 目标包名/选文件身份改由 go list 权威计算。旧 v6 记录键变化自然安全 miss，无迁移。
-const cacheFormatVersion = 7
+// v8（R15-A）：新增 K11 BuildInputs——GOFLAGS 中 -overlay=/-modfile= 所指文件的
+// 内容指纹进键。此前 K10 只含 GOFLAGS 字符串，字符串不变而 overlay JSON / 替换源 /
+// 替代模块内容变化时键不变。键字段结构变化，故提升本版本；旧 v7 记录键不同自然安全 miss。
+const cacheFormatVersion = 8
 
 // generatorOutputRevision 是**生成器输出规则**的内部修订标识（R12-A，K4 的一部分）。
 //
@@ -136,6 +140,13 @@ type cacheKeyInput struct {
 	// go list 对同一包目录的选择文件随这三项变化（build 标签）——
 	// 键不含它们时，跨上下文的类型/文件选择变化会被旧记录假命中。
 	BuildContext string
+
+	// BuildInputs 是 GOFLAGS 里 `-overlay=`/`-modfile=` 指向**文件内容**的指纹，即 K11
+	// （R15-A 新增）。K10 只记录 GOFLAGS 字符串；当字符串不变、仅其指向的 overlay JSON、
+	// overlay 替换源文件或替代模块文件内容改变时，字符串相同但实际构建输入不同。
+	// 这里把可读到的内容纳入键：内容变化 ⇒ 键变化 ⇒ 旧记录安全 miss。
+	// 读不到/损坏 ⇒ 调用方标 dependencyUnsafe 保守 miss（不误命中、也不误伤合法工程）。
+	BuildInputs string
 }
 
 // cachePackageSource 是一个参与 K3 的 Go 源文件指纹。
@@ -173,6 +184,7 @@ func cacheKey(in cacheKeyInput) (string, error) {
 	writeKeyField(h, "sourceHash", in.SourceHash)
 	writeKeyField(h, "packageName", in.PackageName)
 	writeKeyField(h, "buildFlags", in.BuildFlags)
+	writeKeyField(h, "buildInputs", in.BuildInputs)
 	writeKeyField(h, "compilerVersion", in.CompilerVersion)
 
 	srcs := make([]cachePackageSource, len(in.PackageSources))

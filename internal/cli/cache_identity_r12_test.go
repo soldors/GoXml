@@ -40,7 +40,7 @@ func TestCacheIdentityComposition(t *testing.T) {
 		t.Fatalf("cacheIdentity 不能等于语言版本（否则升级后沿用旧产物）: %q", id)
 	}
 	// K7 缓存格式版本不因本标识变化而提升。
-	if cacheFormatVersion != 7 {
+	if cacheFormatVersion != 8 {
 		t.Fatalf("记录格式未变，cacheFormatVersion 应保持 7，实际 %d", cacheFormatVersion)
 	}
 }

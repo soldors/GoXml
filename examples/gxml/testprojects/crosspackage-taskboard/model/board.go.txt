@@ -1,0 +1,127 @@
+// Package model 是「跨包任务板」工程模板的**唯一状态所有者**。
+//
+// 整个工程只有一份 *Board：入口 main() 只调用一次 NewBoard()，然后把同一个指针
+// 交给两个生成视图（view/list 与 view/summary）。列表里的切换/删除改的是它，
+// 摘要里的总数/完成数读的也是它——没有事件总线、没有第二份副本、没有通知回调。
+//
+// 与 testdata/tasks 的区别：那边 ViewModel 与生成代码同包，这里 ViewModel 在
+// **另一个包**，两页各自声明 ViewModel="model.Board"，产物落在 view/list 与
+// view/summary 两个包里。跨包接线是这套模板要演示的核心事实。
+//
+// 后台写入需要调用方自行同步：Invalidate 的并发安全不等于字段读写安全。
+package model
+
+import "strconv"
+
+// Task 是列表中的一行。
+//
+// ID 必须**稳定且可比较**：view/list/list.gxml 用 <For Key="{task.ID}"> 把它
+// 作为行状态身份。增删与重排之后，行按钮状态跟着 ID 走，不跟着位置走。
+//
+// Status 是派生显示串（"已完成" / "待办"），由 refresh() 在事件处理器里算好，
+// 不在 Layout 热路径拼接（性能预算 INV-PERF-2、PIT-006）。
+type Task struct {
+	ID     int
+	Title  string
+	Done   bool
+	Status string
+}
+
+// Board 是共享视图模型。两个生成视图持有**同一个** *Board。
+type Board struct {
+	// Items 是 <For In="{Items}"> 的数据源。nil/空切片渲染为空列表。
+	Items []Task
+
+	// Total / Done 是真实计数；*Text 是给摘要页绑定的显示串。
+	// 分开写是为了让自动测试既能断言数值，也能断言「渲染出来的文本」。
+	Total       int
+	Done        int
+	TotalText   string
+	DoneText    string
+	SummaryText string
+	HasTasks    bool
+
+	// LastAction 记录最近一次行事件，仅用于几何扫描时判断「点到了哪一行」。
+	// 格式固定为 "toggle:<id>" / "remove:<id>" / "reorder"，断言用 ==，不用 Contains。
+	LastAction string
+	// LastTappedID 是最近一次被点击行的稳定 ID，用于「重排后点当前行」的判据。
+	LastTappedID int
+}
+
+// NewBoard 构造初始状态：三行、两行待办一行已完成。
+func NewBoard() *Board {
+	m := &Board{}
+	m.Items = []Task{
+		{ID: 1, Title: "读 GXML 语言规范", Done: true},
+		{ID: 2, Title: "写 For 列表示例"},
+		{ID: 3, Title: "跑一次真实生成"},
+	}
+	m.refresh()
+	return m
+}
+
+// refresh 在**事件处理器**里准备所有显示串，不在 Layout 中每帧格式化。
+//
+// 这也是「共享实例」的可观测接线：Toggle / Remove 改完 Items 必须调用它，
+// 否则摘要页读到的 TotalText / DoneText 会停在旧值上。
+func (m *Board) refresh() {
+	done := 0
+	for i := range m.Items {
+		if m.Items[i].Done {
+			done++
+			m.Items[i].Status = "已完成"
+		} else {
+			m.Items[i].Status = "待办"
+		}
+	}
+	m.Total = len(m.Items)
+	m.Done = done
+	m.TotalText = "总数：" + strconv.Itoa(m.Total)
+	m.DoneText = "完成：" + strconv.Itoa(m.Done)
+	m.SummaryText = m.TotalText + "，" + m.DoneText
+	m.HasTasks = m.Total > 0
+}
+
+// Toggle 是行事件：实参来自行内绑定 {task.ID}。
+//
+// 点第 N 行必须只切换第 N 行；重排之后再点同一个坐标，必须命中**当前**那一行。
+// 这是 For 列表输出契约 §9 第 5 项的分水岭判据。
+func (m *Board) Toggle(id int) {
+	for i := range m.Items {
+		if m.Items[i].ID == id {
+			m.Items[i].Done = !m.Items[i].Done
+			m.LastAction = "toggle:" + strconv.Itoa(id)
+			m.LastTappedID = id
+			m.refresh()
+			return
+		}
+	}
+	m.LastAction = "toggle-miss:" + strconv.Itoa(id)
+	m.LastTappedID = id
+}
+
+// Remove 按**稳定 ID** 删除，不按位置删除：位置会在重排后失效，ID 不会。
+func (m *Board) Remove(id int) {
+	for i := range m.Items {
+		if m.Items[i].ID == id {
+			m.Items = append(m.Items[:i:i], m.Items[i+1:]...)
+			m.LastAction = "remove:" + strconv.Itoa(id)
+			m.LastTappedID = id
+			m.refresh()
+			return
+		}
+	}
+	m.LastAction = "remove-miss:" + strconv.Itoa(id)
+	m.LastTappedID = id
+}
+
+// Reorder 把三行**逆序**（[1,2,3] → [3,2,1]），用于验证行状态按 Key 复用：
+// 重排后点最上面一行，命中的必须是 ID 3，不是重排前的 ID 1。
+func (m *Board) Reorder() {
+	for i, j := 0, len(m.Items)-1; i < j; i, j = i+1, j-1 {
+		m.Items[i], m.Items[j] = m.Items[j], m.Items[i]
+	}
+	m.LastAction = "reorder"
+	m.LastTappedID = 0
+	m.refresh()
+}

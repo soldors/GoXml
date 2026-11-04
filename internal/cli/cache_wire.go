@@ -89,6 +89,7 @@ type resolvedInput struct {
 	// 此时必须保守 miss（走正常 Analyzer），绝不用可能不完整的键假命中。
 	cacheContext      string // go env 实测的有效上下文（确定性 JSON）
 	cacheContextReady bool   // 是否已在本批测量并填入 cacheContext
+	cacheBuildInputs  string // GOFLAGS 引用的文件指纹，由同一次有效上下文测量得出
 	dependencyUnsafe  bool   // 依赖/上下文不可测 -> 强制 miss
 }
 
@@ -240,12 +241,18 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 	// K10（非作者审修）：真实有效构建上下文。优先用本批已测量的 cacheContext；
 	// 未就绪则现场测量（单源调用路径）；测量失败标 dependencyUnsafe 保守 miss。
 	buildCtx := r.cacheContext
+	buildInputs := r.cacheBuildInputs
 	if !r.cacheContextReady {
-		measured, mErr := measuredCacheContext(r.goExe, r.moduleRoot)
+		measured, mErr := measureContextValues(r.goExe, r.moduleRoot)
 		if mErr != nil {
 			r.dependencyUnsafe = true
 		} else {
-			buildCtx = measured
+			buildCtx, mErr = measured.cacheString()
+			var buildInputsOK bool
+			buildInputs, buildInputsOK = buildInputsFingerprint(measured.GOFLAGS, r.moduleRoot)
+			if mErr != nil || !buildInputsOK {
+				r.dependencyUnsafe = true
+			}
 		}
 	}
 	return cacheKey(cacheKeyInput{
@@ -259,6 +266,7 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 		PackageSources:    sources,
 		DependencySources: deps,
 		BuildContext:      buildCtx,
+		BuildInputs:       buildInputs,
 	})
 }
 

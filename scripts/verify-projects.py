@@ -80,6 +80,31 @@ PROJECTS = {
         'testTargets': ['./view/...'],
         # 离屏测试的用例前缀（模板自带，与教程同源）。
         'testRun': '^TestCross',
+        'completionMarker': 'CROSS-DONE',
+        'expectedTests': [
+            'TestCrossEditDraftKeepsSaved', 'TestCrossEditMaxLenCountsRunes',
+            'TestCrossEditPortFilterDropsNonDigits', 'TestCrossEditConfirmWritesSaved',
+            'TestCrossEditConfirmRejectedKeepsSaved', 'TestCrossEditResetRestoresSaved',
+            'TestCrossEditReturnPayloadOnly', 'TestCrossEditStatusBranch',
+            'TestCrossEditInstancesIsolated', 'TestCrossSummaryFollowsSharedModel',
+            'TestCrossSummaryInstancesIsolated',
+        ],
+    },
+    # R15-C：For + 稳定 Key 的任务板。与 preferences 共用同一套复制/生成/构建/离屏流水线，
+    # 但用例名与完成标记独立，避免把另一工程的用例集合当成本工程的判据。
+    'crosspackage-taskboard': {
+        'entry': 'cmd/taskboard',
+        'testTargets': ['./view/...'],
+        'testRun': '^TestTaskboard',
+        'completionMarker': 'TASKBOARD-DONE',
+        'expectedTests': [
+            'TestTaskboardListReorderHitsCurrentRow',
+            'TestTaskboardListDeleteKeepsIdentity',
+            'TestTaskboardListSummaryFollowsSharedModel',
+            'TestTaskboardListInstancesIsolated',
+            'TestTaskboardSummaryRendersCounts',
+            'TestTaskboardSummaryInstancesIsolated',
+        ],
     },
 }
 
@@ -400,9 +425,14 @@ def read_raw(info):
         return fh.read()
 
 
-def test_markers(raw):
-    """统计 `go test -v` 的用例标记，作为「真的跑了、没被 SKIP 兜底」的判据。"""
+def test_markers(raw, completion_marker='CROSS-DONE'):
+    """统计 `go test -v` 的用例标记，作为「真的跑了、没被 SKIP 兜底」的判据。
+
+    completion_marker 由工程规格给出：preferences 用 CROSS-DONE，taskboard 用
+    TASKBOARD-DONE。默认保持旧口径，既有调用方不必改。
+    """
     text = raw.decode('utf-8', 'replace')
+    done_re = re.compile(r': ' + re.escape(completion_marker) + r' (Test\w+)$')
     counts = {'pass': 0, 'skip': 0, 'fail': 0, 'noTestFiles': 0,
               'completed': [], 'passedNames': []}
     for line in text.splitlines():
@@ -416,7 +446,7 @@ def test_markers(raw):
             counts['fail'] += 1
         elif stripped.startswith('?') and 'no test files' in stripped:
             counts['noTestFiles'] += 1
-        match = re.search(r': CROSS-DONE (TestCross\w+)$', stripped)
+        match = done_re.search(stripped)
         if match:
             counts['completed'].append(match.group(1))
     return counts
@@ -625,16 +655,20 @@ def summarise(report):
     print('边界      : 窗口入口只构建、不运行；原生窗口与 IME 未自动验证')
 
 
-def test_verdict(markers):
+def test_verdict(markers, spec=None):
     """离屏测试的**业务判据**：返回失败原因，None 表示成立。
 
     `go test` 退出码 0 不等于「真的验过」：一个用例都没跑（pass=0）、被 `t.Skip`
     兜底（skip>0）、包内根本没有测试文件（noTestFiles）都必须判不成立。
+
+    spec 是 PROJECTS 里的工程规格：不同工程有自己的用例名集合与完成标记。
+    省略 spec 时保持 R11-C 起的默认口径（preferences 的 11 个 CROSS-DONE），
+    让既有调用方（工程 E2E 脚本）不受新增工程影响。
     """
     if markers['pass'] < 1 or markers['skip'] or markers['fail'] or markers['noTestFiles']:
         return ('离屏测试判据不成立（pass=%d skip=%d fail=%d noTestFiles=%d）'
                 % (markers['pass'], markers['skip'], markers['fail'], markers['noTestFiles']))
-    expected = {
+    expected = set(spec['expectedTests']) if spec and spec.get('expectedTests') else {
         'TestCrossEditDraftKeepsSaved', 'TestCrossEditMaxLenCountsRunes',
         'TestCrossEditPortFilterDropsNonDigits', 'TestCrossEditConfirmWritesSaved',
         'TestCrossEditConfirmRejectedKeepsSaved', 'TestCrossEditResetRestoresSaved',
@@ -642,12 +676,13 @@ def test_verdict(markers):
         'TestCrossEditInstancesIsolated', 'TestCrossSummaryFollowsSharedModel',
         'TestCrossSummaryInstancesIsolated',
     }
+    marker = (spec or {}).get('completionMarker', 'CROSS-DONE')
     completed = markers.get('completed', [])
     passed = markers.get('passedNames', [])
     if (len(completed) != len(expected) or set(completed) != expected
             or len(passed) != len(expected) or set(passed) != expected
             or markers['pass'] != len(expected)):
-        return '离屏测试完成标记或PASS集合不完整（要求11个唯一CROSS-DONE）'
+        return '离屏测试完成标记或PASS集合不完整（要求 %d 个唯一 %s）' % (len(expected), marker)
     return None
 
 
@@ -835,7 +870,9 @@ def run(args, report, repo, project, module, out_dir, run_id):
 
         # 3) 只构建窗口入口——**永不执行**（执行就会开原生窗口）
         entry = PROJECTS[project]['entry']
-        exe_name = 'preferences.exe' if os.name == 'nt' else 'preferences'
+        # 产物名按入口包名派生：preferences → preferences.exe（保持旧证据路径不变），
+        # taskboard → taskboard.exe。写死的工程名会随第二个工程悄悄失真。
+        exe_name = os.path.basename(entry) + ('.exe' if os.name == 'nt' else '')
         run_stage(report, procmod, 'build-entry',
                   [args.go, 'build', '-o', os.path.join(log_dir, exe_name), './' + entry],
                   out_dir, log_dir, args.timeout, procmod.GO_ENV_FIXED)
@@ -847,9 +884,10 @@ def run(args, report, repo, project, module, out_dir, run_id):
                     + list(spec['testTargets']) + ['-run', spec['testRun']])
             stage = run_stage(report, procmod, 'test', argv,
                               out_dir, log_dir, args.timeout, procmod.GO_ENV_FIXED)
-            markers = test_markers(read_raw(stage['stdout']))
+            markers = test_markers(read_raw(stage['stdout']),
+                                   spec.get('completionMarker', 'CROSS-DONE'))
             stage['markers'] = markers
-            problem = test_verdict(markers)
+            problem = test_verdict(markers, spec)
             if problem:
                 raise Refused(EXIT_BUSINESS, problem, stage='test', markers=markers)
     finally:

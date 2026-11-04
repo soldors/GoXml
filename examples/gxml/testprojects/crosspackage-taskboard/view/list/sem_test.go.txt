@@ -1,0 +1,321 @@
+package list
+
+// 跨包任务板 · 列表视图的离屏语义测试（写在临时 module 的 view/list 包里）。
+//
+// 三条纪律（与仓库既有 tasks / workbench / preferences 工程测试同源）：
+//   - 按钮坐标一律**实测扫描**，不硬编码像素：控件尺寸随字体/主题变化；
+//   - 列表增删/重排会改变几何，所以每个状态各自扫一遍坐标（按当前几何重新定位），
+//     不复用旧坐标；扫描时每个点都开一份新 harness，避免上一次点击的残留；
+//   - 判据同时落在**模型真实状态**（Items / Done / LastAction / LastTappedID）与
+//     **生成产物状态**（GoxmlListView.rowClicks0/1 的键集合）上；只看模型，
+//     「行状态按位置串位」就会悄悄漏过去。
+//
+// 直接调用模型方法只用于布置前置状态；所有断言交互都经 input.Router 投递真实事件。
+
+import (
+	"fmt"
+	"image"
+	"sort"
+	"strings"
+	"testing"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+)
+
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW = 640
+	frameH = 900
+)
+
+// harness 是一份离屏环境：真实生成的列表 View + 真实 input.Router，不创建原生窗口。
+type harness struct {
+	m      *model.Board
+	v      *GoxmlListView
+	r      input.Router
+	gtx    layout.Context
+	frames int
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	m := model.NewBoard()
+	v, err := NewGoxmlListView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{m: m, v: v}
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.v.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y int) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(float32(x), float32(y)), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// ids 读模型的真实行身份，而不是读渲染顺序。
+func ids(m *model.Board) []int {
+	out := make([]int, 0, len(m.Items))
+	for _, it := range m.Items {
+		out = append(out, it.ID)
+	}
+	return out
+}
+
+func sameIDs(got []int, want ...int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// rowKeys 读**生成产物**里行按钮状态池的键集合。
+//
+// 它们是 map[int]*widget.Clickable，键是 <For Key="{task.ID}"> 的业务键。
+// 重排后键集合必须仍是 {1,2,3}（复用），删除后必须丢掉被删行的键（回收）。
+func rowKeySet[V any](m map[int]V) map[int]bool {
+	out := map[int]bool{}
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+func assertRowKeys(t *testing.T, h *harness, want ...int) {
+	t.Helper()
+	for label, got := range map[string]map[int]bool{
+		"rowClicks0": rowKeySet(h.v.rowClicks0),
+		"rowClicks1": rowKeySet(h.v.rowClicks1),
+	} {
+		if len(got) != len(want) {
+			t.Fatalf("%s 行状态键集合大小应为 %d（%v），实得 %v", label, len(want), want, got)
+		}
+		for _, k := range want {
+			if !got[k] {
+				t.Fatalf("%s 缺少稳定键 %d：实得 %v", label, k, got)
+			}
+		}
+	}
+}
+
+// scanX 覆盖左侧「重排」按钮与右侧行按钮。按 8px 粒度足以命中按钮，
+// 不需要铺满整张网格。
+var scanX = func() []int {
+	out := []int{24, 40, 60, 80, 100}
+	for x := 240; x <= frameW-12; x += 8 {
+		out = append(out, x)
+	}
+	return out
+}()
+
+// scanCache 按状态缓存坐标：键里带状态名，重排/删除后的坐标不与初始态混用。
+var scanCache = map[string]map[string][2]int{}
+
+// scanAll 在**指定状态**下重扫全部接线，返回 action → 首个命中坐标。
+//
+// 每个点都用一份全新 harness：点按钮会改状态，复用会让判据变成残留。
+// prepare 用真实点击把 harness 推到目标状态（例如先点重排），所以扫到的
+// 坐标与真实链路里那一帧的几何一致。
+//
+// 探针点击**之前必须清空 LastAction**：prepare 自己也是真实点击，会把
+// "reorder" / "remove:1" 留在模型里；不清空的话，扫到空白处的那一次
+// （例如 y=0 的顶部边距）会被当成命中了 prepare 的那个动作——实测就是这样
+// 在 deleted-1 状态扫出 remove:1=[24 0]，把「删除后仍能点到已删行」这个
+// 假阳性喂给断言。清空之后，「有值 ⟺ 这一击真的落在接线上」。
+func scanAll(t *testing.T, state string, prepare func(*harness)) map[string][2]int {
+	t.Helper()
+	if cached, ok := scanCache[state]; ok {
+		return cached
+	}
+	out := map[string][2]int{}
+	for y := 0; y <= 320; y += 4 {
+		for _, x := range scanX {
+			h := newHarness(t)
+			h.frame()
+			if prepare != nil {
+				prepare(h)
+			}
+			h.m.LastAction = ""
+			h.click(x, y)
+			act := h.m.LastAction
+			if act == "" {
+				continue
+			}
+			if _, ok := out[act]; !ok {
+				out[act] = [2]int{x, y}
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("状态 %s 扫描不到任何按钮：离屏环境限制，不是用例通过", state)
+	}
+	scanCache[state] = out
+	// 只按实测到的键逐个记账：写死 "remove:1" 之类的键，在删除态会被
+	// 零值 [0 0] 掩盖，日志会假装那个坐标存在过。
+	acts := make([]string, 0, len(out))
+	for act := range out {
+		acts = append(acts, act)
+	}
+	sort.Strings(acts)
+	t.Logf("OBS 状态 %s 实测接线数=%d %s", state, len(out), fmtActions(acts, out))
+	return out
+}
+
+// fmtActions 把「动作 → 坐标」摊成一行便于对账的文本。
+func fmtActions(acts []string, pos map[string][2]int) string {
+	parts := make([]string, 0, len(acts))
+	for _, act := range acts {
+		parts = append(parts, fmt.Sprintf("%s=%v", act, pos[act]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func posOf(t *testing.T, pos map[string][2]int, action string) [2]int {
+	t.Helper()
+	p, ok := pos[action]
+	if !ok {
+		t.Fatalf("当前几何下扫不到「%s」接线：实得 %v", action, pos)
+	}
+	return p
+}
+
+// TestTaskboardListReorderHitsCurrentRow：重排后点最上面一行，必须命中**当前**的 ID 3。
+func TestTaskboardListReorderHitsCurrentRow(t *testing.T) {
+	initial := scanAll(t, "initial", nil)
+	reorder := posOf(t, initial, "reorder")
+	old3 := posOf(t, initial, "toggle:3")
+
+	prepare := func(h *harness) { h.click(reorder[0], reorder[1]) }
+	after := scanAll(t, "reordered", prepare)
+	newTop := posOf(t, after, "toggle:3")
+	middle := posOf(t, after, "toggle:2")
+	bottom := posOf(t, after, "toggle:1")
+	if newTop == old3 || !(newTop[1] < middle[1] && middle[1] < bottom[1]) {
+		t.Fatalf("重排后接线必须按当前行的几何顺序 3,2,1：旧 3=%v，新 3=%v, 2=%v, 1=%v", old3, newTop, middle, bottom)
+	}
+
+	h := newHarness(t)
+	h.frame()
+	prepare(h)
+	if h.m.LastAction != "reorder" || !sameIDs(ids(h.m), 3, 2, 1) {
+		t.Fatalf("重排前置失败：LastAction=%q IDs=%v", h.m.LastAction, ids(h.m))
+	}
+	assertRowKeys(t, h, 1, 2, 3) // 生成产物：重排复用同一批稳定键
+	h.click(newTop[0], newTop[1])
+	if h.m.LastAction != "toggle:3" || h.m.LastTappedID != 3 {
+		t.Fatalf("重排后点当前首行应命中 ID 3，实得 LastAction=%q LastTappedID=%d",
+			h.m.LastAction, h.m.LastTappedID)
+	}
+	if !h.m.Items[0].Done || h.m.Items[1].Done || !h.m.Items[2].Done {
+		t.Fatalf("切换只应改 ID 3：实得 %+v", h.m.Items)
+	}
+	if h.m.Total != 3 || h.m.Done != 2 {
+		t.Fatalf("真实计数应 Total=3 Done=2，实得 Total=%d Done=%d", h.m.Total, h.m.Done)
+	}
+	t.Log("TASKBOARD-DONE TestTaskboardListReorderHitsCurrentRow")
+}
+
+// TestTaskboardListDeleteKeepsIdentity：删掉 ID 1 后，剩余行身份不串。
+func TestTaskboardListDeleteKeepsIdentity(t *testing.T) {
+	initial := scanAll(t, "initial", nil)
+	remove1 := posOf(t, initial, "remove:1")
+	old3 := posOf(t, initial, "toggle:3")
+
+	prepare := func(h *harness) { h.click(remove1[0], remove1[1]) }
+	after := scanAll(t, "deleted-1", prepare)
+	new3 := posOf(t, after, "toggle:3")
+	new2 := posOf(t, after, "toggle:2")
+	if new3 == old3 || new2[1] >= new3[1] {
+		t.Fatalf("删除后接线必须按剩余行的几何顺序 2,3：旧 3=%v，新 2=%v, 3=%v", old3, new2, new3)
+	}
+	for _, gone := range []string{"toggle:1", "remove:1"} {
+		if _, ok := after[gone]; ok {
+			t.Fatalf("删除后仍能扫到已删行的接线 %q：行状态串位", gone)
+		}
+	}
+
+	h := newHarness(t)
+	h.frame()
+	prepare(h)
+	if h.m.LastAction != "remove:1" || !sameIDs(ids(h.m), 2, 3) {
+		t.Fatalf("删除前置失败：LastAction=%q IDs=%v", h.m.LastAction, ids(h.m))
+	}
+	if h.m.Total != 2 || h.m.Done != 0 {
+		t.Fatalf("删除唯一已完成行后应 Total=2 Done=0，实得 %d/%d", h.m.Total, h.m.Done)
+	}
+	assertRowKeys(t, h, 2, 3) // 生成产物：被删行的键已回收
+	h.click(new3[0], new3[1])
+	if h.m.LastAction != "toggle:3" || h.m.LastTappedID != 3 {
+		t.Fatalf("删除后点剩余第二行应命中 ID 3，实得 LastAction=%q LastTappedID=%d",
+			h.m.LastAction, h.m.LastTappedID)
+	}
+	if h.m.Items[0].Done || !h.m.Items[1].Done {
+		t.Fatalf("切换只应改 ID 3：实得 %+v", h.m.Items)
+	}
+	if h.m.Total != 2 || h.m.Done != 1 {
+		t.Fatalf("真实计数应 Total=2 Done=1，实得 %d/%d", h.m.Total, h.m.Done)
+	}
+	t.Log("TASKBOARD-DONE TestTaskboardListDeleteKeepsIdentity")
+}
+
+// TestTaskboardListInstancesIsolated：两个工程实例（各自一份模型 + 一份生成视图）互不串状态。
+func TestTaskboardListInstancesIsolated(t *testing.T) {
+	pos := scanAll(t, "initial", nil)
+	toggle1 := posOf(t, pos, "toggle:1")
+	remove2 := posOf(t, pos, "remove:2")
+
+	h1, h2 := newHarness(t), newHarness(t)
+	h1.frame()
+	h2.frame()
+
+	h1.click(toggle1[0], toggle1[1])
+	if h1.m.LastAction != "toggle:1" || h1.m.Done != 0 {
+		t.Fatalf("实例 1 切换失败：LastAction=%q Done=%d", h1.m.LastAction, h1.m.Done)
+	}
+	if h2.m.Done != 1 || h2.m.LastAction != "" || !sameIDs(ids(h2.m), 1, 2, 3) {
+		t.Fatalf("实例 1 的事件串到了实例 2：Done=%d LastAction=%q IDs=%v",
+			h2.m.Done, h2.m.LastAction, ids(h2.m))
+	}
+	assertRowKeys(t, h2, 1, 2, 3)
+
+	h2.click(remove2[0], remove2[1])
+	if !sameIDs(ids(h2.m), 1, 3) {
+		t.Fatalf("实例 2 删除失败：IDs=%v", ids(h2.m))
+	}
+	if !sameIDs(ids(h1.m), 1, 2, 3) || h1.m.Done != 0 {
+		t.Fatalf("实例 2 的事件串到了实例 1：IDs=%v Done=%d", ids(h1.m), h1.m.Done)
+	}
+	assertRowKeys(t, h1, 1, 2, 3)
+	assertRowKeys(t, h2, 1, 3)
+	t.Log("TASKBOARD-DONE TestTaskboardListInstancesIsolated")
+}

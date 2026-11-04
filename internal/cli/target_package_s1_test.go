@@ -108,7 +108,7 @@ func TestK10IncludesExperimentAndCPU(t *testing.T) {
 
 // TestFormatV7 版本锚点（v7）。
 func TestFormatV7(t *testing.T) {
-	if cacheFormatVersion != 7 {
+	if cacheFormatVersion != 8 {
 		t.Fatalf("R9-A S1 应为格式版本 7，实际 %d", cacheFormatVersion)
 	}
 }

@@ -1,0 +1,68 @@
+// 窗口入口模板。生成两个视图之后复制到 cmd/taskboard/main.go，
+// 并把 __MODULE__ 换成 go.mod 里的模块路径。
+//
+// 这是**窗口入口**：只有运行它才会创建原生窗口。自动测试只编译本文件，从不执行它。
+//
+// 关键点：model.NewBoard() **只调用一次**，把同一个指针交给两个生成视图。
+// 列表与摘要各自持有自己的文本缓存与行状态，但读的是同一份任务状态——
+// 列表里切换/删除之后，摘要下一帧就显示新的总数与完成数；反过来，两个
+// 互不相干的模型实例之间不会串状态（各自 NewBoard 即可）。
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"gioui.org/layout"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/list"
+	"__MODULE__/view/summary"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+)
+
+// shell 用**现有 Go** 把两个生成视图上下组合成一个 app.View。
+//
+// Goxml 当前没有路由（pkg/runtime/router 仍是规划项），所以这里不做页面切换：
+// 上面列表、下面只读摘要同时可见。这样「共享同一份状态」是肉眼可见的事实，
+// 而不是一句文档声明。
+type shell struct {
+	list    *list.GoxmlListView
+	summary *summary.GoxmlSummaryView
+}
+
+// Layout 实现 app.View（layout.Context + *material.Theme -> Dimensions）。
+func (s *shell) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.list.Layout(gtx, th)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.summary.Layout(gtx, th)
+		}),
+	)
+}
+
+func main() {
+	// 一份模型，两个视图。这里刻意只出现一次 NewBoard()——
+	// 同源验收会断言本文件的调用次数，并把「改成两份模型」作为可编译变异。
+	m := model.NewBoard()
+	lv, err := list.NewGoxmlListView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	sv, err := summary.NewGoxmlSummaryView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	view := &shell{list: lv, summary: sv}
+	if err := app.Run(view, app.Config{Title: "Goxml cross-package taskboard",
+		Width: 640, Height: 720}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
