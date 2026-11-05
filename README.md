@@ -44,6 +44,8 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。当前并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
 
+2026-10-31 的本地说明曾将 Image 记为待批准候选；该状态已由上述 R18/R20 记录取代。`<Expanded>` 等新容器仍未实现。
+
 ### goxml generate 使用说明
 
 ```text
@@ -131,6 +133,7 @@ go run ./examples/demo
 
 架构决策记录位于 [docs/03-架构/adr/](docs/03-架构/adr/)，各文件标明批准状态；未批准草案不是开发许可。
 其中 ADR-0001 说明「编译期 GXML → Gio 零抽象开销」的整体取舍。
+ADR-0013 主题草稿仍待裁决；ADR-0015 Image 已批准，范围以各自批准状态为准。
 
 ### 进度与证据
 
@@ -151,6 +154,7 @@ go run ./examples/demo
 | 限制 | 说明 |
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
+| Image v1 范围 | 静态 Src/Fit、PNG/JPEG、包内相对资产；绑定 Src/Fit、SVG、网络图不在已批准范围 |
 | CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`、`--check`（提交前编译）、增量缓存；Watch 未做（归 TASK-DEVX-001/002） |
 | 窗口渲染未自动验证 | 已有离屏像素/几何/事件语义和 Router 原生事件循环自动化；真实视觉仍需人工确认，R20 人工视觉与原生 race 结论限其声明的冻结提交 |
 | 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |

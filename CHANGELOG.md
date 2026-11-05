@@ -93,6 +93,7 @@ All notable changes to this project will be documented in this file.
 - **`<Page>` 布局语义缺失**：规范从未定义 `<Page>` 如何排列多个子节点。现明确等价于没有 `Gap`/`Padding` 的 `<Column>`（垂直排列），避免按 `Stack` 叠放导致的静默覆盖。
 
 ### Added
+- `<Image Src="..."/>` 静态资产支持：编译期以 `//go:embed` 嵌入目标包目录下的 PNG/JPEG，构造期解码一次并缓存 `paint.ImageOp`，`Layout` 不读文件、不解码。新增静态 `Fit`（`Contain`/`Cover`/`Unscaled`，默认 `Contain`）、`CODEGEN-ASSET-001..003` 诊断（路径越界、读取/格式失败、体积/像素超限）与 `goxmlAssets<Source>` 命名预检；依据 ADR-0015、规范 §3.2.2、输出契约 §4.8。
 - 新增独立lazyidleprobe准备工具与四case机制测试，覆盖提前Request、旧回调及worker失败；实际原生运行须另行许可。
 - 显式字体选面入口 `theme.LoadSelectedFaces` 与 `theme.NewLazyWithSelection`：按调用方给定的源及索引加载字体面；异步入口在既有 worker 中读取、解析并交接最终主题。提供独立选面诊断、覆盖检查与结构化失败，不改变默认字体探测和回退策略。固定 Windows/msyh.ttc 样本显示单面选择缩短最终字体 Ready 时间约33%–35%，未证明首帧 M1 或50ms冷启动达标；常驻内存预算未验证。
 - **ADR-0001 / 0002 / 0003 重构**：三份此前只有 5–6 行结论的根基文档补齐为完整决策记录，统一采用「证据分级」结构：项目实测 / 项目证据 / 外部事实 / 设计判断四类分离，外部框架事实附来源且明确限定适用范围。
