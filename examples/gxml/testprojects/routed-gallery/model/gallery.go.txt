@@ -1,0 +1,113 @@
+// Package model 是「路由图库」工程模板的**唯一状态所有者**。
+//
+// 它同时被两个包的生成页面引用（view/home 与 view/detail），
+// 两个页面在同一个 Router 上互相切换，但 Read 的永远是**同一个** *Gallery：
+//
+//	view/home    首页：静态图标 + 共享计数 + 「打开详情」
+//	view/detail  详情页：静态封面 + 共享计数 + 「记一次访问」/「返回首页」
+//
+// 这个包刻意**不导入** pkg/runtime/router：
+//
+//   - 模型只知道「我想去哪个路由」，不知道路由怎么实现；
+//   - 真正的导航函数由入口（wire.Build）注入，见 SetNavigator；
+//   - 于是模型可以被单测直接驱动，也不需要知道 Router 的线程模型。
+//
+// 状态分组（与 crosspackage-preferences 同一套纪律）：
+//
+//	Visits      共享计数：只有 detail 的 Bump 会改，home 只读
+//	VisitsText  由 Visits 在事件处理器里算好的显示串（不在 Layout 里逐帧拼接）
+//	LastAction  最近一次点击落在哪条接线上，供扫描/断言使用
+//	Nav*        导航意图与结果，只记录、不改业务状态
+package model
+
+import "strconv"
+
+// 两个路由键是**唯一来源**：wire 用它注册，页面用它请求导航，测试用它断言。
+// Router 的匹配是精确、区分大小写的，所以两处必须逐字一致——放在这里就只有一个副本。
+const (
+	RouteHome   = "/gallery/home"
+	RouteDetail = "/gallery/detail"
+)
+
+// VisitsTextPrefix 是共享计数的显示前缀。测试按「前缀 + 十进制数」逐字断言，
+// 不用 Contains("访问次数")——那样文案改了也不会红。
+const VisitsTextPrefix = "访问次数："
+
+// Gallery 是共享视图模型。两个生成页面持有**同一个** *Gallery。
+type Gallery struct {
+	// Visits 是跨页共享的计数：在详情页点一次「记一次访问」加一，
+	// 回到首页必须能读到新值——这就是「共享模型」的可断言形态。
+	Visits int
+
+	// VisitsText 是 Visits 的派生显示串，在事件处理器里算好，Layout 只回放。
+	VisitsText string
+
+	// LastAction 记录最近一次点击落在哪条接线上（open-detail / bump / back）。
+	// 离屏测试靠它判断「点到了哪个按钮」，而不是猜像素。
+	LastAction string
+
+	// NavRequests / LastNavRequest / LastNavErr 是**导航意图**的留存：
+	// 请求了几次、去了哪、注入的导航函数返回了什么。
+	// 它们只做诊断，不参与任何页面渲染。
+	NavRequests    int
+	LastNavRequest string
+	LastNavErr     error
+
+	// nav 是入口注入的导航函数（通常是 router.Router.Navigate）。
+	// nil 表示「只记意图、不真导航」——离屏测试里刻意保留这种形态，
+	// 用来证明「模型不依赖 Router 也能被驱动」。
+	nav func(path string) error
+}
+
+// NewGallery 构造初始状态。
+func NewGallery() *Gallery {
+	g := &Gallery{}
+	g.refresh()
+	return g
+}
+
+// refresh 在**事件处理器**里准备显示串，不在 Layout 中每帧格式化。
+func (g *Gallery) refresh() {
+	g.VisitsText = VisitsTextPrefix + strconv.Itoa(g.Visits)
+}
+
+// SetNavigator 注入导航函数。入口在注册完路由之后调用一次。
+//
+// 传 nil 是合法的：那表示本实例只记录意图、不做真实导航（离屏测试用）。
+func (g *Gallery) SetNavigator(fn func(path string) error) {
+	g.nav = fn
+}
+
+// requestNav 记录并转交一次导航意图。
+//
+// 为什么不在事件处理器里返回值：GXML 的 Click 处理器签名是 func()，
+// 没有返回值通道。错误只能留在模型上（LastNavErr）作为诊断，
+// 不改变 UI 状态——导航失败时旧页面继续运行，这是 Router 的既有语义。
+func (g *Gallery) requestNav(path string) {
+	g.NavRequests++
+	g.LastNavRequest = path
+	if g.nav == nil {
+		g.LastNavErr = nil
+		return
+	}
+	g.LastNavErr = g.nav(path)
+}
+
+// OpenDetail 是首页「打开详情」按钮的处理器。
+func (g *Gallery) OpenDetail() {
+	g.LastAction = "open-detail"
+	g.requestNav(RouteDetail)
+}
+
+// Back 是详情页「返回首页」按钮的处理器。
+func (g *Gallery) Back() {
+	g.LastAction = "back"
+	g.requestNav(RouteHome)
+}
+
+// Bump 是详情页「记一次访问」按钮的处理器：只改共享计数。
+func (g *Gallery) Bump() {
+	g.Visits++
+	g.LastAction = "bump"
+	g.refresh()
+}

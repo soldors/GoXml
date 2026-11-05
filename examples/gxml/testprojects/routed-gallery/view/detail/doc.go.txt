@@ -1,0 +1,8 @@
+// Package detail 是路由图库详情页的包。
+//
+// 与 view/home/doc.go 同样的理由：生成之前目录里必须已经有一个非测试 Go 源文件，
+// 否则 CLI 无法为目标包定名（退出码 2，磁盘零变更）。
+//
+// assets/cover.png 与本文件同属一个包目录：`//go:embed "assets/cover.png"`
+// 的匹配范围由**生成文件所在包**决定，所以资产要跟着产物的包走。
+package detail

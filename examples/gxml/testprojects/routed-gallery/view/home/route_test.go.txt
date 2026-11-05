@@ -1,0 +1,421 @@
+package home
+
+// 路由图库 · 跨页离屏测试（写在临时 module 的 view/home 包里）。
+//
+// 它驱动的是**生产组装**：wire.Build 传入真实的生成构造函数，
+// 根视图是 wire 里那层 app.WithOnDestroy(r.View(), r.Shutdown) 包装，
+// 事件经真实 input.Router 投递——不创建原生窗口，也不直接调用事件处理器
+// 冒充交互（唯一的例外是关窗用例，它显式调用 Router.Shutdown，
+// 因为 DestroyEvent 只有原生事件循环才会产生，见该用例的边界说明）。
+//
+// 三条纪律（与仓库既有 forms / workbench / preferences 工程测试同源）：
+//   - 焦点/按钮坐标一律**实测扫描**，不硬编码像素；
+//   - 判据取**逐字**值与增量：文案断言用 ==，不用 Contains；
+//   - 帧数有硬上限，扫描阶段每个候选开新 harness，避免上一次点击的残留
+//     把下一次判据变成空判据。
+//
+// 为什么测试能读 slots：本文件与生成物同属 package home，槽位是包内字段。
+// 详情页的渲染断言因此放在 view/detail 自己的测试里（跨包只能看到导出符号）。
+
+import (
+	"context"
+	"errors"
+	"image"
+	"testing"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+	"github.com/goxml/goxml/pkg/runtime/router"
+
+	"__MODULE__/model"
+	"__MODULE__/view/detail"
+	"__MODULE__/wire"
+)
+
+// sharedTheme 只构建一次：material.NewTheme 相对慢，扫描要跑很多帧。
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW    = 600
+	frameH    = 420
+	maxFrames = 12
+)
+
+// buttonXs 是扫描用的竖线集合：两页都是单列左对齐（Column Padding=16），
+// 沿几条靠左的竖线自上而下扫即可命中，不必铺满整张网格。
+var buttonXs = []int{20, 24, 30, 40, 60, 100}
+
+// harness 是一份离屏环境：生产组装 + 真实 input.Router。
+type harness struct {
+	b    *wire.Bundle
+	home *GoxmlHomeView
+	det  *detail.GoxmlDetailView
+	r    input.Router
+	gtx  layout.Context
+	// frames 只统计本 harness 自己驱动的帧（扫描期每个候选都是新 harness）。
+	frames int
+}
+
+// newHarness 用**真实的**生成构造函数组装一次，并把构造出来的页面实例留在手边。
+//
+// 捕获实例不是为了绕过 Router，而是因为渲染证据（slots）是包内字段：
+// 只有拿到 Router 实际使用的那个实例，读到的才是「这一帧真正渲染的内容」。
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	h := &harness{}
+	b, err := wire.Build(
+		func(m *model.Gallery) (router.View, error) {
+			v, err := NewGoxmlHomeView(m)
+			h.home = v
+			return v, err
+		},
+		func(m *model.Gallery) (router.View, error) {
+			v, err := detail.NewGoxmlDetailView(m)
+			h.det = v
+			return v, err
+		},
+	)
+	if err != nil {
+		t.Fatalf("wire.Build 失败：%v", err)
+	}
+	h.b = b
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+// frame 是**一帧**：帧首 drain（应用待定导航）→ 渲染当前页 → 交付输入事件。
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.b.View.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+// start 把 harness 推到「已在首页」的状态。
+func (h *harness) start(t *testing.T) {
+	t.Helper()
+	if err := h.b.Router.Navigate(model.RouteHome); err != nil {
+		t.Fatalf("导航到首页失败：%v", err)
+	}
+	h.frame()
+	if got := h.b.Router.Current(); got != model.RouteHome {
+		t.Fatalf("首帧后应停在首页，实际 %q", got)
+	}
+}
+
+// gotoDetail 直接导航到详情页（跳过首页），用于扫描详情页按钮。
+func (h *harness) gotoDetail(t *testing.T) {
+	t.Helper()
+	if err := h.b.Router.Navigate(model.RouteDetail); err != nil {
+		t.Fatalf("导航到详情页失败：%v", err)
+	}
+	h.frame()
+	if got := h.b.Router.Current(); got != model.RouteDetail {
+		t.Fatalf("首帧后应停在详情页，实际 %q", got)
+	}
+}
+
+func (h *harness) click(x, y float32) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// textOf 返回**唯一的**绑定文本槽位当前渲染的字符串。
+//
+// 两页各只有一个绑定（{VisitsText}），槽位多出来就说明源改过了——
+// 那时静默取 [0] 会让断言看着绿、其实读错槽位，所以这里直接 Fatal。
+func textOf(t *testing.T, name string, texts []string) string {
+	t.Helper()
+	if len(texts) != 1 {
+		t.Fatalf("%s 应只有 1 个绑定文本槽位，实际 %d 个（源改了就要同步改断言）", name, len(texts))
+	}
+	return texts[0]
+}
+
+func (h *harness) homeText(t *testing.T) string {
+	t.Helper()
+	if h.home == nil {
+		t.Fatal("首页尚未构造")
+	}
+	texts := make([]string, 0, len(h.home.slots))
+	for i := range h.home.slots {
+		texts = append(texts, h.home.slots[i].text)
+	}
+	return textOf(t, "首页", texts)
+}
+
+// buttonCache 缓存按钮坐标。键带页面名：两页的按钮不在同一条竖线上，
+// 复用另一页的坐标只会命中空白区，然后被 LastAction 断言拆穿。
+var buttonCache = map[string][2]int{}
+
+// findAction 在指定起始状态下重扫坐标，返回首个让 LastAction == want 的点。
+func findAction(t *testing.T, page, want string, prepare func(*harness)) (int, int, bool) {
+	t.Helper()
+	for y := 0; y <= frameH; y += 4 {
+		for _, x := range buttonXs {
+			h := newHarness(t)
+			if page == "detail" {
+				h.gotoDetail(t)
+			} else {
+				h.start(t)
+			}
+			if prepare != nil {
+				prepare(h)
+			}
+			h.click(float32(x), float32(y))
+			if h.b.Model.LastAction == want {
+				return x, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// clickFound 用缓存坐标点按钮，并**实测**确认这次点击真的落在那条接线上。
+func clickFound(t *testing.T, h *harness, page, want, label string) {
+	t.Helper()
+	key := page + "/" + want
+	pos, ok := buttonCache[key]
+	if !ok {
+		x, y, found := findAction(t, page, want, nil)
+		if !found {
+			t.Fatalf("在 x=%v / y 0..%d 的扫描下未命中「%s」（%s 页；整页都扫不到，"+
+				"通常意味着页面持有的不是共享模型——点击处理器写在所属模型上，"+
+				"共享模型上的 LastAction 不会变）", buttonXs, frameH, label, page)
+		}
+		pos = [2]int{x, y}
+		buttonCache[key] = pos
+	}
+	h.click(float32(pos[0]), float32(pos[1]))
+	if h.b.Model.LastAction != want {
+		t.Fatalf("点 (%d,%d) 应触发「%s」，实际 LastAction=%q（若为空：页面持有的模型不是共享的那份）",
+			pos[0], pos[1], label, h.b.Model.LastAction)
+	}
+	t.Logf("OBS 「%s」命中于 (%d,%d)", label, pos[0], pos[1])
+}
+
+func checkFrames(t *testing.T, h *harness, name string) {
+	t.Helper()
+	if h.frames > maxFrames {
+		t.Fatalf("%s 用了 %d 帧，超过每例 %d 帧的硬上限", name, h.frames, maxFrames)
+	}
+	t.Logf("OBS %s 主链路帧数=%d（上限 %d）", name, h.frames, maxFrames)
+}
+
+// TestRouteStartsOnHome 初始状态：没有当前页；导航后**同一帧**内应用并渲染首页。
+func TestRouteStartsOnHome(t *testing.T) {
+	h := newHarness(t)
+	if got := h.b.Router.Current(); got != "" {
+		t.Fatalf("构造后不应有当前页，实际 %q", got)
+	}
+	if h.home != nil || h.det != nil {
+		t.Fatal("还没有任何导航，不应构造任何页面")
+	}
+	h.start(t)
+	if h.home == nil {
+		t.Fatal("导航到首页后应构造首页")
+	}
+	if h.det != nil {
+		t.Fatal("只导航了首页，详情页不应被构造")
+	}
+	if err := h.b.Router.NavError(); err != nil {
+		t.Fatalf("首页导航不应留下 NavError：%v", err)
+	}
+	if got := h.homeText(t); got != model.VisitsTextPrefix+"0" {
+		t.Fatalf("首页计数应渲染 %q，实际 %q", model.VisitsTextPrefix+"0", got)
+	}
+	if h.b.Model.Visits != 0 {
+		t.Fatalf("初始 Visits 应为 0，实际 %d", h.b.Model.Visits)
+	}
+	checkFrames(t, h, "首页首帧")
+	t.Logf("OBS 首页渲染 %q，Current=%q", h.homeText(t), h.b.Router.Current())
+	t.Log("ROUTE-DONE TestRouteStartsOnHome")
+}
+
+// TestRouteClickOpensDetail 真实点击跳转：点击当帧只**记录**待定导航，
+// 下一帧帧首才应用——这是基线 Router 的同帧排空语义，不是延迟 bug。
+func TestRouteClickOpensDetail(t *testing.T) {
+	h := newHarness(t)
+	h.start(t)
+	clickFound(t, h, "home", "open-detail", "打开详情")
+
+	if h.b.Model.NavRequests != 1 {
+		t.Fatalf("一次点击应恰好请求一次导航，实际 %d", h.b.Model.NavRequests)
+	}
+	if h.b.Model.LastNavRequest != model.RouteDetail {
+		t.Fatalf("导航意图应为 %q，实际 %q", model.RouteDetail, h.b.Model.LastNavRequest)
+	}
+	if err := h.b.Model.LastNavErr; err != nil {
+		t.Fatalf("注入的导航函数不应报错：%v", err)
+	}
+	// 同帧排空：点击发生在帧内（drain 已经过去），所以当前页仍是首页。
+	if got := h.b.Router.Current(); got != model.RouteHome {
+		t.Fatalf("点击当帧不应已切页（基线同帧排空语义），实际 %q", got)
+	}
+	if h.det != nil {
+		t.Fatal("点击当帧不应构造详情页")
+	}
+
+	h.frame()
+	if got := h.b.Router.Current(); got != model.RouteDetail {
+		t.Fatalf("下一帧应切到详情页，实际 %q", got)
+	}
+	if h.det == nil {
+		t.Fatal("切页后应构造详情页")
+	}
+	if err := h.b.Router.NavError(); err != nil {
+		t.Fatalf("切页不应留下 NavError：%v", err)
+	}
+	checkFrames(t, h, "点击切页")
+	t.Logf("OBS 点击后 Current=%q，详情实例=%v", h.b.Router.Current(), h.det != nil)
+	t.Log("ROUTE-DONE TestRouteClickOpensDetail")
+}
+
+// TestRouteSharedModelSurvivesRoundTrip 三个动作跨两页：
+// 详情页加一次 → 回首页 → 首页**渲染出来的**计数必须是新值。
+//
+// 这条是「两页共用同一个模型」的主判据：若两个工厂各自 NewGallery()，
+// 首页拿到的仍是 0，而模型字段看上去「变了」——所以断言落在渲染串上。
+func TestRouteSharedModelSurvivesRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	h.start(t)
+	clickFound(t, h, "home", "open-detail", "打开详情")
+	h.frame()
+
+	clickFound(t, h, "detail", "bump", "记一次访问")
+	if h.b.Model.Visits != 1 {
+		t.Fatalf("点一次应 Visits=1，实际 %d", h.b.Model.Visits)
+	}
+	if got := h.b.Model.VisitsText; got != model.VisitsTextPrefix+"1" {
+		t.Fatalf("模型派生串应为 %q，实际 %q", model.VisitsTextPrefix+"1", got)
+	}
+
+	clickFound(t, h, "detail", "back", "返回首页")
+	h.frame() // 返回请求同样在下一帧应用
+	if got := h.b.Router.Current(); got != model.RouteHome {
+		t.Fatalf("返回后应停在首页，实际 %q", got)
+	}
+	if got := h.homeText(t); got != model.VisitsTextPrefix+"1" {
+		t.Fatalf("回到首页应渲染共享后的计数 %q，实际 %q（若为 0 说明两页各建了模型）",
+			model.VisitsTextPrefix+"1", got)
+	}
+	if h.b.Model.Visits != 1 {
+		t.Fatalf("往返后 Visits 应保持 1，实际 %d", h.b.Model.Visits)
+	}
+	checkFrames(t, h, "跨页共享状态")
+	t.Logf("OBS 往返：Visits=%d 首页渲染=%q", h.b.Model.Visits, h.homeText(t))
+	t.Log("ROUTE-DONE TestRouteSharedModelSurvivesRoundTrip")
+}
+
+// TestRouteHomeImageEmbedded 静态资产真的进了二进制并被解码：
+// ImageOp 的尺寸等于**源 PNG 的像素尺寸**（不是 gxml 里的 64dp）。
+func TestRouteHomeImageEmbedded(t *testing.T) {
+	h := newHarness(t)
+	h.start(t)
+	got := h.home.img0.Size()
+	want := image.Pt(24, 24) // assets/badge.png 是 24x24
+	if got != want {
+		t.Fatalf("首页图标解码尺寸应为 %v，实际 %v", want, got)
+	}
+	checkFrames(t, h, "首页静态图")
+	t.Logf("OBS 首页 img0.Size()=%v", got)
+	t.Log("ROUTE-DONE TestRouteHomeImageEmbedded")
+}
+
+// TestRouteDestroyWiringPresent 关窗接线存在性（受控对照）。
+//
+// 判据只用公开 API：app.WithOnDestroy 对**已经包过的**视图返回错误。
+// 于是「生产组合已经带回调」这件事不需要反射、不需要认识内部类型：
+//   - 生产组合再包一次 → 必须报错（回调已在）；
+//   - 裸 router.View() 包一次 → 必须成功（对照：错误只可能来自「已包装」）。
+//
+// 边界（不夸大）：DestroyEvent → 回调 的触发路径在 pkg/runtime/app 的
+// 事件循环里，本工程不创建原生窗口，因此那条路径由该包的既有测试与
+// R20 的原生验收覆盖。这里证明的是「回调挂在组合上」以及「回调指向的
+// Shutdown 能力成立且幂等」。
+func TestRouteDestroyWiringPresent(t *testing.T) {
+	h := newHarness(t)
+	h.start(t)
+
+	if _, err := app.WithOnDestroy(h.b.View, h.b.Router.Shutdown); err == nil {
+		t.Fatal("生产组合未带关闭包装：对已包装视图再包一次本应被拒绝")
+	}
+	if _, err := app.WithOnDestroy(h.b.Router.View(), h.b.Router.Shutdown); err != nil {
+		t.Fatalf("裸 router.View() 应可包装一次（对照项），实际报错：%v", err)
+	}
+
+	// 回调指向的能力：Shutdown 取消 Router 后导航被拒绝，且可重复调用。
+	h.b.Router.Shutdown()
+	if err := h.b.Router.Navigate(model.RouteDetail); err == nil {
+		t.Fatal("Shutdown 之后导航应被拒绝")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Shutdown 后的导航错误应包装 context.Canceled，实际 %v", err)
+	}
+	h.b.Router.Shutdown() // 幂等：DestroyEvent 只到达一次，但重入必须安全
+	t.Log("OBS Shutdown 后导航被拒绝，重复 Shutdown 未 panic")
+	t.Log("ROUTE-DONE TestRouteDestroyWiringPresent")
+}
+
+// TestRouteUnregisteredPathRejected 未注册路径是**同步**错误，不进入待定队列。
+func TestRouteUnregisteredPathRejected(t *testing.T) {
+	h := newHarness(t)
+	h.start(t)
+	err := h.b.Router.Navigate("/gallery/missing")
+	if !errors.Is(err, router.ErrPathNotRegistered) {
+		t.Fatalf("未注册路径应返回 ErrPathNotRegistered，实际 %v", err)
+	}
+	if got := h.b.Router.Current(); got != model.RouteHome {
+		t.Fatalf("被拒绝的导航不应改变当前页，实际 %q", got)
+	}
+	checkFrames(t, h, "未注册路径")
+	t.Logf("OBS 未注册路径错误=%v", err)
+	t.Log("ROUTE-DONE TestRouteUnregisteredPathRejected")
+}
+
+// TestRouteInstancesIsolated 两次组装互不串状态：模型、Router、页面实例都独立。
+func TestRouteInstancesIsolated(t *testing.T) {
+	a := newHarness(t)
+	b := newHarness(t)
+	a.start(t)
+	b.start(t)
+	if a.b.Model == b.b.Model {
+		t.Fatal("两次组装必须持有不同的模型指针")
+	}
+	if a.home == b.home {
+		t.Fatal("两次组装必须持有不同的首页实例")
+	}
+	clickFound(t, a, "home", "open-detail", "打开详情")
+	a.frame()
+	clickFound(t, a, "detail", "bump", "记一次访问")
+
+	if a.b.Model.Visits != 1 {
+		t.Fatalf("实例 A 应 Visits=1，实际 %d", a.b.Model.Visits)
+	}
+	if b.b.Model.Visits != 0 {
+		t.Fatalf("实例 B 被串改：Visits=%d", b.b.Model.Visits)
+	}
+	if got := b.b.Router.Current(); got != model.RouteHome {
+		t.Fatalf("实例 B 的当前页被串改：%q", got)
+	}
+	if got := b.homeText(t); got != model.VisitsTextPrefix+"0" {
+		t.Fatalf("实例 B 的渲染被串改：%q", got)
+	}
+	checkFrames(t, a, "实例隔离")
+	t.Logf("OBS 隔离：A.Visits=%d B.Visits=%d", a.b.Model.Visits, b.b.Model.Visits)
+	t.Log("ROUTE-DONE TestRouteInstancesIsolated")
+}

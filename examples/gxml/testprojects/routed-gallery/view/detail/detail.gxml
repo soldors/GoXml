@@ -1,0 +1,15 @@
+<!-- 路由图库 · 详情页。
+     与 home.gxml 声明**同一个** ViewModel（model.Gallery）：本页改共享计数、
+     首页读同一个计数——「切页之后状态还在」就是这套模板要证明的事。
+     图片是第二张静态资产（尺寸与首页不同，测试据此区分两个包各自内嵌了哪张图）。 -->
+<Goxml Version="1" ViewModel="model.Gallery">
+  <Page Route="/gallery/detail">
+    <Column Padding="16" Gap="8">
+      <Text Value="图库 · 详情" Background="#EFEFEF" Padding="4"/>
+      <Image Src="assets/cover.png" Fit="Cover" Width="128" Height="64"/>
+      <Text Value="{VisitsText}" Background="#F7F7F7" Padding="4"/>
+      <Button Text="记一次访问" Click="Bump" Background="#FFF7E6" Padding="4"/>
+      <Button Text="返回首页" Click="Back" Background="#FBE9E7" Padding="4"/>
+    </Column>
+  </Page>
+</Goxml>

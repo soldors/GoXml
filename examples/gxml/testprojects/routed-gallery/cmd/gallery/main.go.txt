@@ -1,0 +1,79 @@
+// 窗口入口模板。生成两个页面之后复制到 cmd/gallery/main.go，
+// 并把 __MODULE__ 换成 go.mod 里的模块路径。
+//
+// 这是**窗口入口**：只有运行它才会创建原生窗口。自动测试只编译本文件，从不执行它。
+//
+// 三件事都在这里，且顺序不能换：
+//
+//  1. wire.Build 组装（一份模型 + 一个 Router + 两个页面 + 关窗包装）；
+//  2. 拿窗口句柄，把 Router 的失效入口接到窗口上（否则后台/事件里的导航
+//     请求没有帧可应用——Router 的 Invalidate 在接线前是 no-op）；
+//  3. 首发导航到首页，然后阻塞在事件循环里。
+//
+// 生产入口：app.WithOnDestroy(r.View(), r.Shutdown) 在 wire.Build 里完成，
+// 于是窗口关闭（DestroyEvent）时 Router 与页面 Context 一起被取消。
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+	"github.com/goxml/goxml/pkg/runtime/router"
+	"github.com/goxml/goxml/pkg/runtime/theme"
+
+	"__MODULE__/model"
+	"__MODULE__/view/detail"
+	"__MODULE__/view/home"
+	"__MODULE__/wire"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	// ① 组装：两个生成构造函数交给 wire，由它建**一份**模型并接好路由与关窗。
+	b, err := wire.Build(
+		func(m *model.Gallery) (router.View, error) { return home.NewGoxmlHomeView(m) },
+		func(m *model.Gallery) (router.View, error) { return detail.NewGoxmlDetailView(m) },
+	)
+	if err != nil {
+		return err
+	}
+
+	// 主题：与 app.Run 相同的默认构建入口（路线 B：字体决策在运行时一侧）。
+	// 这里自己建主题是因为需要先拿到 *App 句柄——只有 NewApp 会把 Invalidate 交出来。
+	th, rep := theme.NewThemeWithReport()
+	if rep == nil {
+		return fmt.Errorf("gallery: 默认主题构建未返回诊断报告")
+	}
+	if rep.Err != nil {
+		return fmt.Errorf("gallery: 默认主题字体不可用: %w", rep.Err)
+	}
+
+	a, err := app.NewApp(b.View, th, app.Config{
+		Title:  "Goxml 图库（Router + Image）",
+		Width:  720,
+		Height: 520,
+	})
+	if err != nil {
+		return err
+	}
+
+	// ② 失效入口：导航请求（来自点击处理器）需要一帧才会被应用。
+	//    没接线时 Router.Invalidate 是 no-op，点击之后页面不会切。
+	if err := b.Router.SetInvalidator(a); err != nil {
+		return err
+	}
+
+	// ③ 首发导航：待定导航在第一帧的帧首被应用。
+	if err := b.Router.Navigate(model.RouteHome); err != nil {
+		return err
+	}
+
+	return a.Run()
+}

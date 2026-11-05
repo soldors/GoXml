@@ -1,0 +1,84 @@
+// Package wire 是这个教程工程**唯一**的组装点：一份模型、一个 Router、
+// 两个页面工厂、一次关窗接线。main.go 只负责拿主题、拿窗口句柄、跑起来。
+//
+// 为什么不把这份组装直接写进 main.go：
+//
+//   - main.go 属于 `package main`，在里面写死 Router/模型之后，离屏测试只能
+//     复制一份同样的组装——那样测的就不是生产接线了；
+//   - 组装留在这里，测试可以导入它、用**真实的**生成构造函数调用它，
+//     于是「两页共用同一个模型」「关窗接线存在」这些事实才可断言。
+//
+// 页面构造函数由调用方注入（而不是本包 import view/home、view/detail）：
+// 否则 `view/home` 的包内测试导入本包就会形成 import cycle
+// （wire → home → 测试 → wire）。注入之后依赖方向是单向的：
+//
+//	cmd/gallery → wire → router/app/model
+//	                  ↘ home / detail（由调用方代传）
+package wire
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+	"github.com/goxml/goxml/pkg/runtime/router"
+
+	"__MODULE__/model"
+)
+
+// PageCtor 是生成页面的构造函数形态：静态页 `NewXxxView()`、绑定页
+// `NewXxxView(vm) (*XxxView, error)`。本工程两页都绑定同一个 ViewModel，
+// 所以都是后者；这里只暴露 router.View 接口，wire 不需要认识具体页面类型。
+type PageCtor func(m *model.Gallery) (router.View, error)
+
+// Bundle 是一次组装的产物：**同一个**模型、一个 Router、一个可交给窗口的根 View。
+type Bundle struct {
+	Model  *model.Gallery
+	Router *router.Router
+	// View 是 router.View() 经过关窗包装后的根视图，直接交给 app.NewApp / app.Run。
+	View app.View
+}
+
+// Build 完成组装。home / detail 为 nil 时拒绝——配置错误不该拖到第一次导航才暴露。
+//
+// 三处接线，顺序都是必要的：
+//
+//  1. 模型先建**一次**，两个工厂闭包共享它（不是每页各建一个）；
+//  2. 注入导航函数：模型只发意图（model.OpenDetail / model.Back），
+//     Router 才是真正改状态的地方；
+//  3. 关窗接线：DestroyEvent 到达时取消 Router 与页面 Context
+//     （app.WithOnDestroy 在事件循环收到 DestroyEvent 时调用回调，仅一次）。
+func Build(home, detail PageCtor) (*Bundle, error) {
+	if home == nil || detail == nil {
+		return nil, fmt.Errorf("wire: 页面构造函数不能为 nil")
+	}
+
+	// ① 一份模型，两个页面共用。
+	m := model.NewGallery()
+
+	r := router.New()
+	// ② 导航函数注入：模型不导入 router，由这里把两者接上。
+	//    Navigate 可从任意 goroutine 调用，因此从模型的事件处理器里调用是合法的。
+	m.SetNavigator(r.Navigate)
+
+	if err := r.Register(model.RouteHome, func(context.Context) (router.View, error) {
+		return home(m)
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.Register(model.RouteDetail, func(context.Context) (router.View, error) {
+		return detail(m)
+	}); err != nil {
+		return nil, err
+	}
+
+	// ③ 关窗接线：窗口销毁时取消 Router 与当前页面 Context。
+	//    r.View() 是根视图，r.Shutdown 取消 Context 并丢弃待处理队列；
+	//    两者必须在同一个包装里，否则关窗后页面 Context 仍然存活。
+	view, err := app.WithOnDestroy(r.View(), r.Shutdown)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Bundle{Model: m, Router: r, View: view}, nil
+}

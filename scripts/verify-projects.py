@@ -106,6 +106,27 @@ PROJECTS = {
             'TestTaskboardSummaryInstancesIsolated',
         ],
     },
+    # R21-C：Image + Router 的路由图库。两页在**同一个 Router** 上切换、共用一份模型，
+    # 静态资产按「生成包目录下的相对路径」embed。用例名与完成标记独立：
+    # 这里跑的是离屏路由（真实 input.Router + 真实 wire 组装），不开原生窗口。
+    'routed-gallery': {
+        'entry': 'cmd/gallery',
+        'testTargets': ['./view/...'],
+        'testRun': '^TestRoute',
+        'completionMarker': 'ROUTE-DONE',
+        'expectedTests': [
+            'TestRouteStartsOnHome',
+            'TestRouteClickOpensDetail',
+            'TestRouteSharedModelSurvivesRoundTrip',
+            'TestRouteHomeImageEmbedded',
+            'TestRouteDestroyWiringPresent',
+            'TestRouteUnregisteredPathRejected',
+            'TestRouteInstancesIsolated',
+            'TestRouteDetailBumpRendersCount',
+            'TestRouteDetailBackRequestsHome',
+            'TestRouteDetailImageEmbedded',
+        ],
+    },
 }
 
 PLACEHOLDER_MODULE = '__MODULE__'

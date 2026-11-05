@@ -1,0 +1,18 @@
+<!-- 路由图库 · 首页。
+     ViewModel 指向**另一个包**（model.Gallery），所以生成代码落在本目录的
+     package home 里，而类型定义在 model 包；detail 页声明同一个 ViewModel，
+     两个页面因此读的是同一个模型实例。
+     只读本页：共享计数（{VisitsText}）+ 一个跳转按钮。
+     图片是**静态**资产：Src 只接受字面量（绑定会被拒绝，CODEGEN-ASSET-001），
+     Fit 只接受 Contain / Cover / Unscaled；路径相对**生成文件所在包目录**，
+     所以 assets/badge.png 必须和 home_gen.go 在同一个包里。 -->
+<Goxml Version="1" ViewModel="model.Gallery">
+  <Page Route="/gallery/home">
+    <Column Padding="16" Gap="8">
+      <Text Value="图库 · 首页" Background="#EFEFEF" Padding="4"/>
+      <Image Src="assets/badge.png" Fit="Contain" Width="64" Height="64"/>
+      <Text Value="{VisitsText}" Background="#F7F7F7" Padding="4"/>
+      <Button Text="打开详情" Click="OpenDetail" Background="#E8F5E9" Padding="4"/>
+    </Column>
+  </Page>
+</Goxml>

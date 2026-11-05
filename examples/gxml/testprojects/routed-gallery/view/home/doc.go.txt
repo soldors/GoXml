@@ -1,0 +1,12 @@
+// Package home 是路由图库首页的包。
+//
+// 这个文件**必须存在**：Goxml 要求产物目录能解析为明确的 Go package
+// （`代码生成输出契约.md` §3.2）。第一次生成之前本目录只有 .gxml 与 assets/，
+// go list 看不到任何非测试 Go 源文件，CLI 会以「没有可定名的非测试 Go 源文件」
+// 退出码 2 拒绝生成——顺序是「先有包，再生成页面」。
+//
+// 生成产物 home_gen.go 落在同一目录、同一 package home；它的 ViewModel 类型在
+// **另一个包**（model），因此产物里有 import "…/model"。
+//
+// 复制模板时把本文件改名为 doc.go（与其它 *.go.txt 一起改名）。
+package home

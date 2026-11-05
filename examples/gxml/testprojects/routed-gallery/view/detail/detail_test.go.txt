@@ -1,0 +1,191 @@
+package detail
+
+// 路由图库 · 详情页的页内离屏测试（写在临时 module 的 view/detail 包里）。
+//
+// 为什么这里单独有一份：生成视图的渲染槽位（slots / img0）是**包内**字段，
+// 跨包只能看到导出符号。首页的跨页测试因此只能断言首页渲染出来的文本；
+// 详情页自己的渲染证据放在这里——两条线合起来才是「两页都真的渲染了共享状态」。
+//
+// 本页的导航只到「意图」为止：模型注入的导航函数在这里是一个记录器
+// （不是真 Router），用来证明详情页确实只发意图、由入口决定去哪。
+
+import (
+	"image"
+	"testing"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+)
+
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW    = 600
+	frameH    = 420
+	maxFrames = 10
+)
+
+var buttonXs = []int{20, 24, 30, 40, 60, 100}
+
+type harness struct {
+	m       *model.Gallery
+	v       *GoxmlDetailView
+	r       input.Router
+	gtx     layout.Context
+	intents []string
+	frames  int
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	h := &harness{m: model.NewGallery()}
+	// 导航函数被换成一个**记录器**：详情页只负责发意图，真实路由归入口。
+	h.m.SetNavigator(func(path string) error {
+		h.intents = append(h.intents, path)
+		return nil
+	})
+	v, err := NewGoxmlDetailView(h.m)
+	if err != nil {
+		t.Fatalf("构造详情页失败：%v", err)
+	}
+	h.v = v
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Exact(image.Pt(frameW, frameH)),
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h.r.Source(),
+	}
+	h.frame()
+	return h
+}
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.v.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y float32) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// renderedText 返回唯一的绑定文本槽位内容（本页只有 {VisitsText}）。
+func (h *harness) renderedText(t *testing.T) string {
+	t.Helper()
+	if len(h.v.slots) != 1 {
+		t.Fatalf("详情页应只有 1 个绑定文本槽位，实际 %d 个（源改了就要同步改断言）", len(h.v.slots))
+	}
+	return h.v.slots[0].text
+}
+
+var buttonCache = map[string][2]int{}
+
+func findAction(t *testing.T, want string) (int, int, bool) {
+	t.Helper()
+	for y := 0; y <= frameH; y += 4 {
+		for _, x := range buttonXs {
+			h := newHarness(t)
+			h.click(float32(x), float32(y))
+			if h.m.LastAction == want {
+				return x, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func clickFound(t *testing.T, h *harness, want, label string) {
+	t.Helper()
+	pos, ok := buttonCache[want]
+	if !ok {
+		x, y, found := findAction(t, want)
+		if !found {
+			t.Fatalf("在 x=%v / y 0..%d 的扫描下未命中「%s」", buttonXs, frameH, label)
+		}
+		pos = [2]int{x, y}
+		buttonCache[want] = pos
+	}
+	h.click(float32(pos[0]), float32(pos[1]))
+	if h.m.LastAction != want {
+		t.Fatalf("点 (%d,%d) 应触发「%s」，实际 LastAction=%q", pos[0], pos[1], label, h.m.LastAction)
+	}
+	t.Logf("OBS 「%s」命中于 (%d,%d)", label, pos[0], pos[1])
+}
+
+func checkFrames(t *testing.T, h *harness, name string) {
+	t.Helper()
+	if h.frames > maxFrames {
+		t.Fatalf("%s 用了 %d 帧，超过每例 %d 帧的硬上限", name, h.frames, maxFrames)
+	}
+	t.Logf("OBS %s 帧数=%d（上限 %d）", name, h.frames, maxFrames)
+}
+
+// TestRouteDetailBumpRendersCount 点一次「记一次访问」：模型与**渲染串**同步变化。
+func TestRouteDetailBumpRendersCount(t *testing.T) {
+	h := newHarness(t)
+	if got := h.renderedText(t); got != model.VisitsTextPrefix+"0" {
+		t.Fatalf("初始渲染应为 %q，实际 %q", model.VisitsTextPrefix+"0", got)
+	}
+	clickFound(t, h, "bump", "记一次访问")
+	if h.m.Visits != 1 {
+		t.Fatalf("点一次应 Visits=1，实际 %d", h.m.Visits)
+	}
+	if got := h.renderedText(t); got != model.VisitsTextPrefix+"1" {
+		t.Fatalf("点一次后渲染应为 %q，实际 %q", model.VisitsTextPrefix+"1", got)
+	}
+	if len(h.intents) != 0 {
+		t.Fatalf("加计数不该请求导航，实际 %v", h.intents)
+	}
+	checkFrames(t, h, "详情页加计数")
+	t.Logf("OBS 详情页渲染 %q，Visits=%d", h.renderedText(t), h.m.Visits)
+	t.Log("ROUTE-DONE TestRouteDetailBumpRendersCount")
+}
+
+// TestRouteDetailBackRequestsHome 「返回首页」只发意图：路径逐字、次数恰好一次、不改业务状态。
+func TestRouteDetailBackRequestsHome(t *testing.T) {
+	h := newHarness(t)
+	clickFound(t, h, "back", "返回首页")
+	if len(h.intents) != 1 {
+		t.Fatalf("一次点击应恰好记一次导航意图，实际 %v", h.intents)
+	}
+	if h.intents[0] != model.RouteHome {
+		t.Fatalf("意图路径应为 %q，实际 %q", model.RouteHome, h.intents[0])
+	}
+	if h.m.LastNavRequest != model.RouteHome {
+		t.Fatalf("模型留存的请求路径应为 %q，实际 %q", model.RouteHome, h.m.LastNavRequest)
+	}
+	if h.m.Visits != 0 {
+		t.Fatalf("返回不该改共享计数：Visits=%d", h.m.Visits)
+	}
+	if got := h.renderedText(t); got != model.VisitsTextPrefix+"0" {
+		t.Fatalf("返回不该改渲染串，实际 %q", got)
+	}
+	checkFrames(t, h, "详情页返回意图")
+	t.Logf("OBS 返回意图=%v", h.intents)
+	t.Log("ROUTE-DONE TestRouteDetailBackRequestsHome")
+}
+
+// TestRouteDetailImageEmbedded 详情页封面是第二张资产：尺寸与首页不同（32x16）。
+func TestRouteDetailImageEmbedded(t *testing.T) {
+	h := newHarness(t)
+	got := h.v.img0.Size()
+	want := image.Pt(32, 16) // assets/cover.png 是 32x16
+	if got != want {
+		t.Fatalf("详情页封面解码尺寸应为 %v，实际 %v", want, got)
+	}
+	checkFrames(t, h, "详情页静态图")
+	t.Logf("OBS 详情页 img0.Size()=%v", got)
+	t.Log("ROUTE-DONE TestRouteDetailImageEmbedded")
+}
