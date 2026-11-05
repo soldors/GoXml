@@ -220,6 +220,28 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// R22-A：把用户 GOFLAGS/GOENV 的 -overlay 中**落在 Analyzer 加载包目录**的条目
+	// 并入 Analyzer overlay，使类型/方法检查与 go build/--check/定名口径一致。
+	// 已证工具自有旧产物（goOverlay 中已置 ignore）优先，不被用户条目覆盖。
+	vmDirs := make([]string, 0, len(missResolved))
+	for _, r := range missResolved {
+		vmDirs = append(vmDirs, r.in.sourceDir)
+	}
+	userAnalyzerOverlay, uovErr := scopedUserOverlayForAnalyzer(ctxValues.GOFLAGS, moduleRoot, vmDirs)
+	if uovErr != nil {
+		return uovErr
+	}
+	if len(userAnalyzerOverlay) > 0 {
+		if goOverlay == nil {
+			goOverlay = make(map[string][]byte, len(userAnalyzerOverlay))
+		}
+		for pth, data := range userAnalyzerOverlay {
+			if _, owned := goOverlay[pth]; owned {
+				continue // 工具自有旧产物优先
+			}
+			goOverlay[pth] = data
+		}
+	}
 	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay); err != nil {
 		return err
 	}
