@@ -278,6 +278,11 @@ func (o ProviderOptions) withDefaults() ProviderOptions {
 // 标识与集合由**同一份缓存**持有，不可能出现"标识存在但集合丢失/需重扫"。
 type Provider struct {
 	mu       sync.Mutex
+	// embMu 串行化 loadEmbedded：临时主题由**每个 Lazy 各自**构造，多个 Lazy
+	// 共享同一 Provider 时会并发调用 Embedded.Load()。默认 embed 加载器无状态可重入，
+	// 但 EmbeddedFontLoader 契约允许调用方注入任意加载器（可能非并发安全），
+	// 故此处串行化，保证 loadEmbedded 对任意加载器并发安全（R23-B 无窗口 race 实证）。
+	embMu    sync.Mutex
 	opts     ProviderOptions
 	sets     map[string]*fontSet
 	resolved map[string]string
@@ -387,6 +392,8 @@ func (p *Provider) ResolveWithReport(family string) (string, *ProbeReport, error
 // 同步执行：B 不实现异步/懒加载（B 卡 §9 风险 3）。实测解析耗时约 1.6ms，
 // 远低于系统探测的 ~110ms，因此不引入异步。
 func (p *Provider) loadEmbedded() (string, []font.FontFace, *EmbeddedResult) {
+	p.embMu.Lock()
+	defer p.embMu.Unlock()
 	res := &EmbeddedResult{}
 	start := p.opts.Now()
 	defer func() { res.Elapsed = p.opts.Now().Sub(start) }()
