@@ -58,8 +58,8 @@ goxml generate 需 Go module 工程。在仓库根构建：
   goxml.exe generate ./ui --out-dir ./gen  # 输出映射到指定根目录
 
 参数：
-  --check      提交前检查（当前承诺：语法/展开/语义分析 + 生成成功与格式化；
-               尚不包含 go/types 与 go build —— 见代码生成输出契约 §12）
+  --check      写盘前用本批最终候选 overlay 执行真实 go build 编译检查；
+               全命中也检查，失败时产物/Manifest/成功缓存保旧，--clean 尚未执行
   --clean      按 Manifest 清理「已登记且带保护头」的孤儿产物；
                保护头被改动的文件视为用户接管，绝不删除
   --no-cache   忽略增量缓存（仍更新 Manifest）
@@ -152,7 +152,7 @@ go run ./examples/demo
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
 | CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`、`--check`（提交前编译）、增量缓存；Watch 未做（归 TASK-DEVX-001/002） |
-| 窗口渲染未自动验证 | 自动化只验证「启动不崩溃」与离屏语义，窗口显示与文字渲染需人工确认；R20 的 Router 人工视觉验收限其声明的冻结提交 |
+| 窗口渲染未自动验证 | 已有离屏像素/几何/事件语义和 Router 原生事件循环自动化；真实视觉仍需人工确认，R20 人工视觉与原生 race 结论限其声明的冻结提交 |
 | 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |
 | 字体整体正式验收未通过 | M1 阈值、跨平台、第二成功 family 未闭环；比较机制与真实 App M1 已有历史证据但本轮无新采样，见 [R23-B 差距矩阵](docs/03-架构/字体正式验收差距矩阵-R23B.md) |
 | Router 预算语义未批准 | 候选 `35c9ff3` 技术范围通过、未进主库；主库沿用同帧排空 |

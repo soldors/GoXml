@@ -67,7 +67,7 @@
 AI 在修改文件时，必须严格遵守以下目录的单向依赖规则，严禁逆向引用。
 
 > **图例**：`[已有]` = 目录已存在且有代码；`[规划]` = 目标拓扑，尚未创建。
-> 2026-10-31 现状核对：已版本化运行时为 `app/` 与 `theme/`，平台层已实现 `font/`，CLI 已实现 `generate`。Router 用户未提交候选不代表已合入；其余规划能力仍需对应任务批准。
+> 2026-11-05 现状核对：已版本化运行时为 `app/`、`theme/` 与 Router 基础及关闭接线，平台层已实现 `font/`，CLI 已实现 `generate`。Router 转场/OSWindow 扩展与预算语义仍未批准或未实现；任务状态见 `docs/04-WBS/2026-11-05-R23-项目状态总览.md`。
 
 
 
@@ -83,9 +83,9 @@ goxml/
 │   ├── grid/              # Grid 列宽计算的规范参考实现（oracle）
 │   ├── sizelayout/        # 尺寸决策的可执行形式（主轴/交叉轴、无界判断）
 │   └── diagdoc/           # 诊断码目录一致性门禁（AST 发射校验）
-├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（app/、theme/）
+├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（app/、router/、theme/）
 │   ├── app/               # [已有] 窗口创建与 Gio 主循环入口（最小实现）
-│   ├── router/            # [规划] 单窗口虚拟路由，MacroOp 转场快照动画器，OSWindow 逃生舱
+│   ├── router/            # [已有] 路由基础与关闭；MacroOp 转场/OSWindow 扩展仍规划
 │   ├── theme/             # [已有] Gio Theme 字体策略、Provider、Lazy 与显式选面；强类型 ThemeRef 接线仍待批准
 │   ├── lifecycle/         # [规划] Context 驱动的 OnMount/OnUnmount 生命周期管理
 │   └── hydration/         # [规划] Live Reload 状态序列化暂存与恢复 (.goxml_state.json)

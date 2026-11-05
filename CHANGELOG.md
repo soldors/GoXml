@@ -9,7 +9,7 @@ All notable changes to this project will be documented in this file.
 
 - **R23-C（状态/WIP，文档 only）**：以基线 `369703bb` 重核需求清单、WBS、TASK 总账、
   文档索引、README 与相关任务卡；新增 [R23-C 项目状态总览](docs/04-WBS/2026-11-05-R23-项目状态总览.md)
-  与 `TASK-IMAGE-001` 可审查卡。逐路径清点主库 WIP 68 条并留双哈希；不跑 Go、不开窗、
+  与 `TASK-IMAGE-001` 可审查卡。逐路径清点主库 WIP 68 条并留双哈希；未跑产品全量 Go 回归、不开窗、
   不采样、不改产品代码，主库 WIP 只读。
 
 - **R23-B（字体可靠性）**：共享 Provider 的 `loadEmbedded` 加 `embMu` 串行化，公开
