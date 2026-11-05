@@ -98,7 +98,7 @@ python scripts/verify-gallery-accept.py \
 | `project/` | 真实工程 + `.verify-projects/` 里每个阶段的 argv / rc / 收口 / 原始字节 |
 | `main.json` | 主验收报告（`verify-projects.py` 原样落盘的那一份） |
 | `raw/` | 矩阵每条命令的 `stdout.raw` / `stderr.raw` / `result.json` |
-| `report.json` | 75 条判据 + 命令台账 + 每一步前后的字节/mtime 快照（本轮实测条数，见报告 `counts`） |
+| `report.json` | 判据清单 + 命令台账 + 每一步前后的字节/mtime 快照（条数以报告 `counts` 为准；R22-C 实测 76 条） |
 
 成功打印 `GALLERY-ACCEPT-OK <runId>`；失败逐条打印 `[判据 id] 名称: 详情`。
 同一份判据的**低成本自检**（14 条反例，不跑 Go、秒级）在
