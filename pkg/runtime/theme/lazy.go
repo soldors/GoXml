@@ -156,6 +156,11 @@ type Lazy struct {
 	// tempOpt 是调用方显式给的临时主题；nil 表示走方案 c。
 	tempOpt *material.Theme
 
+	// now 是**包内私有测试接缝**：默认 nil 表示 time.Now；仅供同包测试注入
+	// 确定性时钟以锁死 TempElapsed 的测量来源（不新增公共 API，不改变生产计时语义——
+	// 生产路径恒为 nil → time.Now）。见 R23-R1-B repair-r1 守卫与 dev-log。
+	now func() time.Time
+
 	// 临时主题（首次 Request 内同步构造一次，之后复用）
 	tempBuilt   bool
 	temp        *material.Theme
@@ -303,6 +308,15 @@ func (l *Lazy) completeLocked() {
 	}
 }
 
+// clock 返回本 Lazy 的时钟：测试接缝 now（nil 时回退 time.Now）。
+// 生产路径 now==nil，行为与改动前完全一致。
+func (l *Lazy) clock() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
+}
+
 // Request 是**唯一**的加载入口：首次加载 + 失败后的显式重试。
 //
 // 任意 goroutine 可调用。语义（IMPL-1 §1.1 / §3 冻结）：
@@ -325,9 +339,9 @@ func (l *Lazy) Request() {
 			l.temp = l.tempOpt
 			l.tempSource = tempSourceCustom
 		} else {
-			start := time.Now()
+			start := l.clock()
 			th, source := newTempTheme(l.provider)
-			l.tempElapsed = time.Since(start)
+			l.tempElapsed = l.clock().Sub(start)
 			l.temp = th
 			l.tempSource = source
 		}
