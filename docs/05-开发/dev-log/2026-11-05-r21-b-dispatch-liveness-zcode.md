@@ -14,22 +14,22 @@ readyRef 分支 `codex/r21-zcode-router-liveness`；candidateRef 分支
 
 | 实测项 | 结果（有限实测） |
 |---|---|
-| 64 节回调链 + pending 导航 | 链全部**同帧**执行（fixpoint）；链内每节观察 Current=/a（导航被推迟到排空后）；帧末 /b；实测帧耗时 <1ms |
+| 64 节回调链 + pending 导航 | 链全部**同帧**执行（fixpoint）；链内每节观察 Current=/a（导航被推迟到排空后）；帧末 /b；耗时仅为该轮观测值 |
 | FIFO / 同帧再入队 | **批内快照 FIFO**——实测序 [f1, f2, f1-requeued]：再入队任务加入下一批（不插队当前批），同帧内继续执行 |
 | 链 + 多 pending | 只构造最终目标（/c），中间不构造 |
 | 链中途后台 Dispatch | 同帧执行（fixpoint 到空为止） |
 | Shutdown 与链竞争 | 闸门同步下确定性竞争：剩余批次+pendingNav 全部计账（实测 DroppedCount=2）、/b 不构造、Current 保持 |
-| 双实例隔离 | r1 链执行期间 r2 导航/计数正常 |
+| 双实例隔离 | r1 有待处理回调时 r2 导航/计数正常 |
 | 关闭后入口计数 | 逐请求 3+3+1 |
 
-**区分**：链深 ≤2000 为有限实测；「无上限增长/可无限拖延同帧导航与布局」为
+**区分**：64 节完整链为有限实测；「无上限增长/可无限拖延同帧导航与布局」为
 源码推断（drain 无预算字段、外层循环到空为止）——以 candidateRef 原型对照。
 
 ## 方案对比（任务 2）
 
 | 维度 | 现状（无界 fixpoint，readyRef） | 方案 A 帧首快照（只处理已入队） | 方案 B 每帧有界批次（candidateRef 实现，预算 8） |
 |---|---|---|---|
-| 延后任务下一帧 | 不适用（无延后） | 再入队任务天然延后；Dispatch 入队时的 Invalidate 已请求下一帧（零额外唤醒） | 同左（余量留队即已请求） |
+| 延后任务下一帧 | 不适用（无延后） | 再入队任务延后；下一帧请求需单独验证 | 余量留队；失效请求合并时能否推进仍待验证 |
 | 回调顺序 | 批内快照 FIFO + 同帧 fixpoint | 跨帧 FIFO（链跨多帧） | 跨帧 FIFO + 每帧恰 budget 节 |
 | 空闲帧成本 | 0（队列空即一检） | 0 | 0（预算只在有任务时消耗） |
 | 关闭时未执行任务记账 | dropPendingLocked（队列+pendingNav）✓ | 同左（余量留队即被同口径计账） | 同左 + 逐 fn 检查的剩余批次 |
@@ -56,6 +56,10 @@ readyRef 分支 `codex/r21-zcode-router-liveness`；candidateRef 分支
 
 ## 未验证边界
 
-- 无预算下「无限链」的极端墙钟（只实测 ≤2000 节）；
+- 无预算下「无限链」的极端墙钟（只实测 64 节完整链）；
 - 原生窗口形态下的链行为（默认选择器排除，未授权不跑）；
 - 预算值 8 的取舍（原型值，裁决时定）。
+
+## Coordinator review
+
+Author test commit 415540f adds the initial matrix. Commit 84f5505 restores single-frame assertions, checks each callback observation, and requires an exact dropped count on shutdown.
