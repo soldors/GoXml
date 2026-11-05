@@ -1,0 +1,2 @@
+ok  	github.com/goxml/goxml/internal/compiler/codegen	88.973s
+rc=0

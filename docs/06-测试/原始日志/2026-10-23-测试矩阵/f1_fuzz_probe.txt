@@ -1,0 +1,7 @@
+# F1 模糊测试覆盖核查（证据：为何记为未验收）
+命令: grep -rn "^func Fuzz" --include=*_test.go .
+输出:
+(以上为空 = 零命中)
+
+结论: 仓库内不存在任何 fuzz 目标，模糊测试记为『未验收』，不是通过也不是失败。
+候选（待裁决是否新增）: FuzzParse / FuzzSourceSymbolSuffix / FuzzNormalizeSourcePath

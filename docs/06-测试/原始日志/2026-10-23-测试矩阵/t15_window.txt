@@ -1,0 +1,17 @@
+=== TASK-FONT-001-D-PROBE：真实窗口异步唤醒验证 ===
+判据来源：docs/04-WBS/任务卡/TASK-FONT-001-D-PROBE.md §3.2（探针不得放宽）
+ENV_CGO=0
+ENV go=go1.26.1 os=windows arch=amd64 gio=v0.10.3 mode=real-window(app.Window)
+>>> P1 开始
+PHASE P1 PASS 首帧前两次 Invalidate：未 panic、未阻塞；1.2s 内帧数=5；创建→首帧 54.0 ms；帧间距(ms)=[103.6 10.3 6.5 1027.6]（静态窗口也有系统触发帧 → 帧数不可归因于 Invalidate）
+>>> P2 开始
+PHASE P2 PASS 帧1 处理中调用 Invalidate → 2s 内出现帧2；帧2 延迟 69.3 ms（含探针人为睡眠 20.0 ms，净等待 49.3 ms——帧在途时的唤醒需等本帧提交完成，与 P3 空闲态对照）
+>>> P3 开始
+PHASE P3 PASS 静默 300ms 后单次 Invalidate → 新帧延迟 0.0 ms（帧数 5→7；创建→首帧 64.4 ms）
+>>> P4 开始
+PHASE P4 PASS 连发 50 次（耗时 0.00 ms）→ 突发窗口内新帧 1（合并比 50:1）；帧内读到的最大已返回序号=50（需达 50）；事后单次唤醒出帧
+>>> P5 开始
+PHASE P5 PASS 关闭期并发唤醒 152 次；关闭→DestroyEvent 55.2 ms；关闭后再 Invalidate 未 panic；总帧数=6
+--- 汇总 ---
+TOTAL=5 PASS=5 FAIL=0
+rc=0

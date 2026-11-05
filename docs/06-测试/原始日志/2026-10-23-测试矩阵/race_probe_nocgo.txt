@@ -1,0 +1,9 @@
+# R2 竞态：-race 在默认 CGO_ENABLED=0 下的取证
+命令: go test -race -run '^$' ./pkg/runtime/theme/
+（CGO_ENABLED 取环境默认值）
+输出:
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+rc=2
+
+结论: 未执行（阻塞）。当前环境 CGO_ENABLED=0 且无 C 编译器，
+      -race 无法编译，结果既不是通过也不是失败，不得记为通过。

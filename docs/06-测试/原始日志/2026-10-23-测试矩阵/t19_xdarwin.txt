@@ -1,0 +1,3 @@
+# runtime/cgo
+cgo: C compiler "clang" not found: exec: "clang": executable file not found in %PATH%
+rc=1

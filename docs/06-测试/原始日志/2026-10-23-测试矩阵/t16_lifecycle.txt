@@ -1,0 +1,23 @@
+=== A. 同一 shaper 连续 3 帧（稳定性基线）===
+  frame 1: nonWhite=164 nonZero=23040
+  frame 2: nonWhite=164 nonZero=23040
+  frame 3: nonWhite=164 nonZero=23040
+
+=== B. 帧内替换 th.Shaper（拉丁 → 嵌入）===
+  替换前（拉丁）: nonWhite=164 nonZero=23040
+  替换后（嵌入）: nonWhite=579 nonZero=23040
+  ✓ 替换生效：同一 th、同一文本，输出随 Shaper 改变
+
+=== C. 换回旧 shaper（验证旧实例仍可用、无隐藏绑定）===
+  换回后: nonWhite=164 nonZero=23040
+  ✓ 换回旧 shaper 输出一致：shaper 可自由替换，无隐藏所有权
+
+=== D. 每帧交替替换 10 帧（连续帧稳定性）===
+  ✓ 10 帧交替替换无 panic、无错误
+
+=== 结论 ===
+  ✓ 帧内替换 th.Shaper 被 Gio 接受；连续帧绘制稳定；无隐藏所有权
+  ⚠ Window.Invalidate() 未在本探针中验证：headless Window 没有该方法。
+    它只有源码依据（app/window.go:284 注释 "safe for concurrent use"），
+    真实窗口下的并发 Invalidate 行为仍为**未实测**。
+rc=0

@@ -1,0 +1,92 @@
+=== RUN   TestStaticPageStillFreezes
+--- PASS: TestStaticPageStillFreezes (0.73s)
+=== RUN   TestStaticPageUnchanged
+--- PASS: TestStaticPageUnchanged (0.80s)
+=== RUN   TestStaticAttrIgnoresMissingAndBinding
+--- PASS: TestStaticAttrIgnoresMissingAndBinding (0.81s)
+=== RUN   TestNamingSameBaseDifferentDirsNoConflict
+--- PASS: TestNamingSameBaseDifferentDirsNoConflict (0.01s)
+=== RUN   TestNamingSameBaseDifferentDirsNoDiagnostics
+--- PASS: TestNamingSameBaseDifferentDirsNoDiagnostics (0.01s)
+=== RUN   TestNamingSameDirCollapseStillConflicts
+--- PASS: TestNamingSameDirCollapseStillConflicts (0.00s)
+=== RUN   TestNamingConflictOrderIsFullyDetermined
+--- PASS: TestNamingConflictOrderIsFullyDetermined (0.00s)
+=== RUN   TestNamingCodeValues
+--- PASS: TestNamingCodeValues (0.00s)
+=== RUN   TestNamingDiagnosticsExistingSymbol
+--- PASS: TestNamingDiagnosticsExistingSymbol (0.01s)
+=== RUN   TestNamingDiagnosticsSameBatch
+--- PASS: TestNamingDiagnosticsSameBatch (0.00s)
+=== RUN   TestNamingDiagnosticsNoConflict
+--- PASS: TestNamingDiagnosticsNoConflict (0.00s)
+=== RUN   TestNamingDiagnosticErrorString
+    naming_diag_test.go:154: 诊断输出样例: C:\Users\admin\AppData\Local\Temp\TestNamingDiagnosticErrorString11076954\001\home.gxml:0:0: CODEGEN-NAME-001: generated symbol "goxmlRenderKeyHome" (from C:\Users\admin\AppData\Local\Temp\TestNamingDiagnosticErrorString11076954\001\home.gxml) is already declared in package: C:\Users\admin\AppData\Local\Temp\TestNamingDiagnosticErrorString11076954\001\user.go
+--- PASS: TestNamingDiagnosticErrorString (0.00s)
+=== RUN   TestNamingCodeConstantsUseContractsPrefix
+    naming_diag_test.go:223: 已校验 2 个导出 Code* 常量均使用 contracts.CodePrefixCodegenName 拼接
+--- PASS: TestNamingCodeConstantsUseContractsPrefix (0.00s)
+=== RUN   TestNamingOwnArtifactUsesNormalizedSourcePath
+--- PASS: TestNamingOwnArtifactUsesNormalizedSourcePath (0.01s)
+=== RUN   TestNamingOwnArtifactMismatchStillConflicts
+--- PASS: TestNamingOwnArtifactMismatchStillConflicts (0.00s)
+=== RUN   TestNamingOwnArtifactNormalizesHeaderSide
+--- PASS: TestNamingOwnArtifactNormalizesHeaderSide (0.00s)
+=== RUN   TestNamingOwnArtifactDiagnosticCodesF06
+--- PASS: TestNamingOwnArtifactDiagnosticCodesF06 (0.00s)
+=== RUN   TestNamingPageKindsSymbolSets
+--- PASS: TestNamingPageKindsSymbolSets (3.19s)
+=== RUN   TestNamingPrecheckSetIsUpperBoundOfAllKinds
+--- PASS: TestNamingPrecheckSetIsUpperBoundOfAllKinds (0.00s)
+=== RUN   TestTwoStaticSourcesSamePackage
+    naming_samepkg_test.go:190: 同包编译通过：home.gxml + detail.gxml（2895 + 2931 字节产物）
+--- PASS: TestTwoStaticSourcesSamePackage (3.82s)
+=== RUN   TestStaticAndBindingSourcesSamePackage
+    naming_samepkg_test.go:211: 同包编译通过：home.gxml + detail.gxml（2895 + 5215 字节产物）
+--- PASS: TestStaticAndBindingSourcesSamePackage (3.96s)
+=== RUN   TestTwoBindingSourcesSamePackage
+    naming_samepkg_test.go:237: 同包编译通过：home.gxml + detail.gxml（5169 + 5215 字节产物）
+--- PASS: TestTwoBindingSourcesSamePackage (4.16s)
+=== RUN   TestSamePackageTwoSourcesUseDistinctTypeNames
+--- PASS: TestSamePackageTwoSourcesUseDistinctTypeNames (0.00s)
+=== RUN   TestGeneratedSymbolsNarrowBySlots
+--- PASS: TestGeneratedSymbolsNarrowBySlots (0.00s)
+=== RUN   TestNamingSingleFileStable
+--- PASS: TestNamingSingleFileStable (1.81s)
+=== RUN   TestNamingDetectsSameBatchConflict
+--- PASS: TestNamingDetectsSameBatchConflict (0.00s)
+=== RUN   TestNamingNoConflictBetweenDistinctSources
+--- PASS: TestNamingNoConflictBetweenDistinctSources (0.00s)
+=== RUN   TestNamingDetectsExistingUserSymbol
+--- PASS: TestNamingDetectsExistingUserSymbol (0.01s)
+=== RUN   TestNamingIgnoresOwnArtifact
+--- PASS: TestNamingIgnoresOwnArtifact (0.01s)
+=== RUN   TestNamingIgnoresOwnRenamedArtifact
+--- PASS: TestNamingIgnoresOwnRenamedArtifact (0.01s)
+=== RUN   TestNamingDetectsPascalCollapse
+--- PASS: TestNamingDetectsPascalCollapse (0.00s)
+=== RUN   TestNamingNoConflictSingleFile
+--- PASS: TestNamingNoConflictSingleFile (0.00s)
+=== RUN   TestNamingIgnoresTestFiles
+--- PASS: TestNamingIgnoresTestFiles (0.01s)
+=== RUN   TestNamingMissingTargetDirIsNotError
+--- PASS: TestNamingMissingTargetDirIsNotError (0.00s)
+=== RUN   TestNamingUniqueSymbolsAcrossSources
+--- PASS: TestNamingUniqueSymbolsAcrossSources (0.00s)
+=== RUN   TestNamingSourceSymbolSuffixRules
+--- PASS: TestNamingSourceSymbolSuffixRules (0.00s)
+=== RUN   TestNamingViewAndTypesShareSuffix
+--- PASS: TestNamingViewAndTypesShareSuffix (0.00s)
+=== RUN   TestTextCacheIsDeclaredOnlyForBindingPages
+--- PASS: TestTextCacheIsDeclaredOnlyForBindingPages (1.80s)
+=== RUN   TestPrecheckIsConservativeForStaticTextCache
+--- PASS: TestPrecheckIsConservativeForStaticTextCache (0.97s)
+=== RUN   TestPrecheckOverreportsForStaticPageButBuildStillPasses
+--- PASS: TestPrecheckOverreportsForStaticPageButBuildStillPasses (3.44s)
+=== RUN   TestPrecheckOverreportsForEventOnlyPage
+--- PASS: TestPrecheckOverreportsForEventOnlyPage (3.08s)
+=== RUN   TestPrecheckTextCacheConflictIsRealForBindingPage
+--- PASS: TestPrecheckTextCacheConflictIsRealForBindingPage (3.10s)
+PASS
+ok  	github.com/goxml/goxml/internal/compiler/codegen	31.974s
+rc=0

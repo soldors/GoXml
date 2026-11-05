@@ -1,0 +1,23 @@
+goos: windows
+goarch: amd64
+pkg: github.com/goxml/goxml/internal/compiler/codegen
+cpu: 12th Gen Intel(R) Core(TM) i7-12700H
+BenchmarkGenerateSingleText-20    	    4551	    277203 ns/op	   66280 B/op	    1128 allocs/op
+--- BENCH: BenchmarkGenerateSingleText-20
+    gen_bench_test.go:136: 产物 2975 字节
+    gen_bench_test.go:136: 产物 2975 字节
+    gen_bench_test.go:136: 产物 2975 字节
+BenchmarkGenerateColumn3-20       	    2997	    443455 ns/op	   81764 B/op	    1392 allocs/op
+--- BENCH: BenchmarkGenerateColumn3-20
+    gen_bench_test.go:141: 产物 3387 字节
+    gen_bench_test.go:141: 产物 3387 字节
+    gen_bench_test.go:141: 产物 3387 字节
+    gen_bench_test.go:141: 产物 3387 字节
+BenchmarkGenerateNested-20        	    2088	    578936 ns/op	   88544 B/op	    1501 allocs/op
+--- BENCH: BenchmarkGenerateNested-20
+    gen_bench_test.go:146: 产物 3582 字节
+    gen_bench_test.go:146: 产物 3582 字节
+    gen_bench_test.go:146: 产物 3582 字节
+PASS
+ok  	github.com/goxml/goxml/internal/compiler/codegen	13.000s
+rc=0

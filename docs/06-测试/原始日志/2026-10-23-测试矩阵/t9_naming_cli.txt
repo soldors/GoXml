@@ -1,0 +1,27 @@
+=== RUN   TestNamingForOnlyPageTextCacheNotOverreported
+--- PASS: TestNamingForOnlyPageTextCacheNotOverreported (1.76s)
+=== RUN   TestNamingConflictDiagnosticsNotDuplicated
+--- PASS: TestNamingConflictDiagnosticsNotDuplicated (4.18s)
+=== RUN   TestNamingPrecheckSkippedOnAllHit
+--- PASS: TestNamingPrecheckSkippedOnAllHit (3.43s)
+=== RUN   TestNamingConflictNoWrites
+--- PASS: TestNamingConflictNoWrites (3.22s)
+=== RUN   TestNamingConflictSameBatchRejected
+--- PASS: TestNamingConflictSameBatchRejected (2.37s)
+=== RUN   TestNamingConflictDoesNotCreateOutDir
+--- PASS: TestNamingConflictDoesNotCreateOutDir (2.58s)
+=== RUN   TestNamingStaticPageTextCacheNotOverreported
+--- PASS: TestNamingStaticPageTextCacheNotOverreported (3.24s)
+=== RUN   TestNamingEventOnlyPageTextCacheNotOverreported
+--- PASS: TestNamingEventOnlyPageTextCacheNotOverreported (1.79s)
+=== RUN   TestNamingConflictStdoutSilentMultiFile
+--- PASS: TestNamingConflictStdoutSilentMultiFile (3.41s)
+=== RUN   TestNamingDoesNotMaskCompileErrors
+--- PASS: TestNamingDoesNotMaskCompileErrors (0.95s)
+=== RUN   TestNamingMultiSourceSamePackageOK
+--- PASS: TestNamingMultiSourceSamePackageOK (1.11s)
+=== RUN   TestNamingSameBaseDifferentDirsOK
+--- PASS: TestNamingSameBaseDifferentDirsOK (1.97s)
+PASS
+ok  	github.com/goxml/goxml/internal/cli	30.256s
+rc=0

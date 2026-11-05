@@ -1,0 +1,81 @@
+Gio glyph ID 位布局: facebits=16 sizebits=16 gidbits=32
+嵌入 faces=1 bytes=1625796
+
+=== 场景1 仅嵌入子集（NoSystemFonts） ===
+rune       cp         gid        g#   nominal   note
+'A'        U+000041   34         1    34        ASCII（覆盖内）
+'é'        U+0000E9   105        1    105       拉丁扩展（ASCII 外）
+'世'        U+004E16   691        1    691       GB2312 内汉字
+'汉'        U+006C49   3472       1    3472      GB2312 内汉字
+'〇'        U+003007   0          1    MISS      GB2312 内
+'𠀋'        U+02000B   0          1    MISS      U+2000B 罕用字（GB2312 外）
+'鿿'        U+009FFF   0          1    MISS      U+9FFF 边界（GB2312 外）
+'😀'        U+01F600   0          1    MISS      U+1F600 emoji
+'→'        U+002192   269        1    269       U+2192 箭头
+'★'        U+002605   434        1    434       U+2605 符号
+
+诊断: probe family=CJK elapsed=104.396ms timeout=false resolved=C:\Windows\Fonts\msyh.ttc id=system:msyh.ttc
+  - C:\Windows\Fonts\msyh.ttc [ok]
+  * coverage 20/20
+系统集合 id=system:msyh.ttc faces=2
+
+=== 场景2 默认 NewTheme（系统字体 + collection） ===
+rune       cp         gid        g#   nominal   note
+'A'        U+000041   39         1    39        ASCII（覆盖内）
+'é'        U+0000E9   170        1    170       拉丁扩展（ASCII 外）
+'世'        U+004E16   1037       1    1037      GB2312 内汉字
+'汉'        U+006C49   2126       1    2126      GB2312 内汉字
+'〇'        U+003007   28579      1    28579     GB2312 内
+'𠀋'        U+02000B   13841      1    MISS      U+2000B 罕用字（GB2312 外）
+'鿿'        U+009FFF   30191      1    30191     U+9FFF 边界（GB2312 外）
+'😀'        U+01F600   6787       1    MISS      U+1F600 emoji
+'→'        U+002192   594        1    594       U+2192 箭头
+'★'        U+002605   857        1    857       U+2605 符号
+
+=== 场景3 裸 Gio Shaper（无 collection） ===
+rune       cp         gid        g#   nominal   note
+'A'        U+000041   36         1    -         ASCII（覆盖内）
+'é'        U+0000E9   112        1    -         拉丁扩展（ASCII 外）
+'世'        U+004E16   2913       1    -         GB2312 内汉字
+'汉'        U+006C49   2126       1    -         GB2312 内汉字
+'〇'        U+003007   2064       1    -         GB2312 内
+'𠀋'        U+02000B   15472      1    -         U+2000B 罕用字（GB2312 外）
+'鿿'        U+009FFF   30191      1    -         U+9FFF 边界（GB2312 外）
+'😀'        U+01F600   0          1    -         U+1F600 emoji
+'→'        U+002192   314        1    -         U+2192 箭头
+'★'        U+002605   1787       1    -         U+2605 符号
+
+=== 场景4 collection=[嵌入, 系统] ===
+rune       cp         gid        g#   nominal   note
+'A'        U+000041   34         1    -         ASCII（覆盖内）
+'é'        U+0000E9   105        1    -         拉丁扩展（ASCII 外）
+'世'        U+004E16   691        1    -         GB2312 内汉字
+'汉'        U+006C49   3472       1    -         GB2312 内汉字
+'〇'        U+003007   28579      1    -         GB2312 内
+'𠀋'        U+02000B   13841      1    -         U+2000B 罕用字（GB2312 外）
+'鿿'        U+009FFF   30191      1    -         U+9FFF 边界（GB2312 外）
+'😀'        U+01F600   6787       1    -         U+1F600 emoji
+'→'        U+002192   269        1    -         U+2192 箭头
+'★'        U+002605   434        1    -         U+2605 符号
+
+=== 场景5 collection=[系统, 嵌入] ===
+rune       cp         gid        g#   nominal   note
+'A'        U+000041   39         1    -         ASCII（覆盖内）
+'é'        U+0000E9   170        1    -         拉丁扩展（ASCII 外）
+'世'        U+004E16   1037       1    -         GB2312 内汉字
+'汉'        U+006C49   2126       1    -         GB2312 内汉字
+'〇'        U+003007   28579      1    -         GB2312 内
+'𠀋'        U+02000B   13841      1    -         U+2000B 罕用字（GB2312 外）
+'鿿'        U+009FFF   30191      1    -         U+9FFF 边界（GB2312 外）
+'😀'        U+01F600   6787       1    -         U+1F600 emoji
+'→'        U+002192   594        1    -         U+2192 箭头
+'★'        U+002605   857        1    -         U+2605 符号
+
+指纹对照: 世 嵌入=691 系统=1037 | 〇 嵌入=MISS 系统=28579
+
+=== 场景6 覆盖增量（对照 charset.txt 共 7540 码位）===
+  两者都有      7540
+  仅嵌入有      0  ← 追加嵌入的真实收益
+  仅系统有      0
+  两者都无      0
+rc=0

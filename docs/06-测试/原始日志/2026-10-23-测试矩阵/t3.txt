@@ -1,0 +1,48 @@
+=== RUN   TestDevLogCoversRecentCommits
+    docgate_test.go:160: 已豁免 2 个日志维护提交（提交内容仅涉及 dev-log/CHANGELOG）
+--- PASS: TestDevLogCoversRecentCommits (1.01s)
+=== RUN   TestGateDetectsMissingCommit
+--- PASS: TestGateDetectsMissingCommit (0.00s)
+=== RUN   TestGateDetectsEmptyRange
+--- PASS: TestGateDetectsEmptyRange (0.00s)
+=== RUN   TestGitFailureIsFatal
+--- PASS: TestGitFailureIsFatal (0.00s)
+=== RUN   TestMarkdownLocalLinksExist
+    docgate_test.go:349: 检查 167 份 Markdown、295 个行内本地链接目标
+--- PASS: TestMarkdownLocalLinksExist (0.12s)
+=== RUN   TestMarkdownLinkGateDetectsMissingTarget
+--- PASS: TestMarkdownLinkGateDetectsMissingTarget (0.01s)
+=== RUN   TestWBSHasTaskCardsAndAcyclicDependencies
+--- PASS: TestWBSHasTaskCardsAndAcyclicDependencies (0.00s)
+=== RUN   TestWBSValidatorDetectsMissingCardsDependenciesAndCycles
+--- PASS: TestWBSValidatorDetectsMissingCardsDependenciesAndCycles (0.00s)
+=== RUN   TestAsyncPathNoRenderShaper
+=== RUN   TestAsyncPathNoRenderShaper/自检：检测器能识别真实违规
+=== RUN   TestAsyncPathNoRenderShaper/自检：构造函数名不算违规
+--- PASS: TestAsyncPathNoRenderShaper (0.00s)
+    --- PASS: TestAsyncPathNoRenderShaper/自检：检测器能识别真实违规 (0.00s)
+    --- PASS: TestAsyncPathNoRenderShaper/自检：构造函数名不算违规 (0.00s)
+=== RUN   TestThemeRouteBDocumentationConsistent
+=== RUN   TestThemeRouteBDocumentationConsistent/字体规范不得要求生成代码引用字体字段
+=== RUN   TestThemeRouteBDocumentationConsistent/字体规范必须说明字体解析由运行时完成
+=== RUN   TestThemeRouteBDocumentationConsistent/输出契约仍固定_th_为_*material.Theme
+--- PASS: TestThemeRouteBDocumentationConsistent (0.00s)
+    --- PASS: TestThemeRouteBDocumentationConsistent/字体规范不得要求生成代码引用字体字段 (0.00s)
+    --- PASS: TestThemeRouteBDocumentationConsistent/字体规范必须说明字体解析由运行时完成 (0.00s)
+    --- PASS: TestThemeRouteBDocumentationConsistent/输出契约仍固定_th_为_*material.Theme (0.00s)
+=== RUN   TestGeneratedLayoutSignatureMatchesRouteB
+--- PASS: TestGeneratedLayoutSignatureMatchesRouteB (0.00s)
+=== RUN   TestThemePackageBoundary
+=== RUN   TestThemePackageBoundary/app_的默认主题必须来自_theme_包
+=== RUN   TestThemePackageBoundary/自检：检测器能识别真实调用
+=== RUN   TestThemePackageBoundary/theme_不得反向依赖_app_或窗口
+--- PASS: TestThemePackageBoundary (0.01s)
+    --- PASS: TestThemePackageBoundary/app_的默认主题必须来自_theme_包 (0.00s)
+    --- PASS: TestThemePackageBoundary/自检：检测器能识别真实调用 (0.00s)
+    --- PASS: TestThemePackageBoundary/theme_不得反向依赖_app_或窗口 (0.01s)
+=== RUN   TestFont001AcceptanceCommandsAreNotVacuous
+=== RUN   TestFont001AcceptanceCommandsAreNotVacuous/自检：空转命令必须被判为失败
+--- PASS: TestFont001AcceptanceCommandsAreNotVacuous (0.01s)
+    --- PASS: TestFont001AcceptanceCommandsAreNotVacuous/自检：空转命令必须被判为失败 (0.00s)
+PASS
+ok  	github.com/goxml/goxml/internal/docgate	1.538s

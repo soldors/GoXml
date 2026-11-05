@@ -1,0 +1,45 @@
+=== D1 冷启动基线（C 落地后，2026-10-21）===
+GOOS=windows 字体目标: CJK
+
+--- 第 1 轮（完全冷）---
+  ResolveWithReport（探测+覆盖）     117.6714ms
+      → resolved=C:\Windows\Fonts\msyh.ttc coverage=coverage 20/20
+  Faces 反查（同 Provider）                 0s
+  text.NewShaper                38.6889ms
+  首次 shaping（10 字符）             53.4892ms
+  小计（不含 Faces 反查）              209.8495ms
+
+--- 后续 4 轮（进程内重复，观察缓存效应）---
+  ResolveWithReport（探测+覆盖）     111.3475ms
+      → resolved=C:\Windows\Fonts\msyh.ttc coverage=coverage 20/20
+  Faces 反查（同 Provider）                 0s
+  text.NewShaper                  630.2µs
+  首次 shaping（10 字符）             47.0419ms
+  ResolveWithReport（探测+覆盖）      102.312ms
+      → resolved=C:\Windows\Fonts\msyh.ttc coverage=coverage 20/20
+  Faces 反查（同 Provider）                 0s
+  text.NewShaper                  588.8µs
+  首次 shaping（10 字符）             43.0734ms
+  ResolveWithReport（探测+覆盖）      89.5208ms
+      → resolved=C:\Windows\Fonts\msyh.ttc coverage=coverage 20/20
+  Faces 反查（同 Provider）                 0s
+  text.NewShaper                       0s
+  首次 shaping（10 字符）             52.4498ms
+  ResolveWithReport（探测+覆盖）     102.1586ms
+      → resolved=C:\Windows\Fonts\msyh.ttc coverage=coverage 20/20
+  Faces 反查（同 Provider）                 0s
+  text.NewShaper                  534.9µs
+  首次 shaping（10 字符）             45.9003ms
+  平均 total=148.88955ms probe=101.334725ms shaper=438.475µs shape=47.11635ms
+
+--- 对照：嵌入链路（无系统字体）---
+  嵌入 Load + ParseCollection      2.2285ms
+
+--- 对照：首帧临时 shaper 的构建代价 ---
+  text.NewShaper()（默认，会索引系统字体）                     0s
+  text.NewShaper(NoSystemFonts())                  0s
+  text.NewShaper(NoSystemFonts+collection)    516.2µs
+
+结论要点：首帧预算与 20ms 探测预算必须分开计量（见 D 卡 §2）。
+冷启动 total=209.8495ms（其中系统探测 117.6714ms）
+rc=0
