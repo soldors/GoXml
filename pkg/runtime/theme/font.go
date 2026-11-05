@@ -277,11 +277,12 @@ func (o ProviderOptions) withDefaults() ProviderOptions {
 // 同一个对象同时管理「Resolve 结果」与「已解析集合」，这是评审要点 1 的落地：
 // 标识与集合由**同一份缓存**持有，不可能出现"标识存在但集合丢失/需重扫"。
 type Provider struct {
-	mu       sync.Mutex
+	mu sync.Mutex
 	// embMu 串行化 loadEmbedded：临时主题由**每个 Lazy 各自**构造，多个 Lazy
 	// 共享同一 Provider 时会并发调用 Embedded.Load()。默认 embed 加载器无状态可重入，
 	// 但 EmbeddedFontLoader 契约允许调用方注入任意加载器（可能非并发安全），
-	// 故此处串行化，保证 loadEmbedded 对任意加载器并发安全（R23-B 无窗口 race 实证）。
+	// 故此处串行化同一 Provider 的加载调用（R23-B 无窗口 race 实证）。
+	// 同一加载器若被多个 Provider 共享，其跨 Provider 同步仍由调用方负责。
 	embMu    sync.Mutex
 	opts     ProviderOptions
 	sets     map[string]*fontSet
