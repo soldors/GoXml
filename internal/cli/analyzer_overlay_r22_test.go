@@ -185,3 +185,47 @@ func TestBehaviorUnusedMissingNotBlocking(t *testing.T) {
 		t.Fatalf("非 Go 未用缺失替换不应阻断，got rc=%d stderr=%s", code, se)
 	}
 }
+
+// TestBehaviorMixedOverlayDeletesMethod prevents a replacement snapshot from
+// restoring a method file deleted by the same user overlay.
+func TestBehaviorMixedOverlayDeletesMethod(t *testing.T) {
+	root := r1Project(t)
+	r22Write(t, filepath.Join(root, "ui", "vm.go"), "package ui\ntype VM struct {}\n")
+	r22Write(t, filepath.Join(root, "ui", "actions.go"), "package ui\nfunc (*VM) Inc() {}\n")
+	r22Write(t, filepath.Join(root, "vm.txt"), "package ui\ntype VM struct {}\n")
+	r22Write(t, filepath.Join(root, "ui", "home.gxml"),
+		`<Goxml Version="1" ViewModel="VM"><Page Route="/"><Button Text="go" Click="Inc"/></Page></Goxml>`)
+	r22Write(t, filepath.Join(root, "user.json"), `{"Replace":{"ui/vm.go":"vm.txt","ui/actions.go":""}}`)
+	r1SetEnv(t)
+	code, _, stderr := runCLIStrings(t, filepath.Join(root, "ui", "home.gxml"))
+	if code != ExitFailure || !strings.Contains(stderr, "GXML-EVENT-003") {
+		t.Fatalf("deleted method must be rejected before writing: rc=%d stderr=%s", code, stderr)
+	}
+	for _, rel := range []string{"ui/home_gen.go", ".goxml/generate-manifest.json"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("failure created %s: %v", rel, err)
+		}
+	}
+}
+
+// TestBehaviorMixedOverlayReplacesMethod accepts a virtual method file while
+// excluding the deleted disk declaration of the same method.
+func TestBehaviorMixedOverlayReplacesMethod(t *testing.T) {
+	root := r1Project(t)
+	r22Write(t, filepath.Join(root, "ui", "vm.go"), "package ui\ntype VM struct {}\n")
+	r22Write(t, filepath.Join(root, "ui", "actions.go"), "package ui\nfunc (*VM) Inc() {}\n")
+	r22Write(t, filepath.Join(root, "extra.txt"), "package ui\nfunc (*VM) Inc() {}\n")
+	r22Write(t, filepath.Join(root, "ui", "home.gxml"),
+		`<Goxml Version="1" ViewModel="VM"><Page Route="/"><Button Text="go" Click="Inc"/></Page></Goxml>`)
+	r22Write(t, filepath.Join(root, "user.json"), `{"Replace":{"ui/actions.go":"","ui/new_actions.go":"extra.txt"}}`)
+	r1SetEnv(t)
+	code, _, stderr := runCLIStrings(t, filepath.Join(root, "ui", "home.gxml"))
+	if code != ExitOK {
+		t.Fatalf("replacement method must generate successfully: rc=%d stderr=%s", code, stderr)
+	}
+	cmd := exec.Command(r21Go(t), "build", "./ui")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated package must build with the user overlay: %v\n%s", err, out)
+	}
+}

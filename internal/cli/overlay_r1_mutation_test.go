@@ -10,11 +10,13 @@ package cli
 // 变异文本使 healthy 测试翻红，而产物仍可编译。
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func r2RepoRoot(t *testing.T) string {
@@ -28,49 +30,39 @@ func r2RepoRoot(t *testing.T) string {
 
 func runGoTestWithOverlay(t *testing.T, overlayJSON, runRe string) (int, string) {
 	t.Helper()
-	args := []string{"test", "./internal/cli", "-count=1", "-run", runRe}
+	args := []string{"test", "./internal/cli", "-count=1", "-v", "-timeout=90s", "-run", runRe}
 	if overlayJSON != "" {
 		args = append(args, "-overlay="+overlayJSON)
 	}
-	cmd := exec.Command(r21Go(t), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, r21Go(t), args...)
 	cmd.Dir = r2RepoRoot(t)
 	cmd.Env = append(os.Environ(), "GOENV=off", "GOTOOLCHAIN=local")
-	out, _ := cmd.CombinedOutput()
-	rc := 0
-	if cmd.ProcessState != nil {
-		rc = cmd.ProcessState.ExitCode()
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("nested test timed out: %v\n%s", ctx.Err(), out)
 	}
-	return rc, string(out)
+	if err != nil && cmd.ProcessState == nil {
+		t.Fatalf("nested test did not start: %v\n%s", err, out)
+	}
+	return cmd.ProcessState.ExitCode(), string(out)
 }
 
 func writeOverlayJSONForTest(t *testing.T, from, to string) string {
 	t.Helper()
 	tmp := filepath.Join(t.TempDir(), "ov.json")
-	payload := `{"Replace":{` + jsonQuote(from) + `:` + jsonQuote(to) + `}}`
-	if err := os.WriteFile(tmp, []byte(payload), 0o644); err != nil {
+	payload, err := jsonMarshalOverlay(map[string]string{from: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return tmp
 }
 
-func jsonQuote(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-func mutantCopy(t *testing.T, replacements [][2]string) (string, bool) {
+func mutantCopy(t *testing.T, replacements [][2]string) string {
 	t.Helper()
 	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
 	data, err := os.ReadFile(src)
@@ -79,8 +71,8 @@ func mutantCopy(t *testing.T, replacements [][2]string) (string, bool) {
 	}
 	text := string(data)
 	for _, rp := range replacements {
-		if !strings.Contains(text, rp[0]) {
-			return "", false
+		if strings.Count(text, rp[0]) != 1 {
+			t.Fatalf("mutation anchor must occur once, got %d", strings.Count(text, rp[0]))
 		}
 		text = strings.Replace(text, rp[0], rp[1], 1)
 	}
@@ -88,25 +80,22 @@ func mutantCopy(t *testing.T, replacements [][2]string) (string, bool) {
 	if err := os.WriteFile(dst, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dst, true
+	return dst
 }
 
 // TestMutationGoOverlayCrossField 退化①：Analyzer 无用户 overlay（看磁盘）→ 跨包字段健康测试 FAIL。
 func TestMutationGoOverlayCrossField(t *testing.T) {
 	anchor := "if len(user) == 0 {\n\t\treturn nil, nil\n\t}"
 	mut := "if true {\n\t\treturn nil, nil\n\t}\n\t_ = vmImportPaths\n\t_ = moduleRoot\n\t_ = goExe\n\tif len(user) == 0 {\n\t\treturn nil, nil\n\t}"
-	mutant, ok := mutantCopy(t, [][2]string{{anchor, mut}})
-	if !ok {
-		t.Skip("generated_overlay.go 结构变化，跳过文本变异")
-	}
+	mutant := mutantCopy(t, [][2]string{{anchor, mut}})
 	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
 	ov := writeOverlayJSONForTest(t, src, mutant)
 	rc, out := runGoTestWithOverlay(t, ov, "^TestBehaviorCrossFieldRejected$")
-	if rc == 0 || !strings.Contains(out, "--- FAIL") {
+	if rc != 1 || !strings.Contains(out, "--- FAIL: TestBehaviorCrossFieldRejected") {
 		t.Fatalf("退化①应使跨包字段健康测试 FAIL（rc=%d）；输出:\n%s", rc, out)
 	}
 	rc2, out2 := runGoTestWithOverlay(t, "", "^TestBehaviorCrossFieldRejected$")
-	if rc2 != 0 {
+	if rc2 != 0 || !strings.Contains(out2, "--- PASS: TestBehaviorCrossFieldRejected") || strings.Contains(out2, "--- SKIP") {
 		t.Fatalf("恢复后应 PASS（rc=%d）；输出:\n%s", rc2, out2)
 	}
 }
@@ -115,18 +104,15 @@ func TestMutationGoOverlayCrossField(t *testing.T) {
 func TestMutationGoOverlayPreReadAll(t *testing.T) {
 	anchor := "if !selected[full] {\n\t\t\tcontinue // 未被 Go 选中：不读取（F3：平台排除/无关/未用缺失）\n\t\t}"
 	mut := "// mutation: 不按选中过滤，直接读全部替换源\n\t\t_ = selected"
-	mutant, ok := mutantCopy(t, [][2]string{{anchor, mut}})
-	if !ok {
-		t.Skip("generated_overlay.go 结构变化，跳过文本变异")
-	}
+	mutant := mutantCopy(t, [][2]string{{anchor, mut}})
 	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
 	ov := writeOverlayJSONForTest(t, src, mutant)
 	rc, out := runGoTestWithOverlay(t, ov, "^TestBehaviorUnusedMissingNotBlocking$")
-	if rc == 0 || !strings.Contains(out, "--- FAIL") {
+	if rc != 1 || !strings.Contains(out, "--- FAIL: TestBehaviorUnusedMissingNotBlocking") {
 		t.Fatalf("退化②应使未用缺失健康测试 FAIL（rc=%d）；输出:\n%s", rc, out)
 	}
 	rc2, out2 := runGoTestWithOverlay(t, "", "^TestBehaviorUnusedMissingNotBlocking$")
-	if rc2 != 0 {
+	if rc2 != 0 || !strings.Contains(out2, "--- PASS: TestBehaviorUnusedMissingNotBlocking") || strings.Contains(out2, "--- SKIP") {
 		t.Fatalf("恢复后应 PASS（rc=%d）；输出:\n%s", rc2, out2)
 	}
 }
