@@ -151,4 +151,3 @@ frame2: Queue(NameReturn Press/Release) → frame()  // 提交触发
 | 未覆盖的范围 | **D5-F 原生焦点/IME/真实窗口明确未执行**；现行语义须读 R8；不得写「Input 自动化验收全部完成」 |
 | 历史执行方独立性 | 未证（缺具名执行者/独立会话记录） |
 | 本轮 E3 重放 | r1r-replay-d5-acceptance 是本轮标准台账 E3 重放，不等于独立历史验收 |
-

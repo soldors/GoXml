@@ -139,4 +139,3 @@ return material.Editor(th, ed, "").Layout(gtx)
 | 未覆盖的范围 | 旧「SetText < Update < Layout」顺序语义的现行有效性、独立历史验收、真实窗口 |
 | 历史执行方独立性 | 未证（缺具名执行者/独立会话记录） |
 | 本轮 E3 重放 | r1r-replay-d4-sync 是本轮标准台账 E3 重放，不等于独立历史验收 |
-
