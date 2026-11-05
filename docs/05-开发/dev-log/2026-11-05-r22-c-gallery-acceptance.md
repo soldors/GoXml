@@ -5,13 +5,15 @@
 树 `C:/Users/admin/.codex/worktrees/r22-workbuddy-gallery/Goxml`；分支
 `codex/r22-workbuddy-gallery-acceptance`。主库与用户 WIP 只读，未推送、未合并。
 
-三个提交（按切片，逐文件 `git add --`，`GOXML_AUTO_PUSH=0`，临时空 hooksPath）：
+四个业务提交（按切片，逐文件 `git add --`，`GOXML_AUTO_PUSH=0`，临时空 hooksPath）；
+本文件自身所在的 dev-log 提交不在表内（它只记别人）：
 
 | 切片 | 提交 | 内容 |
 |---|---|---|
 | C1 / C2 入口 | `56772ff3b54a83270f6fca5f4fe0bb682ba80cdc` | `scripts/verify-gallery-accept.py`（主验收判据 + 缓存/资产/变异矩阵） |
 | C3 反例 | `f5ddcb799d2961ab3f662f88e1d7e0a48130cf62` | `scripts/test-verify-gallery-accept.py`（14 条不跑 Go 的秒级反例） |
 | C3 文档 | `052f7c7ca61d9c00b46cbd6ea0119f2022f673bd` | 图库教程：一条命令、C8 上下文对照、关窗两层证据、删交接包工具依赖 |
+| C3 数字修正 | `be1e57f67277993ac0f8c6500c78ab6eafb4e6bb` | README 不再写死判据条数（74→76 是过程事实，写死就会过期） |
 
 C1 与 C2 落在**同一个文件**里，所以合成一个提交：把同一个脚本拆成两个「半成品」
 提交会产生不可运行的中间态，而本线的证据只认「能跑出结论的那一版」。
@@ -128,7 +130,7 @@ ok；`go test ./internal/compiler/diagdoc` ok。本轮**不含 Go 改动**，未
 
 | 态 | 状态 |
 |---|---|
-| 实现 | 完成（3 个提交，工作树 clean） |
+| 实现 | 完成（4 个业务提交 + 本文件所在的 dev-log 提交，工作树 clean） |
 | 自测 | 完成（76/76 判据 + 14 条反例 + 11/6/24 条回归自检） |
 | 外审 | 未开始（交协调者） |
 | 主仓 | 未合入（隔离分支 `codex/r22-workbuddy-gallery-acceptance`） |
