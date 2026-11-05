@@ -117,7 +117,7 @@ CGO_ENABLED=0 GOFLAGS=-mod=readonly go test ./view/...
 go run ./cmd/gallery
 ```
 
-## 三个包各管什么
+## 各包职责
 
 | 包 | 来源 | 职责 |
 |---|---|---|
@@ -133,16 +133,16 @@ go run ./cmd/gallery
 ## 路由：谁改状态，谁只发意图
 
 - **模型不导入 `pkg/runtime/router`。** `OpenDetail()` / `Back()` 只记录意图并调用
-  注入的导航函数（`SetNavigator`，入口在注册完路由后注入 `r.Navigate`）。
+  注入的导航函数（`wire.Build` 通过 `SetNavigator` 注入 `r.Navigate`）。
   于是模型可以被单测直接驱动，也不需要知道 Router 的线程模型。
 - **`Navigate` 可从任意 goroutine 调用**，从事件处理器里调用是合法的；它只把路径记成
-  **待定导航**，真正的切页在**下一帧帧首**由 UI 线程应用。
-- 因此**同帧排空**是一条可断言的语义，不是延迟缺陷：点击发生在第 N 帧的 Layout 内，
+  **待定导航**，由 UI 线程在 Router 帧首的导航阶段应用。
+- 页面点击发生在第 N 帧的子视图 Layout 内，已经过了本帧的导航阶段。
   `Router.Current()` 当帧仍是旧路径，第 N+1 帧才变成新路径。测试逐帧断言这两步
   （`TestRouteClickOpensDetail`）。
 - 未注册路径是**同步**错误（`router.ErrPathNotRegistered`），不会进入待定队列。
 - 页面构造失败时本次导航整体放弃、旧页继续运行、`NavError()` 记录原因；本模板的两个
-  工厂只可能在生成物缺失时失败。
+  工厂会把生成构造函数的错误原样交给 Router，例如内嵌图片解码失败。
 
 ## 关窗接线：`app.WithOnDestroy(r.View(), r.Shutdown)`
 
@@ -156,9 +156,10 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 - `WithOnDestroy` 对**已经包过**的视图返回错误（「destroy callback is already set」），
   这条错误本身就是一个可用的判据：生产组合再包一次必须失败，裸 `r.View()` 包一次必须成功。
   测试 `TestRouteDestroyWiringPresent` 就靠这一对正反例，**不用反射、不用认识内部类型**。
-- **边界（不夸大）**：`DestroyEvent → 回调` 的触发路径在 `pkg/runtime/app` 的事件循环里，
-  本工程不创建原生窗口，所以那条路径由该包的既有测试与原生验收覆盖。本工程证明的是
-  「回调挂在组合上」+「回调指向的 `Shutdown` 能力成立且幂等」。
+- 图库测试验证根视图已包装，并单独验证 `Shutdown` 可重复调用。
+  回调目标 `r.Shutdown` 由上面的生产接线指定。
+  `pkg/runtime/app` 的 `TestDestroyEventShutsDownWrappedRouter` 用受控事件分别验证两个循环
+  收到 `DestroyEvent` 后执行回调。图库入口在自动验收中只构建。
 
 ## 生成过程的两条硬要求
 
@@ -180,11 +181,11 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 | 格式 | PNG / JPEG（`image/png`、`image/jpeg` 是纯 Go，Windows 仍 `CGO_ENABLED=0`） |
 | 解码时机 | 构造期 `ReadFile` + `image.Decode` 一次，缓存 `paint.ImageOp`；`Layout` 只回放 |
 
-本模板的两张图由 `tools/make-assets.py` 确定性生成（24x24 与 32x16，用来让「哪个包
+本模板的两张图由本轮交接包中的 `make-assets.py` 确定性生成（24x24 与 32x16，用来让「哪个包
 内嵌了哪张图」在测试里可区分）。生成物里只写路径，不写像素：换图不改源码字节。
 
-静态页构造期解码失败会 panic——那是「生成文件被篡改/损坏」的不变式护栏；正常链路
-不可达，因为 pipeline 在生成前已经用 `DecodeConfig` + 完整 `Decode` 校验过同一批字节。
+本工程的绑定页构造函数通过 `error` 报告内嵌图片解码失败。Pipeline 在生成前用
+`DecodeConfig` 和完整 `Decode` 验证资产。请在可信构建目录操作，并在校验到编译期间保持资产树稳定。
 
 ## 缓存与资产：怎么验证它真的生效
 
@@ -200,7 +201,7 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 
 三件容易误判的事：
 
-1. **`GOFLAGS` 是缓存键的一项，混环境会得到一次假未命中。** 同一个工程，用
+1. **`GOFLAGS` 是缓存键的一项，改变构建上下文会使缓存失效。** 同一个工程，用
    `GOFLAGS=-mod=readonly`（`scripts/verify-projects.py` 的固定环境）跑是
    `命中 2，生成 0`；换成裸 shell（无 `GOFLAGS`）跑立刻变成
    `缓存未命中 …：package-sources-changed`。这不是资产变了、也不是源码变了，
@@ -224,15 +225,15 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 #   wire/wire.go: home(m) → home(model.NewGallery())，detail(m) → detail(model.NewGallery())
 #   go build ./... 通过（m 仍被 SetNavigator 使用）；
 #   go test -run ^TestRouteSharedModelSurvivesRoundTrip$ ./view/... 失败
-#   失败文案：点 (x,y) 应触发「记一次访问」，实际 LastAction=""（若为空：页面持有的模型不是共享的那份）
+#   失败文案：在扫描范围内未命中「打开详情」；测试观察的是共享模型上的 LastAction
 ```
 
 第二个变异先红在「点击没有落在共享模型上」这条断言（它读的是共享模型的 `LastAction`），
 而不是后面那条「回首页该看到新计数」——两处指向同一个事实，先到的那条先红。
-`tools/routed-gallery-accept.py` 会把实际失败行记进报告，不用文档口供代替原始输出。
+本轮交接包中的 `routed-gallery-accept.py` 将实际失败行写入报告。
 
 两条都只改 `wire` 的接线、不改生成物，所以「能编译」是有意义的：红的不是编译错误，
-而是那条接线上本该成立的事实。验收矩阵（`tools/routed-gallery-accept.py`）逐条跑
+而是那条接线上本该成立的事实。验收矩阵逐条跑
 `go build ./...`、变异后的单个用例、以及**未变异**工程上的同名用例作为对照。
 
 ## 离屏测试在测什么（10 个用例）
@@ -240,7 +241,7 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 `view/home/route_test.go`（跨页，package `home`）：
 
 - 起始状态：无当前页；导航后**同一帧**应用并渲染首页；只构造首页。
-- 真实点击「打开详情」：点击当帧仍是首页（同帧排空），下一帧切到详情页并构造实例。
+- 真实点击「打开详情」：点击当帧仍是首页，下一帧切到详情页并构造实例。
 - 跨页共享：详情页加一次 → 返回首页 → **首页渲染出来的**计数必须是新值。
 - 静态图真进了二进制：`img0.Size()` 等于 PNG 像素尺寸（24x24），不是 gxml 里的 64dp。
 - 关窗接线：已包装视图再包一次必须报错、裸视图包一次必须成功；`Shutdown` 后导航被拒绝且可重入。
@@ -259,7 +260,7 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 ## 本模板不做什么
 
 - 不引入新 GXML 语法、不新增 CLI 选项、不改 `Image` / `Router` / `app` 的生产代码。
-- 不声称有**转场动画**：基线 Router 是 B1（注册/导航/Dispatcher/关闭），转场快照属 B2。
+- 不声称有**转场动画**：本工程覆盖注册、导航与关闭接线。
 - 不自动化原生窗口：`cmd/gallery` 只构建、不运行；`DestroyEvent` 触发路径与 IME 属于
   人工/原生验收项，本工程的自动测试只覆盖离屏语义。
 - 不注册成第六个示例：`examples/gxml/testdata/` 下的五个示例保持不变，本目录在
