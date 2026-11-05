@@ -12,14 +12,11 @@ package router
 //   - 关闭与链竞争：剩余批次计数、导航丢弃、Current 不变；
 //   - 双实例隔离；丢弃计数口径。
 //
-// 有限实测与源码推断的区分：链深 ≤2000 的行为为**实测**；
+// 有限实测与源码推断的区分：64 节完整链为实测；
 // 「无上限增长」来自源码推断（drain 无预算字段），以 candidateRef 原型对照。
 // 每个探针帧均有墙钟超时（frameWithDeadline）。
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,25 +65,20 @@ func (f *livenessFixture) frameWithDeadline(t *testing.T, d time.Duration) {
 
 // runChain 建立深度 k 的回调链（fn_i 完成时分派 fn_{i+1}），返回执行记录
 // 与链头 Dispatch。每节记录完成时观察到的 Current（供「推迟导航」断言）。
-func runChain(r *Router, k int) (head func(), executed *atomic.Int64, seenCurrent *atomic.Value) {
-	executed = &atomic.Int64{}
-	seenCurrent = &atomic.Value{}
+func runChain(r *Router, k int) (head func(), seenCurrent *[]string) {
+	observed := make([]string, 0, k)
 	var next func(i int)
 	next = func(i int) {
-		executed.Add(1)
-		seenCurrent.Store(r.Current())
+		observed = append(observed, r.Current())
 		if i < k {
 			r.Dispatch(func() { next(i + 1) })
 		}
 	}
-	return func() { next(1) }, executed, seenCurrent
+	return func() { next(1) }, &observed
 }
 
 // TestR21ChainRunsSameFrameAndDelaysNavigation F-08 主判据。
-// 【分支差异】readyRef（budget=0，fixpoint）：64 节链全部同帧执行，链内
-// Current 恒为 /a，帧末 /b——导航被链推迟。candidateRef（本分支，每帧预算
-// 8）：fn 执行跨 8 帧（每帧恰 8 节），但**导航不受预算推迟**——第 1 帧末
-// 即切换 /b（导航活性优于基线）。最终语义待裁决二选一。
+// 64 节链全部同帧执行，链内 Current 恒为 /a，帧末切换至 /b。
 func TestR21ChainRunsSameFrameAndDelaysNavigation(t *testing.T) {
 	f := newLiveness(t)
 	r := f.r
@@ -102,7 +94,7 @@ func TestR21ChainRunsSameFrameAndDelaysNavigation(t *testing.T) {
 	}
 	f.frameWithDeadline(t, 0)
 
-	head, executed, seenCurrent := runChain(r, 64)
+	head, seenCurrent := runChain(r, 64)
 	r.Dispatch(head)
 	if err := r.Navigate("/b"); err != nil {
 		t.Fatal(err)
@@ -111,12 +103,13 @@ func TestR21ChainRunsSameFrameAndDelaysNavigation(t *testing.T) {
 	f.frameWithDeadline(t, 0)
 	elapsed := time.Since(start)
 
-	if got := executed.Load(); got != 64 {
+	if got := len(*seenCurrent); got != 64 {
 		t.Fatalf("链应全部同帧执行：executed=%d, want 64", got)
 	}
-	// 链内每节观察到的都是旧路径——导航被推迟到队列排空之后（readyRef 语义）。
-	if v, _ := seenCurrent.Load().(string); v != "/a" {
-		t.Fatalf("链内观察到的 Current=%q, want /a", v)
+	for i, current := range *seenCurrent {
+		if current != "/a" {
+			t.Fatalf("第 %d 节观察到 Current=%q, want /a", i+1, current)
+		}
 	}
 	if got := r.Current(); got != "/b" {
 		t.Fatalf("帧末 Current=%q, want /b（同帧仍生效，最后导航胜出）", got)
@@ -124,10 +117,7 @@ func TestR21ChainRunsSameFrameAndDelaysNavigation(t *testing.T) {
 	if pb.constructed.Load() != 1 {
 		t.Fatalf("/b 构造次数 = %d, want 1", pb.constructed.Load())
 	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("64 节链 8 帧耗时 %v（探针上限 5s）", elapsed)
-	}
-	t.Logf("64 节链跨 8 帧完成（每帧预算 8），耗时 %v（candidateRef 语义）", elapsed)
+	t.Logf("64 节链同帧完成，耗时 %v", elapsed)
 }
 
 // TestR21FIFOAndSameFrameReenqueue FIFO 与同帧再入队（守卫）：
@@ -178,7 +168,7 @@ func TestR21LastNavigationWinsWithChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.frameWithDeadline(t, 0)
-	head, executed, _ := runChain(r, 16)
+	head, seenCurrent := runChain(r, 16)
 	f.r.Dispatch(head)
 	if err := r.Navigate("/b"); err != nil {
 		t.Fatal(err)
@@ -186,10 +176,8 @@ func TestR21LastNavigationWinsWithChain(t *testing.T) {
 	if err := r.Navigate("/c"); err != nil {
 		t.Fatal(err)
 	}
-	for frame := 1; frame <= 2; frame++ { // candidateRef：预算 8 → 16 节跨 2 帧
-		f.frameWithDeadline(t, 0)
-	}
-	if got := executed.Load(); got != 16 {
+	f.frameWithDeadline(t, 0)
+	if got := len(*seenCurrent); got != 16 {
 		t.Fatalf("链执行 %d 节, want 16", got)
 	}
 	if got := r.Current(); got != "/c" {
@@ -229,7 +217,7 @@ func TestR21BackgroundDispatchDuringChain(t *testing.T) {
 }
 
 // TestR21ShutdownMidChainCompetes Shutdown 与链竞争（实测）：
-// 深度 200 的链在执行中被 Shutdown——已执行节数有限、剩余批次计入
+// 回调再入队后触发 Shutdown，待执行回调计入
 // DroppedCount、pending 导航丢弃、Current 保持；总计账一致。
 func TestR21ShutdownMidChainCompetes(t *testing.T) {
 	f := newLiveness(t)
@@ -249,16 +237,12 @@ func TestR21ShutdownMidChainCompetes(t *testing.T) {
 	// 链节阻塞在闸门上：放行前 Shutdown 已完成，竞争窗口确定。
 	gate := make(chan struct{})
 	chainStarted := make(chan struct{})
-	var chainOnce sync.Once
-	var next func(i int)
-	next = func(i int) {
-		chainOnce.Do(func() { close(chainStarted) })
-		if i < 200 {
-			r.Dispatch(func() { next(i + 1) })
-		}
+	var queuedRan atomic.Bool
+	r.Dispatch(func() {
+		r.Dispatch(func() { queuedRan.Store(true) })
+		close(chainStarted)
 		<-gate
-	}
-	r.Dispatch(func() { next(1) })
+	})
 	if err := r.Navigate("/b"); err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +253,14 @@ func TestR21ShutdownMidChainCompetes(t *testing.T) {
 		f.r.View().Layout(*f.gtx, f.th)
 		close(done)
 	}()
-	<-chainStarted // 链首已执行（阻塞在闸门）
-	r.Shutdown()   // 关闭竞争：锁序保证见 R18
-	close(gate)    // 放行链
+	select {
+	case <-chainStarted:
+	case <-time.After(10 * time.Second):
+		close(gate)
+		t.Fatal("等待链首回调超过墙钟上限 10s")
+	}
+	r.Shutdown() // 关闭竞争：锁序保证见 R18
+	close(gate)  // 放行链
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -286,8 +275,8 @@ func TestR21ShutdownMidChainCompetes(t *testing.T) {
 	}
 	// 计账：drain 剩余批次 + pendingNav 全部计入 DroppedCount（口径守卫）。
 	dropped := r.DroppedCount()
-	if dropped < 1 {
-		t.Fatalf("关闭竞争后应有丢弃计账，实际 %d", dropped)
+	if dropped != 2 || queuedRan.Load() {
+		t.Fatalf("关闭竞争后 DroppedCount=%d, want 2；排队回调执行=%v, want false", dropped, queuedRan.Load())
 	}
 	t.Logf("竞争结果：DroppedCount=%d（剩余批次+pendingNav），/b 未构造", dropped)
 }
@@ -303,7 +292,7 @@ func TestR21TwoInstanceChainIsolation(t *testing.T) {
 	if err := f2.r.Register("/b", factoryOf(pb)); err != nil {
 		t.Fatal(err)
 	}
-	head, executed, _ := runChain(f1.r, 32)
+	head, seenCurrent := runChain(f1.r, 32)
 	f1.r.Dispatch(head)
 	if err := f2.r.Navigate("/b"); err != nil {
 		t.Fatal(err)
@@ -315,10 +304,8 @@ func TestR21TwoInstanceChainIsolation(t *testing.T) {
 	if got := f2.r.DroppedCount(); got != 0 {
 		t.Fatalf("r2 丢弃计数 = %d, want 0", got)
 	}
-	for frame := 1; frame <= 4; frame++ { // candidateRef：预算 8 → 32 节跨 4 帧
-		f1.frameWithDeadline(t, 0)
-	}
-	if got := executed.Load(); got != 32 {
+	f1.frameWithDeadline(t, 0)
+	if got := len(*seenCurrent); got != 32 {
 		t.Fatalf("r1 链执行 %d 节, want 32", got)
 	}
 }
@@ -346,10 +333,3 @@ func TestR21ClosedDropAccounting(t *testing.T) {
 		t.Fatalf("关闭后 Dispatch 应丢弃并计数：ran=%v dropped=%d", fnRan, r.DroppedCount())
 	}
 }
-
-// compile-time guards：探针使用的错误路径保持可编译（防夹具腐化）。
-var (
-	_ = errors.New
-	_ = context.Canceled
-	_ = fmt.Sprintf
-)
