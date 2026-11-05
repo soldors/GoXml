@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+> 下面按轮次倒序追加 **2026-11-05 R23-C 事实对齐**。更下方的 2026-10-19 等历史条目按
+> 各自日期理解，例如「FONT-001-A..D 未实现」「CLI 与 router 待开发」不改写，也不当作现行状态。
+
+- **R23-C（状态/WIP，文档 only）**：以基线 `369703bb` 重核需求清单、WBS、TASK 总账、
+  文档索引、README 与相关任务卡；新增 [R23-C 项目状态总览](docs/04-WBS/2026-11-05-R23-项目状态总览.md)
+  与 `TASK-IMAGE-001` 可审查卡。逐路径清点主库 WIP 68 条并留双哈希；不跑 Go、不开窗、
+  不采样、不改产品代码，主库 WIP 只读。
+
+- **R23-B（字体可靠性）**：共享 Provider 的 `loadEmbedded` 加 `embMu` 串行化，公开
+  `NewLazy/Request/Done` 并发回归（16 实例、加载 17 次、`Scans=1`），独立 `-race` 反例成立；
+  新增 [字体正式验收差距矩阵](docs/03-架构/字体正式验收差距矩阵-R23B.md)。**整体正式验收
+  仍未通过**：M1 阈值、跨平台、第二成功 family 未闭环；比较机制与真实 App M1 已有历史证据，
+  90 次历史样本中 lazy 最终主题就绪 median 比 sync 慢 14.17%，本轮**无新性能采样**。
+  旧时钟断言 `TempElapsed=0` 不稳定项（基线专项 100 次 4 FAIL、整包复验通过）保留，
+  原 `>0` 断言未修改。接纳 `369703bb`，**未推送**。
+
+- **R23-A（Router 预算）**：ready `9268601` 仅接纳设计与记录，生产代码与 `a8a40e3` 相同；
+  候选 `35c9ff3` 技术范围通过（5 项独立健康探针、两条可编译退化、MinGW race），
+  **语义未批准、仍隔离、未进主库**。主库沿用无预算的同帧排空行为。
+
+- **R22（overlay 一致性 / 有界帧调度 / 图库随仓验收）**：R22-A 把用户 overlay 按 Go
+  选中的跨包源与依赖闭包限定、保留删除语义并把变异迁到 Go overlay 副本；R22-B 补可合并
+  失效请求的受控帧调度器与基线活性守卫；R22-C 把图库验收从交接包变成
+  [随仓入口](scripts/verify-gallery-accept.py) 与 14 条秒级反例，实测 76/76 判据。
+  接纳 `a8a40e3` 并推送、远端核实。
+
+- **R21（overlay 上下文 / 同帧排空活性 / 图库教程）**：R21-A 合并用户 GOFLAGS/GOENV
+  overlay 到目标命名阶段并 fail-closed 重复 overlay 路径；R21-B 用活性实测矩阵锁定
+  同帧排空；R21-C 新增 [routed-gallery 教程工程](examples/gxml/testprojects/routed-gallery/README.md)
+  （Image + 真实 Router + `app.WithOnDestroy` 关闭接线，跨包共用模型）并接入一键工程验收。
+  接纳 `39f45ea` 并推送。
+
+- **R16–R20（Image / Router 批准与发布）**：R16/R17 为隔离候选与技术复核；R18 批准
+  ADR-0015、静态 Src/Fit 与 `CODEGEN-ASSET-001..003`（pipeline 覆盖 86.3%）；R19 补无窗口
+  race；R20 完成 B1 人工桌面视觉/原生 race、B2 `Router.Shutdown` 与
+  `app.WithOnDestroy` 生产接线，`d7acf3d`/`8106fbb` 合入、发布组合 `4e413f0` 已推送。
+  **MacroOp 转场动画与独立 OSWindow 逃生接口仍未实现**。
+
 - R15：缓存 v8 记录 Go 有效配置引用的 overlay、替换源和替代模块文件指纹；For 显式拒绝遮蔽内置 append 的循环变量；新增跨包任务板工程与真实离屏验收，列表与摘要共享同一模型。
 
 - R14：提交前检查强制实际编译，避免 GOFLAGS 的 dry-run 误报通过；生成器对冲突的 Go 导入名分配确定性别名，输出修订升为 gen-2；跨包工程补充删除、保旧、清理及恢复的维护回归。

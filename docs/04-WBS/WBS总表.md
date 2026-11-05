@@ -1,10 +1,16 @@
 # WBS 总表
 
-2026-11-03 R11实现补充：既有`--check`落实为提交前候选构建检查；局部静态缓存验收计数器移入测试副本；
+> **2026-11-05 R23-C 状态重核**（基线 `369703bb`）：下方 2026-11-02/03 的抬头与
+> 「Image/Router 未批准候选仍保持隔离」是**当时**快照，现已被 R18/R20 的批准、合入与
+> 发布取代；ADR-0015 现为「已批准」，`4e413f0` 是远端 `a8a40e3` 的祖先。历史原文按日期保留，
+> 不改写。现行顶层目标、叶子任务分母与四状态分别列见
+> [R23-C 项目状态总览](2026-11-05-R23-项目状态总览.md)；本表只列交付物与依赖。
+
+2026-11-03 R11实现补充（历史）：既有`--check`落实为提交前候选构建检查；局部静态缓存验收计数器移入测试副本；
 跨包工程新增一键复制/生成/构建入口。原生窗口、IME、M1与内存无泄漏未因此验收；
 Input/For语义及缓存格式不变，Image/Router等未批准候选仍保持隔离。
 
-2026-11-02实现补充：静态Padding、缓存/清理与工作台的局部接纳见[R5收口记录](../05-开发/dev-log/2026-11-02-r5-closeout.md)。不升级原生/性能验收，Background、SCOPE-006、Image、Router保持各自未批准状态。
+2026-11-02实现补充（历史）：静态Padding、缓存/清理与工作台的局部接纳见[R5收口记录](../05-开发/dev-log/2026-11-02-r5-closeout.md)。不升级原生/性能验收，Background、SCOPE-006、Image、Router保持各自未批准状态。
 
 | Task ID | 模块 | 标题 | 依赖 | 核心验收命令 |
 |---|---|---|---|---|
@@ -48,7 +54,8 @@ Input/For语义及缓存格式不变，Image/Router等未批准候选仍保持�
 | TASK-FONT-001-C | theme/font | 按字形覆盖的 fallback 链：GlyphID 反解与 notdef 可观测、覆盖判定作为候选准入（挡住"能解析但没汉字"）、按需字形级补充链、emoji 实测降级（**已实现**，10 个验收用例全 PASS；覆盖判定单次 11.86µs） | TASK-FONT-001-A、TASK-FONT-001-B | go test -run TestFontFallbackChain ./pkg/runtime/theme/... |
 | TASK-FONT-001-A | theme/font | 系统字体探测 + `FontProvider.Resolve` + 诊断（**已实现**，Windows 实测；macOS/Linux 待验证） | TASK-THEME-SEAM-001 | go test -run TestFontProbe ./pkg/runtime/theme/... |
 | TASK-FONT-001 | theme/font | CJK 字体探测（A）/ 嵌入子集（B）/ fallback 链（C）/ 懒加载（D）；IME 归 WIDGET-001。**A/B/C 已实现，D 的 IMPL-1/2/3 已本地提交，正式验收未完成**。最新进度及 60 次真实窗口 M1 证据见 D-ACCEPT 第 18 版；成功跨 family、跨平台、race、同步比较和阈值不因夜间交付自动通过 | TASK-THEME-SEAM-001 | go test ./pkg/runtime/theme/... |
-| TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow | TASK-STATE-001 | go test -v ./pkg/runtime/router/... |
+| TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow。**2026-11-05 分段状态**：路由基础（注册/导航/当前路径/分发/失效/Context/关闭清空）已实现，R20 B1 人工桌面视觉与原生 race、B2 受控销毁接线独立复核通过并合入发布（`4e413f0`）；`app.WithOnDestroy(r.View(), r.Shutdown)` 关闭接线已落地。**MacroOp 转场动画与独立 OSWindow 逃生接口仍未实现**，整卡未闭环；有界调度预算语义未批准，主库沿用同帧排空 | TASK-STATE-001 | go test -v ./pkg/runtime/router/...；关闭接线与图库见 [教程](../../examples/gxml/testprojects/routed-gallery/README.md) |
+| TASK-IMAGE-001 | compiler/image | `<Image>` 静态资产与编译期嵌入。**2026-11-05 登记**：ADR-0015 已批准，R18 隔离技术验收 pass（pipeline 86.3%），R20 合入并发布；R21-C 图库教程、R22-C 随仓验收入口覆盖真命中/换图/坏图/变异。限 Windows/headless/可信本地构建目录，真实窗口目视与跨平台未验 | TASK-CODEGEN-001、TASK-SEC-001 | 见 [任务卡](任务卡/TASK-IMAGE-001.md) 与 `scripts/verify-gallery-accept.py` |
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |
 | TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v -race ./cmd/goxml/watch/... ./pkg/runtime/hydration/... |
 | TASK-DEVX-002 | cli/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | go test -v ./cmd/goxml/preview/... |
@@ -107,7 +114,7 @@ WBS、任务卡、契约状态、开发日志与实际代码必须能相互对�
 
 | 说法 | 实际含义 |
 |---|---|
-| **契约冻结 ≠ 实现完成** | 契约描述「应当如何」，实现是「是否做到了」。当前 Analyzer 诊断码已全部有发射点，但 REQ-002 至 REQ-006 仍有未实现能力，状态以需求清单和任务卡为准 |
+| **契约冻结 ≠ 实现完成** | 契约描述「应当如何」，实现是「是否做到了」。Analyzer 诊断码已全部有发射点；REQ-003 的 AOT Diff 是**已批准推迟项**而非缺口，REQ-005（Watch/Preview）与 REQ-006（分平台系统交互）仍按事实为未实现，REQ-002/004 的现行状态见 [需求清单](../02-需求/需求清单.md) 的 2026-11-05 补注 |
 | **单元测试通过 ≠ 端到端门禁已验证** | Codegen 的单元测试证明「能生成可编译代码」，但不证明「管线失败时不产生产物」——后者需要编排层的真实调用链测试（`TASK-ORCH-001`）。两者证据不可互替；`StatusOK` 也不代表生成结果正确 |
 
 这两条正是本项目最容易产生状态漂移的地方：把「设计已定」误读成「功能可用」，或把「组件测试通过」误读成「管线可用」。

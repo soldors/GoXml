@@ -37,7 +37,10 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - CLI 已可用：`goxml generate` 支持单文件与目录批量生成、确定性输出、
   两阶段事务回滚与 `--clean`（见下方使用说明）；
 - Grid、Input、If/For、绑定与事件已有生成实现及对应测试；`<Def>`/`<Slot>` 在编译期展开。完整功能验收范围仍以任务卡和实测记录为准，不能由“已有实现”推出全部边界已验收。
-- Watch、Preview、通用 Lifecycle/Hydration、Router 正式集成尚未交付；强类型 ThemeRef 接线仍待批准，不属于现有字体 Theme 便利层。
+- **Image v1 已批准并合入发布**：静态 `Src`/`Fit`、编译期资产校验与 `//go:embed`，见 [ADR-0015](docs/03-架构/adr/ADR-0015-Image控件与编译期资产嵌入.md)。
+- **Router 基础与关闭接线已合入发布**：`pkg/runtime/router` + `app.WithOnDestroy(r.View(), r.Shutdown)`；[routed-gallery 教程](examples/gxml/testprojects/routed-gallery/README.md) 与 [随仓验收入口](scripts/verify-gallery-accept.py) 可复跑。MacroOp 转场动画、独立 OSWindow 逃生接口仍未实现；有界调度预算语义未批准。
+- Watch、Preview、通用 Lifecycle/Hydration 尚未交付；强类型 ThemeRef 接线仍待批准，不属于现有字体 Theme 便利层。
+- 需求/WBS/任务卡的现行状态与证据链见 [R23-C 项目状态总览](docs/04-WBS/2026-11-05-R23-项目状态总览.md)（2026-11-05，基线 `369703bb`）。
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。当前并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
 
@@ -148,9 +151,11 @@ go run ./examples/demo
 | 限制 | 说明 |
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
-| CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`；Watch 未做（归 TASK-DEVX-001/002） |
-| 窗口渲染未自动验证 | 自动化只验证「启动不崩溃」，窗口显示与文字渲染需人工确认 |
-| 本批仅 Windows 验证 | 历史Linux原生编译记录见平台矩阵；本批不外推Linux/macOS运行结果 |
+| CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`、`--check`（提交前编译）、增量缓存；Watch 未做（归 TASK-DEVX-001/002） |
+| 窗口渲染未自动验证 | 自动化只验证「启动不崩溃」与离屏语义，窗口显示与文字渲染需人工确认；R20 的 Router 人工视觉验收限其声明的冻结提交 |
+| 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |
+| 字体整体正式验收未通过 | M1 阈值、跨平台、第二成功 family 未闭环；比较机制与真实 App M1 已有历史证据但本轮无新采样，见 [R23-B 差距矩阵](docs/03-架构/字体正式验收差距矩阵-R23B.md) |
+| Router 预算语义未批准 | 候选 `35c9ff3` 技术范围通过、未进主库；主库沿用同帧排空 |
 | `<Def Events>` 不传播事件 | v1 只做契约声明，调用点处理器签名不被校验 |
 
 更完整的未验证清单见 [Analyzer 验收报告 §5](docs/06-测试/Analyzer验收报告.md)。

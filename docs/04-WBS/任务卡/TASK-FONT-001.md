@@ -14,6 +14,21 @@
     已归入 `TASK-THEME-SEAM-001`。
 - 规范依据：`docs/03-架构/字体与文本渲染策略.md`（v1 冻结，§6.2 已按 ADR-0012 修订）
 
+### 2026-11-05 R23-C 事实补记（依据 R23-B 独立复核）
+
+- 元信息中「**同步比较**仍是缺口」的表述需按范围理解：**同源 none／sync／lazy 比较机制与
+  真实 App M1 探针已经存在**（D-ACCEPT 第 19/20 版、`m1nightprobe` 用真实
+  `NewApp`/`NewLazyApp`/`FirstFrame`），不能再写成「比较机制从未实现」。
+  仍缺的是**性能判据与达标结论**：第 20 版 90 次历史样本里 lazy 最终主题就绪 median
+  比 sync 慢 14.17%；R23-B **没有新的性能采样**，不能据历史数据推断当前补丁性能。
+- **本轮 R23-B 已接纳的范围**：共享 Provider 的 `loadEmbedded` 并发互斥修复与公开
+  `NewLazy/Request/Done` 回归；整体正式验收**仍未通过**。逐项缺口见
+  [R23-B 差距矩阵](../../03-架构/字体正式验收差距矩阵-R23B.md)。
+- **旧时钟断言不稳定项保留**：`TestFontLazyLoadTempBuiltOnceConcurrent` 的
+  `TempElapsed=0` 触发既有 `>0` 断言失败；基线 `font.go` 专项 100 次 4 FAIL、整包复验通过。
+  原 `font_lazy_strict_test.go` 未改、首败记录未删，**不得改产品或测试把它藏起来**。
+- 仍未闭环：M1 阈值、跨平台、第二个成功 font family、原生窗口与视觉验收。
+
 ## 1. 背景与上下文
 
 **这是 WBS 此前完全缺失的工作项。** 事实需要分两层，混在一起会得出错误结论：
