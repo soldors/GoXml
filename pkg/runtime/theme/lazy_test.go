@@ -550,9 +550,12 @@ func TestFontLazyLoadTempBuiltOnceConcurrent(t *testing.T) {
 	if got := lz.Report().Attempts; got != 1 {
 		t.Errorf("Attempts = %d，期望 1", got)
 	}
-	if got := lz.Report().TempElapsed; got <= 0 {
-		t.Errorf("TempElapsed = %v，期望 > 0", got)
-	}
+	// TempElapsed 是**墙钟测量值**，在 32 个 goroutine 争用时可能低于本机时钟分辨率
+	// （本机约 0.5ms）而读成 0——这是测量精度事实，不是"临时主题没构造"。
+	// 业务判据是"只构造一次"(cl.calls==1) 与来源正确，二者上一块已断言；
+	// 此处只**记录** TempElapsed（0 合法，不据此判失败）。测量写入路径由
+	// TestFontLazyLoadTempElapsedWrittenFromMeasurement 用可控慢加载器单独守卫。
+	t.Logf("并发首次 TempElapsed = %v（0 属合法：低于时钟分辨率；不在此断言 > 0）", lz.Report().TempElapsed)
 	if got := lz.Report().TempSource; got != tempSourceEmbedded {
 		t.Errorf("TempSource = %q，期望 %q", got, tempSourceEmbedded)
 	}
