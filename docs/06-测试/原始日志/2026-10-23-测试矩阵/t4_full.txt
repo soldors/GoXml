@@ -1,0 +1,19 @@
+?   	github.com/goxml/goxml/cmd/goxml	[no test files]
+ok  	github.com/goxml/goxml/contracts	0.463s
+?   	github.com/goxml/goxml/examples/demo	[no test files]
+ok  	github.com/goxml/goxml/examples/gxml	0.490s
+ok  	github.com/goxml/goxml/internal/cli	185.220s
+ok  	github.com/goxml/goxml/internal/compiler/analyzer	114.560s
+ok  	github.com/goxml/goxml/internal/compiler/codegen	672.816s
+ok  	github.com/goxml/goxml/internal/compiler/diagdoc	0.737s
+ok  	github.com/goxml/goxml/internal/compiler/expander	0.638s
+ok  	github.com/goxml/goxml/internal/compiler/grid	0.585s
+ok  	github.com/goxml/goxml/internal/compiler/parser	0.618s
+ok  	github.com/goxml/goxml/internal/compiler/pipeline	10.399s
+ok  	github.com/goxml/goxml/internal/compiler/sizelayout	0.658s
+ok  	github.com/goxml/goxml/internal/docgate	2.230s
+?   	github.com/goxml/goxml/pkg/platform/font	[no test files]
+ok  	github.com/goxml/goxml/pkg/runtime/app	2.202s
+ok  	github.com/goxml/goxml/pkg/runtime/theme	18.863s
+?   	github.com/goxml/goxml/pkg/runtime/theme/embedded	[no test files]
+rc=0

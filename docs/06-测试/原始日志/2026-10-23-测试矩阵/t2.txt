@@ -1,0 +1,170 @@
+=== RUN   TestEmbeddedFallbackMetadata
+--- PASS: TestEmbeddedFallbackMetadata (0.00s)
+=== RUN   TestEmbeddedFallbackSubsetCoverage
+=== RUN   TestEmbeddedFallbackSubsetCoverage/反向自检：判定器必须能发现缺字形
+--- PASS: TestEmbeddedFallbackSubsetCoverage (0.00s)
+    --- PASS: TestEmbeddedFallbackSubsetCoverage/反向自检：判定器必须能发现缺字形 (0.00s)
+=== RUN   TestEmbeddedFallbackParseAndCorrupted
+=== RUN   TestEmbeddedFallbackParseAndCorrupted/损坏字节必须可诊断
+    embedded_fallback_test.go:274: 非字体 → unsupported font format [116 104 105 115]
+    embedded_fallback_test.go:274: 截断 → reading font 0 of collection: EOF
+    embedded_fallback_test.go:274: 空 → EOF
+--- PASS: TestEmbeddedFallbackParseAndCorrupted (0.00s)
+    --- PASS: TestEmbeddedFallbackParseAndCorrupted/损坏字节必须可诊断 (0.00s)
+=== RUN   TestEmbeddedFallbackSelectionOrder
+=== RUN   TestEmbeddedFallbackSelectionOrder/系统命中时不得解析嵌入字体
+=== RUN   TestEmbeddedFallbackSelectionOrder/系统全部失败时选嵌入并保留两条链路诊断
+=== RUN   TestEmbeddedFallbackSelectionOrder/平台无候选时也要走兜底
+=== RUN   TestEmbeddedFallbackSelectionOrder/兜底结果按_family_缓存
+--- PASS: TestEmbeddedFallbackSelectionOrder (0.01s)
+    --- PASS: TestEmbeddedFallbackSelectionOrder/系统命中时不得解析嵌入字体 (0.01s)
+    --- PASS: TestEmbeddedFallbackSelectionOrder/系统全部失败时选嵌入并保留两条链路诊断 (0.00s)
+    --- PASS: TestEmbeddedFallbackSelectionOrder/平台无候选时也要走兜底 (0.00s)
+    --- PASS: TestEmbeddedFallbackSelectionOrder/兜底结果按_family_缓存 (0.00s)
+=== RUN   TestEmbeddedFallbackSizeBudget
+    embedded_fallback_test.go:551: 参考（不断言）: examples/demo 未嵌入=15168512 B 嵌入=15168512 B 增量=0 B —— demo 注入 material.NewTheme()，不链接 theme 包，故此差值不可用于预算判定
+    embedded_fallback_test.go:561: 二进制体积实测（./pkg/runtime/theme/testdata/sizeprobe）: 未嵌入=5481472 B, 嵌入=7664128 B, 增量=2182656 B (预算 3145728 B)
+--- PASS: TestEmbeddedFallbackSizeBudget (14.11s)
+=== RUN   TestEmbeddedFallbackFailureSemantics
+=== RUN   TestEmbeddedFallbackFailureSemantics/两条链路都失败必须严格报错且保留双方原因
+=== RUN   TestEmbeddedFallbackFailureSemantics/嵌入加载返回空字节_+_nil_也必须算失败
+=== RUN   TestEmbeddedFallbackFailureSemantics/失败不缓存，环境变化后可重试
+=== RUN   TestEmbeddedFallbackFailureSemantics/theme.Diagnostics_必须能看到两条链路
+--- PASS: TestEmbeddedFallbackFailureSemantics (0.02s)
+    --- PASS: TestEmbeddedFallbackFailureSemantics/两条链路都失败必须严格报错且保留双方原因 (0.01s)
+    --- PASS: TestEmbeddedFallbackFailureSemantics/嵌入加载返回空字节_+_nil_也必须算失败 (0.00s)
+    --- PASS: TestEmbeddedFallbackFailureSemantics/失败不缓存，环境变化后可重试 (0.01s)
+    --- PASS: TestEmbeddedFallbackFailureSemantics/theme.Diagnostics_必须能看到两条链路 (0.01s)
+=== RUN   TestFontFallbackChainGlyphIDDecode
+    fallback_test.go:126: 交叉校验: 抽样 146 个码位，其中 146 个覆盖内 gid 与 NominalGlyph 逐项一致
+--- PASS: TestFontFallbackChainGlyphIDDecode (0.02s)
+=== RUN   TestFontFallbackChainNotdef
+=== RUN   TestFontFallbackChainNotdef/反向自检：覆盖内码位必须翻转
+=== RUN   TestFontFallbackChainNotdef/nil_shaper_必须显式退化为无字形
+--- PASS: TestFontFallbackChainNotdef (0.00s)
+    --- PASS: TestFontFallbackChainNotdef/反向自检：覆盖内码位必须翻转 (0.00s)
+    --- PASS: TestFontFallbackChainNotdef/nil_shaper_必须显式退化为无字形 (0.00s)
+=== RUN   TestFontFallbackChainMixedScript
+    fallback_test.go:212: 系统字体下 "Hello 世界" 缺字形: ""
+--- PASS: TestFontFallbackChainMixedScript (0.30s)
+=== RUN   TestFontFallbackChainOrderSemantics
+    fallback_test.go:239: 探针 rune='A' 嵌入指纹=34 拉丁指纹=36
+=== RUN   TestFontFallbackChainOrderSemantics/拉丁在前则命中拉丁
+=== RUN   TestFontFallbackChainOrderSemantics/嵌入在前则命中嵌入
+=== RUN   TestFontFallbackChainOrderSemantics/顺序必须真的改变结果
+=== RUN   TestFontFallbackChainOrderSemantics/FaceIdx_必须指向_collection_的实际位置
+--- PASS: TestFontFallbackChainOrderSemantics (0.01s)
+    --- PASS: TestFontFallbackChainOrderSemantics/拉丁在前则命中拉丁 (0.00s)
+    --- PASS: TestFontFallbackChainOrderSemantics/嵌入在前则命中嵌入 (0.00s)
+    --- PASS: TestFontFallbackChainOrderSemantics/顺序必须真的改变结果 (0.00s)
+    --- PASS: TestFontFallbackChainOrderSemantics/FaceIdx_必须指向_collection_的实际位置 (0.00s)
+=== RUN   TestFontFallbackChainSupplementsMissingGlyph
+=== RUN   TestFontFallbackChainSupplementsMissingGlyph/反向自检：只有拉丁时汉字必须是_notdef
+--- PASS: TestFontFallbackChainSupplementsMissingGlyph (0.00s)
+    --- PASS: TestFontFallbackChainSupplementsMissingGlyph/反向自检：只有拉丁时汉字必须是_notdef (0.00s)
+=== RUN   TestFontFallbackChainCoverage
+=== RUN   TestFontFallbackChainCoverage/嵌入子集必须全覆盖准入集
+=== RUN   TestFontFallbackChainCoverage/纯拉丁字体必须被判为覆盖不足
+=== RUN   TestFontFallbackChainCoverage/反向自检：判定器不得恒定结论
+=== RUN   TestFontFallbackChainCoverage/阈值边界
+=== RUN   TestFontFallbackChainCoverage/空集合必须判为全缺失而非全命中
+--- PASS: TestFontFallbackChainCoverage (0.00s)
+    --- PASS: TestFontFallbackChainCoverage/嵌入子集必须全覆盖准入集 (0.00s)
+    --- PASS: TestFontFallbackChainCoverage/纯拉丁字体必须被判为覆盖不足 (0.00s)
+    --- PASS: TestFontFallbackChainCoverage/反向自检：判定器不得恒定结论 (0.00s)
+    --- PASS: TestFontFallbackChainCoverage/阈值边界 (0.00s)
+    --- PASS: TestFontFallbackChainCoverage/空集合必须判为全缺失而非全命中 (0.00s)
+=== RUN   TestFontFallbackChainEmoji
+    fallback_test.go:435: 系统字体 emoji: HasGlyph=true gid=6787
+--- PASS: TestFontFallbackChainEmoji (0.17s)
+=== RUN   TestFontFallbackChainSupplementOnDemand
+=== RUN   TestFontFallbackChainSupplementOnDemand/覆盖完整时不加载嵌入
+=== RUN   TestFontFallbackChainSupplementOnDemand/有缺口时追加嵌入并进诊断
+=== RUN   TestFontFallbackChainSupplementOnDemand/嵌入加载失败不得影响已命中的系统结果
+--- PASS: TestFontFallbackChainSupplementOnDemand (0.01s)
+    --- PASS: TestFontFallbackChainSupplementOnDemand/覆盖完整时不加载嵌入 (0.01s)
+    --- PASS: TestFontFallbackChainSupplementOnDemand/有缺口时追加嵌入并进诊断 (0.00s)
+    --- PASS: TestFontFallbackChainSupplementOnDemand/嵌入加载失败不得影响已命中的系统结果 (0.00s)
+=== RUN   TestFontFallbackChainCoverageInsufficient
+--- PASS: TestFontFallbackChainCoverageInsufficient (0.01s)
+=== RUN   TestFontFallbackChainProbeCost
+    fallback_test.go:570: 覆盖判定单次耗时: 21.122µs（200 次平均，20 个码位）
+--- PASS: TestFontFallbackChainProbeCost (0.01s)
+=== RUN   TestFontProbeCandidatePaths
+--- PASS: TestFontProbeCandidatePaths (0.00s)
+=== RUN   TestFontProbeContinuesOnParseFailure
+--- PASS: TestFontProbeContinuesOnParseFailure (0.01s)
+=== RUN   TestFontProbeTimeoutAndDiagnostics
+    font_test.go:187: 超时语义实测: timeout=5ms elapsed=40.6602ms（超过预算是预期——同步读取不可取消，本实现不使用 goroutine 丢弃，故不存在后台任务堆积）
+--- PASS: TestFontProbeTimeoutAndDiagnostics (0.04s)
+=== RUN   TestFontProbeErrFontNotFound
+--- PASS: TestFontProbeErrFontNotFound (0.01s)
+=== RUN   TestFontProbeResolveCaching
+--- PASS: TestFontProbeResolveCaching (0.01s)
+=== RUN   TestFontProbeRejectsUnknownAndUnimplementedFamilies
+--- PASS: TestFontProbeRejectsUnknownAndUnimplementedFamilies (0.00s)
+=== RUN   TestFontProbeWindowsSystemFonts
+    font_test.go:304: Windows 实测: id=system:msyh.ttc path=C:\Windows\Fonts\msyh.ttc faces=2 elapsed=119.2638ms
+        诊断:
+        probe family=CJK elapsed=119.2638ms timeout=false resolved=C:\Windows\Fonts\msyh.ttc id=system:msyh.ttc
+          - C:\Windows\Fonts\msyh.ttc [ok]
+          * coverage 20/20
+--- PASS: TestFontProbeWindowsSystemFonts (0.12s)
+=== RUN   TestFontProbeShaperAssembly
+    font_test.go:344: 拉丁度量对比（px=16, "ABCD"）: 装配前=45:26 装配后=44:13 —— 差异即装配的已知影响
+--- PASS: TestFontProbeShaperAssembly (0.19s)
+=== RUN   TestFontLazyLoadStateMachine
+=== RUN   TestFontLazyLoadStateMachine/Unloaded→Loading→Ready，Ready_后不再重载
+=== RUN   TestFontLazyLoadStateMachine/Loading_期间状态稳定为_loading
+=== RUN   TestFontLazyLoadStateMachine/Failed→Loading_只能由_Request_触发
+--- PASS: TestFontLazyLoadStateMachine (0.03s)
+    --- PASS: TestFontLazyLoadStateMachine/Unloaded→Loading→Ready，Ready_后不再重载 (0.02s)
+    --- PASS: TestFontLazyLoadStateMachine/Loading_期间状态稳定为_loading (0.00s)
+    --- PASS: TestFontLazyLoadStateMachine/Failed→Loading_只能由_Request_触发 (0.01s)
+=== RUN   TestFontLazyLoadNoIOOnConstruct
+--- PASS: TestFontLazyLoadNoIOOnConstruct (0.01s)
+=== RUN   TestFontLazyLoadCoalesce
+--- PASS: TestFontLazyLoadCoalesce (0.00s)
+=== RUN   TestFontLazyLoadNonBlockingOnLoading
+--- PASS: TestFontLazyLoadNonBlockingOnLoading (0.00s)
+=== RUN   TestFontLazyLoadNoAutoRetry
+--- PASS: TestFontLazyLoadNoAutoRetry (0.03s)
+=== RUN   TestFontLazyLoadExplicitRetry
+--- PASS: TestFontLazyLoadExplicitRetry (0.01s)
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects/Unloaded
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects/Failed
+--- PASS: TestFontLazyLoadThemeHasNoSideEffects (0.01s)
+    --- PASS: TestFontLazyLoadThemeHasNoSideEffects/Unloaded (0.01s)
+    --- PASS: TestFontLazyLoadThemeHasNoSideEffects/Failed (0.00s)
+=== RUN   TestFontLazyLoadTakeOnce
+--- PASS: TestFontLazyLoadTakeOnce (0.01s)
+=== RUN   TestFontLazyLoadFailureKeepsTemp
+--- PASS: TestFontLazyLoadFailureKeepsTemp (0.00s)
+=== RUN   TestFontLazyLoadNotifyBeforeRequest
+--- PASS: TestFontLazyLoadNotifyBeforeRequest (0.02s)
+=== RUN   TestFontLazyLoadNotifyAfterRequest
+--- PASS: TestFontLazyLoadNotifyAfterRequest (0.00s)
+=== RUN   TestFontLazyLoadTempOnlyBuiltOnce
+--- PASS: TestFontLazyLoadTempOnlyBuiltOnce (0.01s)
+=== RUN   TestFontLazyLoadTempBuiltOnceConcurrent
+--- PASS: TestFontLazyLoadTempBuiltOnceConcurrent (0.01s)
+=== RUN   TestFontLazyLoadTempDoesNotPolluteProbe
+--- PASS: TestFontLazyLoadTempDoesNotPolluteProbe (0.02s)
+=== RUN   TestFontLazyLoadSetNotifyNil
+--- PASS: TestFontLazyLoadSetNotifyNil (0.01s)
+=== RUN   TestFontLazyLoadFailureCompletedAt
+--- PASS: TestFontLazyLoadFailureCompletedAt (0.01s)
+=== RUN   TestFontLazyLoadReportIsCopy
+--- PASS: TestFontLazyLoadReportIsCopy (0.01s)
+=== RUN   TestNewThemeProducesUsableTheme
+=== RUN   TestNewThemeProducesUsableTheme/反向自检：零值主题必须判为不可用
+--- PASS: TestNewThemeProducesUsableTheme (0.00s)
+    --- PASS: TestNewThemeProducesUsableTheme/反向自检：零值主题必须判为不可用 (0.00s)
+=== RUN   TestNewThemeReturnsIndependentInstances
+--- PASS: TestNewThemeReturnsIndependentInstances (0.00s)
+=== RUN   TestNewThemeCurrentlyMatchesGioDefault
+--- PASS: TestNewThemeCurrentlyMatchesGioDefault (0.00s)
+PASS
+ok  	github.com/goxml/goxml/pkg/runtime/theme	15.490s
+?   	github.com/goxml/goxml/pkg/runtime/theme/embedded	[no test files]

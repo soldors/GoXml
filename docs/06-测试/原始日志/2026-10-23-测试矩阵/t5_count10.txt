@@ -1,0 +1,2 @@
+ok  	github.com/goxml/goxml/pkg/runtime/theme	1.700s
+rc=0

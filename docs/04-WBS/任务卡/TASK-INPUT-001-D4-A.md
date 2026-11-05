@@ -192,3 +192,41 @@ return func() layout.Dimensions {
 - 未实现外部值比较、回写后重求值、光标保留验证
 
 **这符合切片约束：不出现「每帧无条件 SetText」的临时实现。**
+
+## 2026-11-05 R23-R1 证据资格复核补记（不改历史原文）
+
+> 基线 `bab7a35fb6ee77be000221c6d39dc22b943df7f5`。逐项可机读字段见交接包
+> `raw/c1-evidence-qualification.json`；全文见
+> [13 项证据资格复核](../../06-测试/2026-11-05-R23-R1-13项证据资格复核.md)。
+> 本补记只登记证据资格，**不追认历史验收、不改写卡内原有状态与判据**，
+> 也不把它计入项目完成率。
+
+| 字段 | 复核结果 |
+|---|---|
+| 终结论 | **结构接线有通过记录（现行可重放），同步语义不适用旧卡**：A1–A5 仍有效；A6 的 lastApplied 占位与旧断言属于被取代的历史 |
+| 归类 | 未闭环（现行语义以 R8 为准，D5-F 未执行） |
+| 实现 SHA | 02b8593bba2d311ac7af4982f5394de9590a110a |
+| 验收 SHA / 记录 | 卡 §7.3 自验；无独立验收提交 |
+| 执行方是否独立 | **未证（缺具名执行者/独立会话记录）**；上一版措辞「否：dev-log 2026-10-20 §21.5/§22.7 明确「并发线（Codegen）提交…仅登记提交号与标题，内容不由本线背书」」已撤销。依据：dev-log 记录的是并发线归属，不是独立验收会话证据。本轮标准台账 `-v` 重放另列，E3 可复跑不自动等于独立历史验收。 |
+| 命令 / rc / raw 可定位性 | go test -run TestInputCodegen ./internal/compiler/codegen/；go build ./...；go vet ./...；go test ./...（卡 §5，无逐条 rc）；E1：无历史 raw。本轮 `r1c-c1-input-v` 在现行基线重放 -run ^TestInput 全族并留 stdout.raw |
+| 当时范围 | Editor 实例字段、属性透传、控件自持消费、Change/Submit 载荷、仅声明 Submit 才开启；明确不实现同步算法 |
+| 现行适用性 | 12 个命名测试在基线存在、现行窄跑 rc=0；2026-11-02 `3c969f0`/`e200ace` 改了 input.go 46 行并新增 input_adoption_test.go / input_candidatesem_test.go，A1–A5 结构仍成立，但事件/同步期望须按契约 §5.2 新规则读 |
+| 仍缺哪一层资格 | 独立复核、历史 raw、与 11-02 规则的逐断言对照 |
+| 下一动作 | 以契约 §5.2 + `input_adoption_test.go` 为现行判据；不要在总览里写「D4-A 已完成全部 Input 验收」 |
+
+## 2026-11-06 R23-R1 返修 R1 补正（覆盖上一版补记中被撤销的结论）
+
+> 本次返修关闭协调者 F-C1 / F-C2 / F-C3。完整逐项字段见 [13 项证据资格复核（R1 返修补正版）](../../06-测试/2026-11-05-R23-R1-13项证据资格复核.md) 与交接包 `repair-r1/raw/closure-matrix.json`。
+
+| 字段 | R1 返修后结论 |
+|---|---|
+| 单一状态（每项只计一次） | B-未闭环（现行语义以 R8 为准） |
+| 证据层 | E1（历史）→ 本轮 E3 窄重放 |
+| 历史原命令是否有效 | `TestInputCodegen` 是有效前缀，在 codegen 包命中 1 个真实入口 `TestInputCodegenStructure`；非空洞 |
+| 本轮另选命令 | `go test -count=1 -timeout 10m -v -run ^TestInput ./internal/compiler/codegen`（r1r-replay-input） |
+| 真实用例集合 | `r1r-replay-input`：41 个顶层 PASS / 22 个子测试 PASS / 0 SKIP / 0 FAIL |
+| 能证明的范围 | Input 族 41 个顶层用例 + 22 个子测试全部 PASS（63 条 PASS 行） |
+| 未覆盖的范围 | 同步语义（已被 2026-11-02 用户编辑优先规则取代）、D5-F 原生焦点/IME、真实窗口 |
+| 历史执行方独立性 | 未证（缺具名执行者/独立会话记录） |
+| 本轮 E3 重放 | r1r-replay-input 是本轮标准台账 E3 重放，不等于独立历史验收 |
+

@@ -1,0 +1,95 @@
+=== 同一 shaper 被 4 个 goroutine 同时 LayoutString（各 300 次）===
+预期：fatal error: concurrent map read and map write（进程终止，recover 无效）
+panic: runtime error: slice bounds out of range [:16] with capacity 0
+
+goroutine 36 [running]:
+github.com/go-text/typesetting/bidi.(*Paragraph).prepareInput(0x2fbaf33a4b10)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/bidi/bidi.go:191 +0x585
+github.com/go-text/typesetting/bidi.(*Paragraph).segment(0x2fbaf33a4b10, 0x1)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/bidi/bidi.go:108 +0x45
+github.com/go-text/typesetting/bidi.(*Paragraph).Segment(...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/bidi/bidi.go:83
+github.com/go-text/typesetting/shaping.(*Segmenter).splitByBidi(0x2fbaf33a4ac8, {{0x2fbaf3260840, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...})
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:221 +0x249
+github.com/go-text/typesetting/shaping.(*Segmenter).Split(0x2fbaf33a4ac8, {{0x2fbaf3260840, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:172 +0x1d1
+gioui.org/text.(*shaperImpl).shapeText(0x2fbaf33a4730, 0x400, {{0x0?, 0x0?}, 0x0?}, {0x2fbaf3260840, 0x10, 0x10})
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:320 +0x445
+gioui.org/text.(*shaperImpl).shapeAndWrapText(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:414 +0x5d2
+gioui.org/text.(*shaperImpl).LayoutRunes(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:484 +0x153
+gioui.org/text.(*Shaper).layoutParagraph(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:458 +0x46c
+gioui.org/text.(*Shaper).layoutText-range1({0x7ff73f6fab87?, 0x18?}, 0xa?)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:408 +0xd9
+gioui.org/text.(*Shaper).layoutText.(*Shaper).iterateParagraphByString.func1(...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:386
+gioui.org/text.(*Shaper).layoutText(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:406 +0x423
+gioui.org/text.(*Shaper).LayoutString(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:292 +0xb1
+main.main.func1(0x0?)
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:60 +0x117
+created by main.main in goroutine 1
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:57 +0x250
+panic: runtime error: index out of range [16] with length 16
+
+goroutine 35 [running]:
+github.com/go-text/typesetting/bidi.(*Runs).Run(...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/bidi/bidi.go:72
+github.com/go-text/typesetting/shaping.(*Segmenter).splitByBidi(0x2fbaf33a4ac8, {{0x2fbaf331c000, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...})
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:230 +0x63d
+github.com/go-text/typesetting/shaping.(*Segmenter).Split(0x2fbaf33a4ac8, {{0x2fbaf331c000, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:172 +0x1d1
+gioui.org/text.(*shaperImpl).shapeText(0x2fbaf33a4730, 0x400, {{0x0?, 0x0?}, 0x0?}, {0x2fbaf331c000, 0x10, 0x10})
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:320 +0x445
+gioui.org/text.(*shaperImpl).shapeAndWrapText(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:414 +0x5d2
+gioui.org/text.(*shaperImpl).LayoutRunes(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:484 +0x153
+gioui.org/text.(*Shaper).layoutParagraph(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:458 +0x46c
+gioui.org/text.(*Shaper).layoutText-range1({0x7ff73f6fab87?, 0x18?}, 0xa?)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:408 +0xd9
+gioui.org/text.(*Shaper).layoutText.(*Shaper).iterateParagraphByString.func1(...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:386
+gioui.org/text.(*Shaper).layoutText(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:406 +0x423
+gioui.org/text.(*Shaper).LayoutString(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:292 +0xb1
+main.main.func1(0x2fbaf32e9fb8?)
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:60 +0x117
+created by main.main in goroutine 1
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:57 +0x250
+panic: runtime error: index out of range [16] with length 16
+
+goroutine 38 [running]:
+github.com/go-text/typesetting/bidi.(*Runs).Run(...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/bidi/bidi.go:72
+github.com/go-text/typesetting/shaping.(*Segmenter).splitByBidi(0x2fbaf33a4ac8, {{0x2fbaf33ba9c0, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...})
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:230 +0x63d
+github.com/go-text/typesetting/shaping.(*Segmenter).Split(0x2fbaf33a4ac8, {{0x2fbaf33ba9c0, 0x10, 0x10}, 0x0, 0x10, 0x0, 0x0, {0x0, 0x0, ...}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/github.com/go-text/typesetting@v0.3.5/shaping/input.go:172 +0x1d1
+gioui.org/text.(*shaperImpl).shapeText(0x2fbaf33a4730, 0x400, {{0x0?, 0x0?}, 0x0?}, {0x2fbaf33ba9c0, 0x10, 0x10})
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:320 +0x445
+gioui.org/text.(*shaperImpl).shapeAndWrapText(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:414 +0x5d2
+gioui.org/text.(*shaperImpl).LayoutRunes(0x2fbaf33a4730, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/gotext.go:484 +0x153
+gioui.org/text.(*Shaper).layoutParagraph(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:458 +0x46c
+gioui.org/text.(*Shaper).layoutText-range1({0x7ff73f6fab87?, 0x18?}, 0xa?)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:408 +0xd9
+gioui.org/text.(*Shaper).layoutText.(*Shaper).iterateParagraphByString.func1(...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:386
+gioui.org/text.(*Shaper).layoutText(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:406 +0x423
+gioui.org/text.(*Shaper).LayoutString(0x2fbaf33a4708, {{{0x0, 0x0}, 0x0, 0x0}, 0x0, 0x400, 0x0, {0x0, 0x0}, ...}, ...)
+	C:/Users/admin/go/pkg/mod/gioui.org@v0.10.3/text/shaper.go:292 +0xb1
+main.main.func1(0x0?)
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:60 +0x117
+created by main.main in goroutine 1
+	D:/Codes/Goxml/pkg/runtime/app/testdata/concurrencyprobe/main.go:57 +0x250
+exit status 2
+rc=1

@@ -1,0 +1,47 @@
+=== RUN   TestFontLazyLoadStateMachine
+=== RUN   TestFontLazyLoadStateMachine/Unloaded→Loading→Ready，Ready_后不再重载
+=== RUN   TestFontLazyLoadStateMachine/Loading_期间状态稳定为_loading
+=== RUN   TestFontLazyLoadStateMachine/Failed→Loading_只能由_Request_触发
+--- PASS: TestFontLazyLoadStateMachine (0.07s)
+    --- PASS: TestFontLazyLoadStateMachine/Unloaded→Loading→Ready，Ready_后不再重载 (0.06s)
+    --- PASS: TestFontLazyLoadStateMachine/Loading_期间状态稳定为_loading (0.00s)
+    --- PASS: TestFontLazyLoadStateMachine/Failed→Loading_只能由_Request_触发 (0.01s)
+=== RUN   TestFontLazyLoadNoIOOnConstruct
+--- PASS: TestFontLazyLoadNoIOOnConstruct (0.00s)
+=== RUN   TestFontLazyLoadCoalesce
+--- PASS: TestFontLazyLoadCoalesce (0.00s)
+=== RUN   TestFontLazyLoadNonBlockingOnLoading
+--- PASS: TestFontLazyLoadNonBlockingOnLoading (0.00s)
+=== RUN   TestFontLazyLoadNoAutoRetry
+--- PASS: TestFontLazyLoadNoAutoRetry (0.02s)
+=== RUN   TestFontLazyLoadExplicitRetry
+--- PASS: TestFontLazyLoadExplicitRetry (0.01s)
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects/Unloaded
+=== RUN   TestFontLazyLoadThemeHasNoSideEffects/Failed
+--- PASS: TestFontLazyLoadThemeHasNoSideEffects (0.01s)
+    --- PASS: TestFontLazyLoadThemeHasNoSideEffects/Unloaded (0.00s)
+    --- PASS: TestFontLazyLoadThemeHasNoSideEffects/Failed (0.00s)
+=== RUN   TestFontLazyLoadTakeOnce
+--- PASS: TestFontLazyLoadTakeOnce (0.01s)
+=== RUN   TestFontLazyLoadFailureKeepsTemp
+--- PASS: TestFontLazyLoadFailureKeepsTemp (0.00s)
+=== RUN   TestFontLazyLoadNotifyBeforeRequest
+--- PASS: TestFontLazyLoadNotifyBeforeRequest (0.02s)
+=== RUN   TestFontLazyLoadNotifyAfterRequest
+--- PASS: TestFontLazyLoadNotifyAfterRequest (0.00s)
+=== RUN   TestFontLazyLoadTempOnlyBuiltOnce
+--- PASS: TestFontLazyLoadTempOnlyBuiltOnce (0.01s)
+=== RUN   TestFontLazyLoadTempBuiltOnceConcurrent
+--- PASS: TestFontLazyLoadTempBuiltOnceConcurrent (0.01s)
+=== RUN   TestFontLazyLoadTempDoesNotPolluteProbe
+--- PASS: TestFontLazyLoadTempDoesNotPolluteProbe (0.01s)
+=== RUN   TestFontLazyLoadSetNotifyNil
+--- PASS: TestFontLazyLoadSetNotifyNil (0.01s)
+=== RUN   TestFontLazyLoadFailureCompletedAt
+--- PASS: TestFontLazyLoadFailureCompletedAt (0.01s)
+=== RUN   TestFontLazyLoadReportIsCopy
+--- PASS: TestFontLazyLoadReportIsCopy (0.00s)
+PASS
+ok  	github.com/goxml/goxml/pkg/runtime/theme	0.418s
+?   	github.com/goxml/goxml/pkg/runtime/theme/embedded	[no test files]

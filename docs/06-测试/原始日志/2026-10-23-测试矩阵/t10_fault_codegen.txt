@@ -1,0 +1,43 @@
+=== RUN   TestFailureClassA_AnalyzerRejects
+=== RUN   TestFailureClassA_AnalyzerRejects/字段不存在
+=== RUN   TestFailureClassA_AnalyzerRejects/中间段不存在
+=== RUN   TestFailureClassA_AnalyzerRejects/未导出字段
+=== RUN   TestFailureClassA_AnalyzerRejects/有参方法
+--- PASS: TestFailureClassA_AnalyzerRejects (2.88s)
+    --- PASS: TestFailureClassA_AnalyzerRejects/字段不存在 (0.71s)
+    --- PASS: TestFailureClassA_AnalyzerRejects/中间段不存在 (0.70s)
+    --- PASS: TestFailureClassA_AnalyzerRejects/未导出字段 (0.73s)
+    --- PASS: TestFailureClassA_AnalyzerRejects/有参方法 (0.74s)
+=== RUN   TestFailureClassB_CodegenFailsCleanly
+=== RUN   TestFailureClassB_CodegenFailsCleanly/跨包缺_ModulePath
+--- PASS: TestFailureClassB_CodegenFailsCleanly (1.39s)
+    --- PASS: TestFailureClassB_CodegenFailsCleanly/跨包缺_ModulePath (0.69s)
+=== RUN   TestFailureClassC_GeneratedMustCompile
+--- PASS: TestFailureClassC_GeneratedMustCompile (3.03s)
+=== RUN   TestFailureClassD_RuntimeReadFailureUndefined
+    binding_failure_test.go:119: 已确认：运行时读取失败分支不存在；vm==nil 行为待契约决策（未擅自实现）
+--- PASS: TestFailureClassD_RuntimeReadFailureUndefined (0.68s)
+=== RUN   TestGeneratedConstructorRejectsNilVM
+    constructor_nil_test.go:53: ok  	github.com/goxml/goxml/internal/compiler/codegen/testdata/tmprt536100	0.242s
+        [err=nil]
+        
+    constructor_nil_test.go:54: B0-F10 闭环：生成代码构造期 nil 拒绝有直接测试证据
+--- PASS: TestGeneratedConstructorRejectsNilVM (4.71s)
+=== RUN   TestInputSameFrameConflictRuntime
+    input_conflict_test.go:129: OBS1 text= XNEW
+    input_conflict_test.go:129: OBS2 vm= XNEW  changeConsumed= true
+    input_conflict_test.go:129: OBS5 stable= XNEW  applied= XNEW
+--- PASS: TestInputSameFrameConflictRuntime (4.94s)
+=== RUN   TestInputSameFrameExternalWinsOverLocalEdit
+    input_conflict_test.go:173: ok  	github.com/goxml/goxml/internal/compiler/codegen/testdata/tmprt509600	0.285s
+        [err=nil]
+        
+--- PASS: TestInputSameFrameExternalWinsOverLocalEdit (4.90s)
+=== RUN   TestInputNoValueKeepsLocalEdit
+    input_conflict_test.go:208: ok  	github.com/goxml/goxml/internal/compiler/codegen/testdata/tmprt794600	0.272s
+        [err=nil]
+        
+--- PASS: TestInputNoValueKeepsLocalEdit (4.91s)
+PASS
+ok  	github.com/goxml/goxml/internal/compiler/codegen	27.645s
+rc=0

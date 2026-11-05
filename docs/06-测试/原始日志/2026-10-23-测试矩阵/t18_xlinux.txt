@@ -1,0 +1,3 @@
+# runtime/cgo
+cgo: C compiler "gcc" not found: exec: "gcc": executable file not found in %PATH%
+rc=1

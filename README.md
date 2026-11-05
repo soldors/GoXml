@@ -40,9 +40,11 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - **Image v1 已批准并合入发布**：静态 `Src`/`Fit`、编译期资产校验与 `//go:embed`，见 [ADR-0015](docs/03-架构/adr/ADR-0015-Image控件与编译期资产嵌入.md)。
 - **Router 基础与关闭接线已合入发布**：`pkg/runtime/router` + `app.WithOnDestroy(r.View(), r.Shutdown)`；[routed-gallery 教程](examples/gxml/testprojects/routed-gallery/README.md) 与 [随仓验收入口](scripts/verify-gallery-accept.py) 可复跑。MacroOp 转场动画、独立 OSWindow 逃生接口仍未实现；有界调度预算语义未批准。
 - Watch、Preview、通用 Lifecycle/Hydration 尚未交付；强类型 ThemeRef 接线仍待批准，不属于现有字体 Theme 便利层。
-- 需求/WBS/任务卡的现行状态与证据链见 [R23-C 项目状态总览](docs/04-WBS/2026-11-05-R23-项目状态总览.md)（2026-11-05，基线 `369703bb`）。
+- 需求/WBS/任务卡的现行状态与证据链见 [项目状态总览](docs/04-WBS/2026-11-05-R23-项目状态总览.md)（2026-11-05，R23-C 基线 `369703bb`，R23-R1 现行基线 `bab7a35f`）。13 项证据资格复核的终结论见 [复核报告](docs/06-测试/2026-11-05-R23-R1-13项证据资格复核.md)；66 条 WIP 的实际候选提交与归并顺序见 [R23-R1 归并计划](docs/04-WBS/2026-11-05-R23-R1-WIP候选提交与归并计划.md)。限定范围的通过记录不等于整体验收完成，统计按证据层级而非完成百分比。
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。当前并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
+
+2026-10-31 的本地说明曾将 Image 记为待批准候选；该状态已由上述 R18/R20 记录取代。`<Expanded>` 等新容器仍未实现。
 
 ### goxml generate 使用说明
 
@@ -131,6 +133,7 @@ go run ./examples/demo
 
 架构决策记录位于 [docs/03-架构/adr/](docs/03-架构/adr/)，各文件标明批准状态；未批准草案不是开发许可。
 其中 ADR-0001 说明「编译期 GXML → Gio 零抽象开销」的整体取舍。
+ADR-0013 主题草稿仍待裁决；ADR-0015 Image 已批准，范围以各自批准状态为准。
 
 ### 进度与证据
 
@@ -151,6 +154,7 @@ go run ./examples/demo
 | 限制 | 说明 |
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
+| Image v1 范围 | 静态 Src/Fit、PNG/JPEG、包内相对资产；绑定 Src/Fit、SVG、网络图不在已批准范围 |
 | CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`、`--check`（提交前编译）、增量缓存；Watch 未做（归 TASK-DEVX-001/002） |
 | 窗口渲染未自动验证 | 已有离屏像素/几何/事件语义和 Router 原生事件循环自动化；真实视觉仍需人工确认，R20 人工视觉与原生 race 结论限其声明的冻结提交 |
 | 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |
