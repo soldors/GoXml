@@ -1,98 +1,84 @@
 package theme
 
-// R23-R1-B：TempElapsed 测量写入路径守卫（判别力测试，替代原并发用例里
-// 依赖时钟分辨率的 `TempElapsed > 0` 断言）。
+// R23-R1-B repair-r1：TempElapsed 测量来源的**双向确定性**守卫。
 //
-// 背景（B1 定性，见 dev-log）：TestFontLazyLoadTempBuiltOnceConcurrent 原断言
-// `TempElapsed > 0` 在 32 goroutine 争用下会因墙钟测量低于本机时钟分辨率低
-// （~0.5ms）读成 0，基线 100 次实测 96 PASS / 4–9 FAIL、失败值恒为 0s。
-// 这是**测试前提（计时精度）不成立**，不是生产并发缺陷；业务判据是\"临时主题只
-// 构造一次\"(cl.calls==1)、Attempts==1、TempSource 正确——这些已在并发用例保留。
-//
-// 本文件分离出两类语义：
-//   ① 合法零值：构建快于分辨率时 TempElapsed 就是 0，不据 0 判失败（并发用例已放开）。
-//   ② 真实写入路径：用**可控慢加载器**让临时主题构建实测 > 分辨率，据此证明
-//      `l.tempElapsed = time.Since(start)` 与 `l.rep.TempElapsed = l.tempElapsed`
-//      两处写入真实发生。删除任一写入 -> TempElapsed 恒 0 -> 本守卫 FAIL。
-//
-// 这不是放宽判据：原并发用例的\"构造一次\"业务断言原样保留；这里新增的是对
-// \"测量被真正写入\"的、比删断言更有辨识力的守卫（用可控 fixture 制造可测时长）。
+// 背景（F-B1/F-B3）：上一版写路径守卫只有 20ms 夹具单侧下界，把测量换成固定 1 小时
+// 仍 PASS——那是"上界缺失 + 仅下界"的假守卫。本文件改用**包内私有确定性时钟接缝**
+// （Lazy.now，生产恒 nil→time.Now）锁死测量来源：
+//   - 非零守卫：注入固定步长 step，TempElapsed 必须**恰等于** step（既拒绝 0/未赋值，
+//     也拒绝错误覆盖如固定 1h 或任何不是本轮的常量）。
+//   - 零守卫：注入 step=0，TempElapsed 必须**恰为 0**——确定性验证"零是本次测量结果"，
+//     而非"允许任意非负"；配合非零守卫，未赋值(0) 会被非零守卫抓住。
+// 不用 time.Sleep / 强制最小时长 / 忙等 / 放大字体。生产计时语义不变（now 恒 nil）。
 
 import (
 	"testing"
 	"time"
 )
 
-// slowEmbeddedLoader 在 Load 时阻塞到测试放行，并给一个明确的真实等待下限，
-// 使临时主题构建的墙钟耗时稳定大于本机时钟分辨率（可测），从而让 TempElapsed
-// 的写入可被判别。等待有墙钟上限（由测试固定的小常量），避免挂死。
-type slowEmbeddedLoader struct {
-	data  []byte
-	delay time.Duration
-	calls int // 由 embMu 串行化保护（同一 Provider 内）
+// fakeClock 每次调用前进固定 step，用于确定性驱动 l.clock()。
+// 仅测试使用；通过同包直接赋 lz.now 注入（不改公开 API）。
+type fakeClock struct {
+	base time.Time
+	step time.Duration
+	n    int
 }
 
-func (l *slowEmbeddedLoader) Load() ([]byte, string, error) {
-	l.calls++
-	// 受控真实等待：确保 newTempTheme 的测量区间 > 时钟分辨率。
-	// 这是**测试夹具**用于制造可测时长，不是生产路径的强制延时，也不用于掩盖断言。
-	time.Sleep(l.delay)
-	return l.data, "SlowEmbedded", nil
+func (c *fakeClock) Now() time.Time {
+	t := c.base.Add(time.Duration(c.n) * c.step)
+	c.n++
+	return t
 }
 
-// TestFontLazyLoadTempElapsedWrittenFromMeasurement 真实写入路径守卫：
-// 慢加载器下 TempElapsed 必须实测 > 时钟分辨率（此处取保守下限 delay/2）。
+// newLazyWithClock 建系统命中 Lazy 并注入确定性时钟。
+func newLazyWithClock(t *testing.T, step time.Duration) (*Lazy, *countingLoader) {
+	lz, cl := newLazySystemHit(t)
+	lz.now = (&fakeClock{base: time.Unix(1700000000, 0), step: step}).Now
+	return lz, cl
+}
+
+// TestFontLazyLoadTempElapsedWrittenFromMeasurement 非零守卫：
+// 注入 step=7ms，断言 TempElapsed **恰等于** 7ms；同时保留业务判据。
+// 判别力：把测量替成 0（未赋值）、固定 1h、或任意非本轮常量 -> != 7ms -> FAIL。
 func TestFontLazyLoadTempElapsedWrittenFromMeasurement(t *testing.T) {
-	font := hanziFontBytes(t)
-	dir := t.TempDir()
-	good := writeFont(t, dir, "good.otf", font)
-
-	const delay = 20 * time.Millisecond // 远大于 ~0.5ms 分辨率
-	sl := &slowEmbeddedLoader{data: font, delay: delay}
-	p := NewProvider(ProviderOptions{
-		Candidates: []string{good},
-		Embedded:   sl,
-	})
-	lz, err := NewLazy(LazyOptions{Provider: p})
-	if err != nil {
-		t.Fatalf("NewLazy 失败: %v", err)
-	}
+	const step = 7 * time.Millisecond
+	lz, cl := newLazyWithClock(t, step)
 	lz.Request()
 	waitState(t, lz, LoadReady, 10*time.Second)
-	rep := lz.Report()
-	// 前提：临时主题确实构造并解析了嵌入（否则测的是空路径）。
-	if sl.calls != 1 {
-		t.Fatalf("嵌入加载次数 = %d，期望 1——前提不成立", sl.calls)
+
+	if cl.calls != 1 {
+		t.Fatalf("嵌入加载次数 = %d，期望 1——前提不成立", cl.calls)
 	}
+	rep := lz.Report()
 	if rep.TempSource != tempSourceEmbedded {
 		t.Fatalf("TempSource = %q，期望 %q", rep.TempSource, tempSourceEmbedded)
 	}
-	// 写入路径判别：慢加载器保证测量区间 ≥ delay，TempElapsed 必须反映它。
-	// 保守下限 delay/2，容忍调度抖动；远高于时钟分辨率，故不是 flake。
-	if rep.TempElapsed < delay/2 {
-		t.Fatalf("TempElapsed = %v，期望 ≥ %v（慢加载器 %v 下必须实测到写入；"+
-			"若为 0 说明 l.tempElapsed / l.rep.TempElapsed 写入路径缺失或未赋值）",
-			rep.TempElapsed, delay/2, delay)
+	// 双向精确约束：TempElapsed 必须来自本次测量，恰为注入步长。
+	if rep.TempElapsed != step {
+		t.Fatalf("TempElapsed = %v，期望恰为注入的测量步长 %v。"+
+			"不等于说明测量来源被固定/未赋值/错误覆盖（如固定 1h、置 0、非本轮常量）",
+			rep.TempElapsed, step)
 	}
 }
 
-// TestFontLazyLoadTempElapsedZeroIsLegal 合法零值语义：
-// 快加载（无延时）下 TempElapsed 允许为 0（低于分辨率），**不得**据此判失败；
-// 但\"构造一次\"与来源仍必须成立。与上一条一起，把\"合法零\"与\"真实写入\"分开。
+// TestFontLazyLoadTempElapsedZeroIsLegal 零值确定性守卫：
+// 注入 step=0，断言 TempElapsed **恰为 0**——确定性证明"零是本次测量结果"，
+// 不是"允许快路径任意非负"。业务判据仍需成立。
+// 判别力：若测量被错误覆盖为 1h/任意非零 -> != 0 -> FAIL。
 func TestFontLazyLoadTempElapsedZeroIsLegal(t *testing.T) {
-	lz, cl := newLazySystemHit(t)
+	lz, cl := newLazyWithClock(t, 0)
 	lz.Request()
 	waitState(t, lz, LoadReady, 5*time.Second)
-	rep := lz.Report()
+
 	if cl.calls != 1 {
 		t.Fatalf("嵌入加载次数 = %d，期望 1", cl.calls)
 	}
+	rep := lz.Report()
 	if rep.TempSource != tempSourceEmbedded {
 		t.Fatalf("TempSource = %q，期望 %q", rep.TempSource, tempSourceEmbedded)
 	}
-	// 不断言 >0：0 是合法测量值（快于分辨率）。只断言非负（时间戳语义不出现负值）。
-	if rep.TempElapsed < 0 {
-		t.Fatalf("TempElapsed = %v，期望非负", rep.TempElapsed)
+	if rep.TempElapsed != 0 {
+		t.Fatalf("TempElapsed = %v，期望恰为 0（注入 0 步长时钟下，零必须是本次测量结果；"+
+			"非 0 说明错误覆盖）", rep.TempElapsed)
 	}
-	t.Logf("快加载 TempElapsed = %v（0 合法，不作失败判据）", rep.TempElapsed)
 }
