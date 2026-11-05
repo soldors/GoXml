@@ -10,7 +10,6 @@ package router
 import (
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -38,11 +37,10 @@ func TestR22SingleRequestDrainsAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	gtx := &layout.Context{Ops: new(op.Ops)}
-	frame := func() {
-		gtx.Reset()
-		r.View().Layout(*gtx, material.NewTheme())
-	}
+	fixture := &livenessFixture{r: r, gtx: gtx, th: material.NewTheme()}
+	frame := func() { fixture.frameWithDeadline(t, 0) }
 	frame() // /a 生效
+	inv.pending.Store(0)
 
 	const total = 64
 	var executed atomic.Int64
@@ -57,7 +55,6 @@ func TestR22SingleRequestDrainsAll(t *testing.T) {
 		}
 		frame()
 		frames++
-		time.Sleep(time.Millisecond) // 让并发 Invalidate 到达（本测试无并发，纯顺序）
 	}
 	got := executed.Load()
 	if frames != 1 {
