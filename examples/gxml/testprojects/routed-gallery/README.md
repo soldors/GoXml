@@ -79,6 +79,43 @@ python scripts/verify-projects.py routed-gallery \
 退出码：`0` 全过 · `2` 用法错误 · `3` 拒绝 · `4` 业务失败 · `5` 超时 ·
 `6` 进程树收口未证实 · `7` 记录不完整 · `8` 锁忙 · `9` 锁未按自有 token 释放。
 
+### 一条命令跑完整验收（缓存 / 资产 / 变异）
+
+上面那条命令只证明「复制 → 生成 → 构建 → 离屏测试」能过。**验收**还要回答四个更难的问题
+（再生成是不是真命中、换图会不会只重验一页、坏图会不会拒绝并保旧、两条变异是不是真的翻红），
+这些判据现在都在仓库里，**不依赖任何交接目录**：
+
+```bash
+python scripts/verify-gallery-accept.py \
+    --run-dir "D:/work/r22 图库 验收" \
+    --lock-path "D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock"
+```
+
+`--run-dir` 必须是本轮独占创建的新目录（已存在就拒绝，零新增）。跑完它下面有：
+
+| 落点 | 内容 |
+|---|---|
+| `project/` | 真实工程 + `.verify-projects/` 里每个阶段的 argv / rc / 收口 / 原始字节 |
+| `main.json` | 主验收报告（`verify-projects.py` 原样落盘的那一份） |
+| `raw/` | 矩阵每条命令的 `stdout.raw` / `stderr.raw` / `result.json` |
+| `report.json` | 75 条判据 + 命令台账 + 每一步前后的字节/mtime 快照（本轮实测条数，见报告 `counts`） |
+
+成功打印 `GALLERY-ACCEPT-OK <runId>`；失败逐条打印 `[判据 id] 名称: 详情`。
+同一份判据的**低成本自检**（14 条反例，不跑 Go、秒级）在
+`scripts/test-verify-gallery-accept.py`：重复目录、旧报告、锁忙、缺用例、SKIP/FAIL、
+完成标记缺项、mtime-only 改动、变异锚点不唯一，各有一条。
+
+三段持锁，**同一时刻只有一层**（没有嵌套）：
+
+| 段 | 谁持锁 | 干什么 |
+|---|---|---|
+| 预检 | 自己取、立刻按自有 token 放 | 只为一件事：锁忙时**零新增**，连运行目录都不创建 |
+| 主验收 | `verify-projects.py` 子进程 | 复制 → 一次目录 `generate --check` → 只构建入口 → 10 个离屏用例 |
+| 矩阵 | 本进程自己 | 缓存真命中、换图只重验首页、坏图/删图拒绝保旧、两条变异 + 健康对照 |
+
+为什么每条命令都固定 `GOFLAGS=-mod=readonly` 等环境：见下面「缓存与资产」的三条误判。
+矩阵里唯一的例外是 C8——它**故意**改这一项，用来证明「上下文变化」长什么样。
+
 ### 手动步骤（排障时看）
 
 ```bash
@@ -157,9 +194,17 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
   这条错误本身就是一个可用的判据：生产组合再包一次必须失败，裸 `r.View()` 包一次必须成功。
   测试 `TestRouteDestroyWiringPresent` 就靠这一对正反例，**不用反射、不用认识内部类型**。
 - 图库测试验证根视图已包装，并单独验证 `Shutdown` 可重复调用。
-  回调目标 `r.Shutdown` 由上面的生产接线指定。
-  `pkg/runtime/app` 的 `TestDestroyEventShutsDownWrappedRouter` 用受控事件分别验证两个循环
-  收到 `DestroyEvent` 后执行回调。图库入口在自动验收中只构建。
+  回调目标 `r.Shutdown` 由上面的生产接线指定。图库入口在自动验收中只构建。
+
+这条接线有**两层**证据，层次不同、不能互相替代，验收入口把它们分开记：
+
+| 层 | 证明什么 | 谁在跑 | 判据在报告里 |
+|---|---|---|---|
+| 源码接线 | `wire.go` 里那条 `app.WithOnDestroy(r.View(), r.Shutdown)` 存在，且对已包装视图再包一次会被拒 | 图库的 `TestRouteDestroyWiringPresent`；变异 M1 把它拆掉后必须翻红；未变异工程上的同名用例必须绿（健康对照） | `m1-no-destroy-wrap.*` / `main.test.ledger` |
+| 受控事件覆盖 | 两个事件循环（`app-loop`、`integration-loop`）收到 `DestroyEvent` 后**真的调用**了已注册的回调 | 仓库里的 `pkg/runtime/app` 的 `TestDestroyEventShutsDownWrappedRouter`，**不经图库** | `destroy.event.pass` / `destroy.event.loops` |
+
+两层都没有覆盖的：原生窗口真的关掉时，`DestroyEvent` 从系统事件队列到达 Gio 的这条路径。
+那属于人工/原生验收项，自动验收不声称验证过它。
 
 ## 生成过程的两条硬要求
 
@@ -181,13 +226,17 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 | 格式 | PNG / JPEG（`image/png`、`image/jpeg` 是纯 Go，Windows 仍 `CGO_ENABLED=0`） |
 | 解码时机 | 构造期 `ReadFile` + `image.Decode` 一次，缓存 `paint.ImageOp`；`Layout` 只回放 |
 
-本模板的两张图由本轮交接包中的 `make-assets.py` 确定性生成（24x24 与 32x16，用来让「哪个包
-内嵌了哪张图」在测试里可区分）。生成物里只写路径，不写像素：换图不改源码字节。
+本模板的两张图（24x24 与 32x16，用来让「哪个包内嵌了哪张图」在测试里可区分）是**版本化
+字节**，直接进版本控制；生成物里只写路径，不写像素：换图不改源码字节。所以验收不需要
+任何资产生成器——要一张「另一张合法 PNG」时，用另一页那张就够了（验收入口就是这么做的）。
 
 本工程的绑定页构造函数通过 `error` 报告内嵌图片解码失败。Pipeline 在生成前用
 `DecodeConfig` 和完整 `Decode` 验证资产。请在可信构建目录操作，并在校验到编译期间保持资产树稳定。
 
 ## 缓存与资产：怎么验证它真的生效
+
+下面 C1–C8 的每一条都由 `scripts/verify-gallery-accept.py` 自动执行并留下原始字节；
+手工复核时按这个顺序在工程根做（顺序有意义：C3 依赖「第一次」换图）。
 
 | 步 | 命令（工程根） | 实测结果 |
 |---|---|---|
@@ -198,6 +247,17 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 | C5 | 把原资产字节换回去 | `命中 2，生成 0`——原键的记录仍然有效，说明键跟**内容**走，不是跟「最近一次」走 |
 | C6 | 把 `badge.png` 写成非图片字节 | rc=2；`CODEGEN-ASSET-002: asset "assets/badge.png": image: unknown format`；`批次全部放弃，磁盘无任何变更`；两页产物与 Manifest 字节/mtime 全部保旧 |
 | C7 | 删除 `badge.png` | rc=2；`CODEGEN-ASSET-002`（底层是系统缺文件错误）；产物与 Manifest 仍保旧 |
+| C8 | 只改构建上下文（去掉 `GOFLAGS`） | **两页同时**未命中，原因都是 `package-sources-changed`；产物与 Manifest 被真的重写（mtime 变）；回到固定环境又是 `命中 2，生成 0` |
+
+C8 是**反例**，它存在的意义是把两件事分开：
+
+| 变化的是 | 未命中的范围 | 原因词 |
+|---|---|---|
+| 资产内容（C4） | 只有引用它的那一页 | `package-sources-changed` |
+| 构建上下文（C8） | 同一批里的**所有**页 | `package-sources-changed` |
+
+原因词一样，只有范围能区分。所以「看到 `package-sources-changed` 就以为资产变了」是错的，
+反过来「以为环境变了」也可能是错的——要看**几页**重新生成。
 
 三件容易误判的事：
 
@@ -207,9 +267,10 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
    `缓存未命中 …：package-sources-changed`。这不是资产变了、也不是源码变了，
    而是构建上下文变了。所以「验证缓存」必须在**同一套环境变量**下跑，
    否则会把一次环境差异误读成缓存失效。
-2. **C4/C7 的原因标签统一是 `package-sources-changed`**：资产内容变化虽然进了键
-   （C4 只重验首页就是证据），但没有专门的 `asset-changed` 词表项，诊断可读性有限。
-   这是真实的观感缺口，登记给 CLI 线，不在本模板里绕。
+2. **资产内容变化没有专门的原因词**：资产确实进了缓存键（C4 只重验首页就是证据），
+   但标签统一是 `package-sources-changed`，与 C8 的上下文变化同词。诊断可读性有限——
+   这是真实的观感缺口，登记给 CLI 线，不在本模板里绕；验收入口因此把「范围」
+   （几页未命中）单独记成一条判据，作为唯一的区分手段。
 3. **Manifest 与缓存记录不是一回事**：C6/C7 保旧断言同时看产物字节、产物 mtime 与
    Manifest 字节。只看字节会把「重写了一遍相同内容」误判成没动。
 
@@ -230,7 +291,8 @@ view, err := app.WithOnDestroy(r.View(), r.Shutdown)   // wire.Build 里
 
 第二个变异先红在「点击没有落在共享模型上」这条断言（它读的是共享模型的 `LastAction`），
 而不是后面那条「回首页该看到新计数」——两处指向同一个事实，先到的那条先红。
-本轮交接包中的 `routed-gallery-accept.py` 将实际失败行写入报告。
+`scripts/verify-gallery-accept.py` 会把**实际失败行**（`route_test.go:<行号>: …`）逐字写进
+`report.json` 的 `mutations[]`，所以「红在哪一条断言」不需要人去翻终端。
 
 两条都只改 `wire` 的接线、不改生成物，所以「能编译」是有意义的：红的不是编译错误，
 而是那条接线上本该成立的事实。验收矩阵逐条跑
