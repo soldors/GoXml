@@ -86,23 +86,21 @@ func staleGeneratedOverlay(root string, man *manifest, rs []*resolvedInput) (map
 	return overlay, nil
 }
 
-// scopedUserOverlayForAnalyzer 构造 **Analyzer 阶段**的用户 overlay 字节快照（R22-A A2/R1）。
+// scopedUserOverlayForAnalyzer 构造 **Analyzer 阶段**的用户 overlay 快照（R22-A A2/R1/R2）。
 //
-// 背景：Analyzer 通过 packages.Load 的 Config.Overlay 只接收 staleGeneratedOverlay
-// （工具自有旧产物 ignore），不含用户 GOFLAGS/GOENV 的 -overlay，于是类型/方法检查
-// 按磁盘进行，与 go build/--check/定名口径不一致（跨包 VM 假接受、依赖闭包假接受、
-// 新增方法假拒绝）。
+// 背景：Analyzer 通过 packages.Load 的 Config.Overlay（go/packages 会把它转成一个
+// `-overlay` JSON 传给 go list）加载源码。此前只看磁盘/只快照替换源，导致跨包/依赖
+// 类型分叉（F1/F2），以及删除语义丢失（F5）。R2 修正 F5：
+//   - 删除项（to==""）：若其 from 是**已加载包目录内的磁盘 Go 源**，用一个
+//     `//go:build ignore` 的占位**替换字节**表达删除——使 go/packages 的 overlay
+//     也把该文件排除出编译（与工具自有旧产物 ignore 同机制，Config.Overlay 无法直接表达
+//     "文件不存在"，但可用 ignore 标签等效隐藏）。
+//   - 替换项：仅当 Go 在用户 overlay 下**实际选中**该 from 时才读取替换源字节
+//     （未选中：平台排除/无关/未用缺失 → 不读，F3 保留）。
+//   - 新增虚拟源：Go 选中（出现在 -deps GoFiles）→ 读取其替换源字节并入。
 //
-// 修正（R1，按 Go 权威选源）：
-//   - 不再按目录无差别预读；先对每个 VM 包导入路径执行一次
-//     `go list -deps -e -json -overlay=<用户overlay>`，得到该构建上下文下 Go **实际选中**
-//     的全部源文件（含 VM 包与依赖闭包、已按 GOOS/GOARCH/构建标签筛选）。
-//   - 只读取**被 Go 选中**且属于用户 overlay 的 `from` 的替换源字节，并入 Analyzer 快照。
-//   - 未被选中的映射（非 Go 的 notes.txt、被平台排除的 platform_linux.go、无关目录）不读取，
-//     保持 R21「未使用缺失映射由 Go 决定」边界；**被选中**的替换源缺失 → 返回错误（诚实失败）。
-//
-// 契约：仍为 compiler-owned、ModuleRoot 内、内存快照；用户 overlay 源也在 ModuleRoot 内，
-// 由 analyzer.Config.Validate 的 scope 校验兜底；未扩展正式 Analyzer 输入契约。
+// 契约：仍 compiler-owned、ModuleRoot 内、内存快照；未扩展正式 Analyzer 输入契约。
+// 已证工具自有条目（staleGeneratedOverlay）在调用方合并时优先，不被本函数覆盖。
 func scopedUserOverlayForAnalyzer(goExe, moduleRoot string, vmImportPaths []string, user map[string]string) (map[string][]byte, error) {
 	if len(user) == 0 {
 		return nil, nil
@@ -110,78 +108,75 @@ func scopedUserOverlayForAnalyzer(goExe, moduleRoot string, vmImportPaths []stri
 	if goExe == "" {
 		goExe = "go"
 	}
-	// 测试专用变异钩子（默认空；仅供 overlay_r1_mutation_test.go 覆盖率量退化路径）。
-	switch r1MutationMode {
-	case "skip-go-selection": // 退化①：完全不给 Analyzer 用户 overlay（复现 F1/F2 假接受：看磁盘）
-		return nil, nil
-	case "ignore-selection-filter": // 退化②：读全部映射（复现 F3 预读误拒绝）
-		out := make(map[string][]byte, len(user))
-		for from, to := range user {
-			if to == "" {
-				continue
-			}
-			ff := from
-			if !filepath.IsAbs(ff) {
-				ff = filepath.Join(moduleRoot, filepath.FromSlash(ff))
-			}
-			d, rerr := os.ReadFile(toFullPath(moduleRoot, to))
-			if rerr != nil {
-				return nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", toFullPath(moduleRoot, to), rerr)
-			}
-			out[filepath.Clean(ff)] = d
-		}
-		return out, nil
-	}
-	// 构造用户 overlay 的 Go JSON（from(abs)→to(abs) 或 ""删除），供权威 go list 选源。
+	// 用户 overlay 的 Go JSON（from(abs)→to(abs) 或 ""删除），供权威 go list 选源。
 	repl := make(map[string]string, len(user))
 	for from, to := range user {
 		repl[from] = to
 	}
-	// selected 收集 Go 实际选中的绝对源文件路径。
-	selected := make(map[string]bool)
+	selected := make(map[string]bool)   // Go 实际选中的绝对源文件
+	loadedDirs := make(map[string]bool) // Go 实际加载的包目录（绝对、Clean）
 	seenPath := make(map[string]bool)
 	for _, ip := range vmImportPaths {
 		if ip == "" || seenPath[ip] {
 			continue
 		}
 		seenPath[ip] = true
-		dirs, err := goListDepSourceFiles(goExe, moduleRoot, ip, repl)
+		sel, dirs, err := goListDepSourceFiles(goExe, moduleRoot, ip, repl)
 		if err != nil {
 			return nil, err
 		}
-		for d := range dirs {
+		for d := range sel {
 			selected[d] = true
+		}
+		for d := range dirs {
+			loadedDirs[d] = true
 		}
 	}
 	out := make(map[string][]byte, len(user))
 	for from, to := range user {
-		full := from
-		if !filepath.IsAbs(full) {
-			full = filepath.Join(moduleRoot, filepath.FromSlash(full))
-		}
-		full = filepath.Clean(full)
-		if !selected[full] {
-			continue // 未被 Go 选中：不读取（notes.txt / 平台排除 / 无关目录 / 未用缺失）
-		}
+		full := filepath.Clean(toFullPath(moduleRoot, from))
 		if to == "" {
-			continue // 删除语义：Go 侧处理；Analyzer overlay 不提供字节
+			// 删除：仅对已加载包目录内、磁盘上确实存在的非测试 Go 源，用 ignore 占位隐藏。
+			if loadedDirs[filepath.Dir(full)] && isDelGvable(full) {
+				out[full] = []byte(ignoreStub)
+			}
+			continue
 		}
-		toFull := to
-		if !filepath.IsAbs(toFull) {
-			toFull = filepath.Join(moduleRoot, filepath.FromSlash(toFull))
+		if !selected[full] {
+			continue // 未被 Go 选中：不读取（F3：平台排除/无关/未用缺失）
 		}
-		data, rerr := os.ReadFile(toFull)
+		data, rerr := os.ReadFile(toFullPath(moduleRoot, to))
 		if rerr != nil {
-			return nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", toFull, rerr)
+			return nil, fmt.Errorf("读取用户 overlay 替换文件 %s: %w", toFullPath(moduleRoot, to), rerr)
 		}
 		out[full] = data
 	}
 	return out, nil
 }
 
+// ignoreStub 是表达"文件被排除编译"的占位内容（与工具自有旧产物 ignore 同机制）。
+const ignoreStub = "//go:build ignore\n\npackage ignore\n"
+
+// isDelGvable 判断删除项 from 是否为磁盘上存在的非测试 Go 源（只有这种才需隐藏）。
+func isDelGvable(full string) bool {
+	if filepath.Ext(full) != ".go" || strings.HasSuffix(full, "_test.go") {
+		return false
+	}
+	info, err := os.Stat(full)
+	return err == nil && !info.IsDir()
+}
+
+// toFullPath 把（可能相对的）路径按 moduleRoot 归一化为绝对路径。
+func toFullPath(moduleRoot, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(moduleRoot, filepath.FromSlash(p))
+}
+
 // goListDepSourceFiles 用 `go list -deps -e -json -overlay=<repl>` 从 importPath 出发，
 // 返回该构建上下文中 Go 实际选中的**绝对源文件路径集合**（含 VM 包与依赖闭包、已按平台/标签筛选）。
-func goListDepSourceFiles(goExe, moduleRoot, importPath string, repl map[string]string) (map[string]bool, error) {
+func goListDepSourceFiles(goExe, moduleRoot, importPath string, repl map[string]string) (map[string]bool, map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), targetListTimeout)
 	defer cancel()
 	args := []string{"list", "-deps", "-e", "-json"}
@@ -189,17 +184,17 @@ func goListDepSourceFiles(goExe, moduleRoot, importPath string, repl map[string]
 	if len(repl) > 0 {
 		ovJSON, jerr := jsonMarshalOverlay(repl)
 		if jerr != nil {
-			return nil, fmt.Errorf("序列化分析 overlay: %w", jerr)
+			return nil, nil, fmt.Errorf("序列化分析 overlay: %w", jerr)
 		}
 		f, ferr := os.CreateTemp("", "goxml-analyzer-overlay-*.json")
 		if ferr != nil {
-			return nil, fmt.Errorf("写分析 overlay 文件: %w", ferr)
+			return nil, nil, fmt.Errorf("写分析 overlay 文件: %w", ferr)
 		}
 		overlayFile = f.Name()
 		if _, werr := f.Write(ovJSON); werr != nil {
 			f.Close()
 			os.Remove(overlayFile)
-			return nil, fmt.Errorf("写分析 overlay 文件: %w", werr)
+			return nil, nil, fmt.Errorf("写分析 overlay 文件: %w", werr)
 		}
 		f.Close()
 		defer os.Remove(overlayFile)
@@ -216,15 +211,16 @@ func goListDepSourceFiles(goExe, moduleRoot, importPath string, repl map[string]
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("go list -deps -json 超时（%s）", targetListTimeout)
+			return nil, nil, fmt.Errorf("go list -deps -json 超时（%s）", targetListTimeout)
 		}
-		return nil, fmt.Errorf("go list -deps -json 执行失败: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, nil, fmt.Errorf("go list -deps -json 执行失败: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	pkgs, derr := decodeGoListJSON(out)
 	if derr != nil {
-		return nil, derr
+		return nil, nil, derr
 	}
 	files := make(map[string]bool)
+	dirs := make(map[string]bool)
 	add := func(dir string, names []string) {
 		for _, n := range names {
 			files[filepath.Clean(filepath.Join(dir, n))] = true
@@ -234,10 +230,11 @@ func goListDepSourceFiles(goExe, moduleRoot, importPath string, repl map[string]
 		if pk.Dir == "" {
 			continue
 		}
+		dirs[filepath.Clean(pk.Dir)] = true
 		add(pk.Dir, pk.GoFiles)
 		add(pk.Dir, pk.CgoFiles)
 	}
-	return files, nil
+	return files, dirs, nil
 }
 
 // vmImportPathOf 计算输入 r 的 ViewModel 包导入路径（供 go list -deps 权威选源）。
@@ -266,14 +263,4 @@ func vmImportPathOf(r *resolvedInput) string {
 		return r.modulePath + "/" + rel
 	}
 	return r.modulePath + "/" + dir
-}
-
-// r1MutationMode 是测试专用变异开关（默认空）。仅用于覆盖率量退化路径，不参与生产逻辑。
-var r1MutationMode = ""
-
-func toFullPath(moduleRoot, p string) string {
-	if filepath.IsAbs(p) {
-		return p
-	}
-	return filepath.Join(moduleRoot, filepath.FromSlash(p))
 }

@@ -1,82 +1,132 @@
 package cli
 
-// R22-A / R1 可编译退化变异（F4）：用 r1MutationMode 打开修复前的退化路径，证明：
-//   - 退化① skip-go-selection（按目录全读，不按 Go 选源）：跨包/依赖字段假接受（BIND 不再报）。
-//   - 退化② ignore-selection-filter（读全部映射）：非 Go 未用缺失替换 → 误拒绝。
-// 健康对照：同一材料在默认（无变异）下通过。
-// 这些是**可编译**的行为退化（不是编译错误）。
+// R22-A / R2（F6）：可编译退化用 **Go `-overlay` 对独立源码副本**实施，而非在生产代码里放测试开关。
+// 本测试：
+//   1) 读取真实 generated_overlay.go，复制到临时文件并施加退化文本变异；
+//   2) 用 `go test -overlay=<json>` 把变异副本映射到 generated_overlay.go，跑**健康行为回归**
+//      （TestBehaviorCrossFieldRejected / TestBehaviorUnusedMissingNotBlocking）；
+//   3) 断言：退化下目标健康测试实际 FAIL（rc!=0 且含目标 FAIL 行）；
+//   4) 恢复：同一测试在不加 overlay 时 PASS。
+// 变异文本使 healthy 测试翻红，而产物仍可编译。
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func withMutation(t *testing.T, mode string, fn func()) {
+func r2RepoRoot(t *testing.T) string {
 	t.Helper()
-	prev := r1MutationMode
-	r1MutationMode = mode
-	defer func() { r1MutationMode = prev }()
-	fn()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Dir(filepath.Dir(wd)) // internal/cli -> repo root
 }
 
-// TestMutationSkipsGoSelectionCausesFalseAccept 退化①：应使跨包字段假接受（写盘且不报 BIND）。
-func TestMutationSkipsGoSelectionCausesFalseAccept(t *testing.T) {
-	root := r1Project(t)
-	r22Write(t, filepath.Join(root, "model", "vm.go"), "package model\ntype VM struct { Title string }\n")
-	r22Write(t, filepath.Join(root, "vm.txt"), "package model\ntype VM struct { Title int }\n")
-	r22Write(t, filepath.Join(root, "views", "home", "doc.go"), "package home\n")
-	r22Write(t, filepath.Join(root, "views", "home", "home.gxml"),
-		`<Goxml Version="1" ViewModel="model.VM"><Page Route="/"><Text Value="{Title}"/></Page></Goxml>`)
-	r22Write(t, filepath.Join(root, "user.json"), `{"Replace":{"model/vm.go":"vm.txt"}}`)
-	r1SetEnv(t)
-	var code int
-	var se string
-	withMutation(t, "skip-go-selection", func() {
-		code, _, se = runCLIStrings(t, filepath.Join(root, "views", "home", "home.gxml"))
-	})
-	// 退化下：不应报 BIND-004（假接受），否则说明变异未生效——明确失败提示。
-	if strings.Contains(se, "GXML-BIND-004") {
-		t.Fatalf("退化①应复现假接受（不报 BIND），实际仍报 BIND，变异无效：%s", se)
+func runGoTestWithOverlay(t *testing.T, overlayJSON, runRe string) (int, string) {
+	t.Helper()
+	args := []string{"test", "./internal/cli", "-count=1", "-run", runRe}
+	if overlayJSON != "" {
+		args = append(args, "-overlay="+overlayJSON)
 	}
-	if code != ExitOK {
-		t.Fatalf("退化①应假接受 rc0，实际 rc=%d stderr=%s", code, se)
+	cmd := exec.Command(r21Go(t), args...)
+	cmd.Dir = r2RepoRoot(t)
+	cmd.Env = append(os.Environ(), "GOENV=off", "GOTOOLCHAIN=local")
+	out, _ := cmd.CombinedOutput()
+	rc := 0
+	if cmd.ProcessState != nil {
+		rc = cmd.ProcessState.ExitCode()
 	}
-	if _, err := os.Stat(filepath.Join(root, "views", "home", "home_gen.go")); err != nil {
-		t.Fatal("退化①应写出坏产物（假接受）")
+	return rc, string(out)
+}
+
+func writeOverlayJSONForTest(t *testing.T, from, to string) string {
+	t.Helper()
+	tmp := filepath.Join(t.TempDir(), "ov.json")
+	payload := `{"Replace":{` + jsonQuote(from) + `:` + jsonQuote(to) + `}}`
+	if err := os.WriteFile(tmp, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return tmp
+}
+
+func jsonQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func mutantCopy(t *testing.T, replacements [][2]string) (string, bool) {
+	t.Helper()
+	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, rp := range replacements {
+		if !strings.Contains(text, rp[0]) {
+			return "", false
+		}
+		text = strings.Replace(text, rp[0], rp[1], 1)
+	}
+	dst := filepath.Join(t.TempDir(), "generated_overlay_mutant.go")
+	if err := os.WriteFile(dst, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dst, true
+}
+
+// TestMutationGoOverlayCrossField 退化①：Analyzer 无用户 overlay（看磁盘）→ 跨包字段健康测试 FAIL。
+func TestMutationGoOverlayCrossField(t *testing.T) {
+	anchor := "if len(user) == 0 {\n\t\treturn nil, nil\n\t}"
+	mut := "if true {\n\t\treturn nil, nil\n\t}\n\t_ = vmImportPaths\n\t_ = moduleRoot\n\t_ = goExe\n\tif len(user) == 0 {\n\t\treturn nil, nil\n\t}"
+	mutant, ok := mutantCopy(t, [][2]string{{anchor, mut}})
+	if !ok {
+		t.Skip("generated_overlay.go 结构变化，跳过文本变异")
+	}
+	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
+	ov := writeOverlayJSONForTest(t, src, mutant)
+	rc, out := runGoTestWithOverlay(t, ov, "^TestBehaviorCrossFieldRejected$")
+	if rc == 0 || !strings.Contains(out, "--- FAIL") {
+		t.Fatalf("退化①应使跨包字段健康测试 FAIL（rc=%d）；输出:\n%s", rc, out)
+	}
+	rc2, out2 := runGoTestWithOverlay(t, "", "^TestBehaviorCrossFieldRejected$")
+	if rc2 != 0 {
+		t.Fatalf("恢复后应 PASS（rc=%d）；输出:\n%s", rc2, out2)
 	}
 }
 
-// TestMutationIgnoresSelectionCausesFalseReject 退化②：非 Go 未用缺失替换 → 误拒绝。
-func TestMutationIgnoresSelectionCausesFalseReject(t *testing.T) {
-	root := r1Project(t)
-	r22Write(t, filepath.Join(root, "ui", "vm.go"), "package ui\ntype VM struct { Title string }\n")
-	r22Write(t, filepath.Join(root, "ui", "home.gxml"),
-		`<Goxml Version="1" ViewModel="VM"><Page Route="/"><Text Value="{Title}"/></Page></Goxml>`)
-	r22Write(t, filepath.Join(root, "user.json"), `{"Replace":{"ui/notes.txt":"not-present.txt"}}`)
-	r1SetEnv(t)
-	var code int
-	withMutation(t, "ignore-selection-filter", func() {
-		code, _, _ = runCLIStrings(t, filepath.Join(root, "ui", "home.gxml"))
-	})
-	if code == ExitOK {
-		t.Fatalf("退化②应误拒绝（rc!=0），实际 rc0，变异无效")
+// TestMutationGoOverlayPreReadAll 退化②：读全部映射（预读未用缺失）→ 健康测试 FAIL。
+func TestMutationGoOverlayPreReadAll(t *testing.T) {
+	anchor := "if !selected[full] {\n\t\t\tcontinue // 未被 Go 选中：不读取（F3：平台排除/无关/未用缺失）\n\t\t}"
+	mut := "// mutation: 不按选中过滤，直接读全部替换源\n\t\t_ = selected"
+	mutant, ok := mutantCopy(t, [][2]string{{anchor, mut}})
+	if !ok {
+		t.Skip("generated_overlay.go 结构变化，跳过文本变异")
 	}
-}
-
-// TestMutationHealthyControlDefaultPasses 健康对照：默认（无变异）同材料通过。
-func TestMutationHealthyControlDefaultPasses(t *testing.T) {
-	root := r1Project(t)
-	r22Write(t, filepath.Join(root, "ui", "vm.go"), "package ui\ntype VM struct { Title string }\n")
-	r22Write(t, filepath.Join(root, "ui", "home.gxml"),
-		`<Goxml Version="1" ViewModel="VM"><Page Route="/"><Text Value="{Title}"/></Page></Goxml>`)
-	r22Write(t, filepath.Join(root, "user.json"), `{"Replace":{"ui/notes.txt":"not-present.txt"}}`)
-	r1SetEnv(t)
-	if r1MutationMode != "" {
-		t.Fatal("默认不应处于变异模式")
+	src := filepath.Join(r2RepoRoot(t), "internal", "cli", "generated_overlay.go")
+	ov := writeOverlayJSONForTest(t, src, mutant)
+	rc, out := runGoTestWithOverlay(t, ov, "^TestBehaviorUnusedMissingNotBlocking$")
+	if rc == 0 || !strings.Contains(out, "--- FAIL") {
+		t.Fatalf("退化②应使未用缺失健康测试 FAIL（rc=%d）；输出:\n%s", rc, out)
 	}
-	if code, _, se := runCLIStrings(t, filepath.Join(root, "ui", "home.gxml")); code != ExitOK {
-		t.Fatalf("健康对照应通过，got rc=%d stderr=%s", code, se)
+	rc2, out2 := runGoTestWithOverlay(t, "", "^TestBehaviorUnusedMissingNotBlocking$")
+	if rc2 != 0 {
+		t.Fatalf("恢复后应 PASS（rc=%d）；输出:\n%s", rc2, out2)
 	}
 }
