@@ -219,6 +219,8 @@ def audit_test_run(raw, spec):
         problems.append('PASS 集合与必要用例集合不一致：多 %s / 少 %s'
                         % (sorted(set(passed) - set(expected)) or '无',
                            sorted(set(expected) - set(passed)) or '无'))
+    if len(passed) != len(expected) or len(done) != len(expected):
+        problems.append('PASS/完成标记数量与必要用例数量不一致')
     if set(done) != set(expected):
         problems.append('%s 完成标记集合与必要用例集合不一致：多 %s / 少 %s'
                         % (marker, sorted(set(done) - set(expected)) or '无',
@@ -621,11 +623,16 @@ def case_mutations(ctx):
                                         'failLine': fail_line})
 
         rec = ctx.run(mut['id'] + '-control',
-                      [ctx.go, 'test', '-count=1', '-run', '^%s$' % mut['test'],
+                      [ctx.go, 'test', '-count=1', '-v', '-run', '^%s$' % mut['test'],
                        './view/...'], ctx.proj)
+        audit = audit_test_run(ctx.text(rec).encode('utf-8'), {
+            'expectedTests': [mut['test']],
+            'completionMarker': ctx.spec['completionMarker'],
+        })
         ctx.check(mut['id'] + '.control',
-                  '%s：未变异工程上同名用例是绿的（红只来自变异）' % mut['test'],
-                  rec['rc'] == 0, ctx.text(rec, 'stderr').strip()[:400])
+                  '%s：未变异工程上同名用例实际通过且有完成标记' % mut['test'],
+                  rec['rc'] == 0 and not audit['problems'],
+                  ' | '.join(audit['problems']) or '目标用例 PASS，完成标记一致')
 
 
 def case_destroy_event_coverage(ctx, repo):
@@ -740,7 +747,7 @@ def main(argv):
         'elapsedSec': None,
         'env': dict(procmod.GO_ENV_FIXED),
         'envNote': 'GOFLAGS 等构建上下文是缓存键的一项：裸 shell（无 GOFLAGS）会得到 '
-                   'package-sources-changed 的假未命中。矩阵除 S7 外全部在本环境变量下执行。',
+                   'package-sources-changed 的上下文未命中。矩阵除 S7 外全部在本环境变量下执行。',
         'expectedTests': spec['expectedTests'],
         'completionMarker': spec['completionMarker'],
         'lock': {'path': None, 'probe': None, 'main': None, 'matrix': None},
@@ -783,6 +790,9 @@ def main(argv):
         report['lock']['main'] = {'rc': rec['rc'], 'caseDir': rec['caseDir'],
                                   'ok': rec['ok'], 'stdout': rec['stdout'],
                                   'stderr': rec['stderr']}
+        if rec.get('ok') is not True:
+            raise Refused(EXIT_FAILED, '主验收进程退出或进程树收口未证实',
+                          caseDir=rec['caseDir'], okReasons=rec.get('okReasons'))
         if rec['rc'] == EXIT_LOCK_BUSY:
             raise Refused(EXIT_LOCK_BUSY,
                           '预检通过但委派时锁被他人抢到：未启动任何 Go 进程',
@@ -857,18 +867,24 @@ def main(argv):
         if owned_run_dir and os.path.isdir(report['runDir']):
             payload = (json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
                        + '\n').encode('utf-8')
-            with open(os.path.join(report['runDir'], 'report.json'), 'wb') as fh:
-                fh.write(payload)
             if args.json:
-                # O_EXCL：预检到写盘之间若被别人放了同名文件，宁可失败也不覆盖。
+                # A concurrent owner keeps its file; the requested copy must
+                # succeed before this invocation may report success.
                 try:
                     fd = os.open(args.json, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                                  | getattr(os, 'O_BINARY', 0), 0o600)
-                except FileExistsError:
-                    sys.stderr.write('报告副本路径在预检后被占用，未覆盖：%s\n' % args.json)
-                else:
                     with os.fdopen(fd, 'wb') as fh:
                         fh.write(payload)
+                except OSError as exc:
+                    code = EXIT_REFUSED if isinstance(exc, FileExistsError) else EXIT_FAILED
+                    report['verdict'].update({
+                        'ok': False, 'code': code,
+                        'reason': '报告副本写入失败，未覆盖已有文件：%s' % exc,
+                    })
+                    payload = (json.dumps(report, ensure_ascii=False, indent=2,
+                                          sort_keys=True) + '\n').encode('utf-8')
+            with open(os.path.join(report['runDir'], 'report.json'), 'wb') as fh:
+                fh.write(payload)
 
     if code == EXIT_OK:
         if not args.quiet:

@@ -27,6 +27,10 @@ r"""`scripts/verify-gallery-accept.py` 的**低成本**自检（R22-C）。
 退出码：0 全部通过 · 1 有用例失败 · 2 用法错误
 """
 import argparse
+import contextlib
+import io
+import types
+from unittest import mock
 import importlib.util
 import json
 import os
@@ -290,6 +294,116 @@ class Runner(object):
         assert self.mod.SCHEMA == 'r22c-gallery-accept-1', '报告 schema 变了却没同步自检'
         case.detail = 'runId 唯一；schema=%s' % self.mod.SCHEMA
 
+    def simulated_main(self, label, infra_ok=True, collision=False):
+        # Controlled failure-path exercise; no Go process is started.
+        base = self.case_dir(label)
+        run_dir = os.path.join(base, 'run')
+        sidecar = os.path.join(base, 'side.json')
+
+        def stage(repo, current_run, project, main_json, run_id, args):
+            with open(main_json, 'w', encoding='utf-8') as fh:
+                fh.write('{}')
+            return {'rc': 0, 'ok': infra_ok, 'caseDir': base,
+                    'stdout': {}, 'stderr': {}}
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(self.mod, 'run_main_stage', stage))
+            stack.enter_context(mock.patch.object(
+                self.mod, 'audit_main',
+                lambda main, ctx, *args: ctx.check('controlled.valid', '有效业务输入', True)))
+            for name in ('case_destroy_event_coverage', 'case_rerun_hit',
+                         'case_asset_replaced', 'case_asset_restored',
+                         'case_asset_corrupt', 'case_asset_deleted',
+                         'case_context_changed', 'case_mutations'):
+                stack.enter_context(mock.patch.object(self.mod, name, lambda *args: None))
+            if collision:
+                def occupy_sidecar(*args):
+                    with open(sidecar, 'xb') as fh:
+                        fh.write(b'other-owner')
+                stack.enter_context(mock.patch.object(self.mod, 'case_mutations', occupy_sidecar))
+            argv = ['--repo', self.repo, '--run-dir', run_dir,
+                    '--lock-path', os.path.join(base, 'controlled.lock'), '--quiet']
+            if collision:
+                argv.extend(['--json', sidecar])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = self.mod.main(argv)
+        with open(os.path.join(run_dir, 'report.json'), encoding='utf-8') as fh:
+            report = json.load(fh)
+        return rc, report, sidecar
+
+    def t_main_capture_failure(self, case):
+        rc, report, _ = self.simulated_main('main-capture', infra_ok=False)
+        assert rc == 1 and report['verdict']['ok'] is False, \
+            '主验收收口失败却报告成功：rc=%s verdict=%s' % (rc, report['verdict'])
+        case.detail = '受控失败：业务输入通过，收口未证实必须失败；未跑 Go'
+
+    def t_report_collision(self, case):
+        rc, report, sidecar = self.simulated_main('report-collision', collision=True)
+        with open(sidecar, 'rb') as fh:
+            content = fh.read()
+        assert rc == 3 and report['verdict']['ok'] is False, \
+            '报告副本被抢占后仍返回成功：rc=%s verdict=%s' % (rc, report['verdict'])
+        assert content == b'other-owner', '覆盖了其他所有者的报告副本'
+        case.detail = '预检后抢占受控复现：rc=3，已有副本保留，主报告记录失败'
+
+    def t_controls_require_test(self, case):
+        for mode in ('zero', 'skip'):
+            base = self.case_dir('control-' + mode)
+            project = os.path.join(base, 'project')
+            os.makedirs(os.path.join(project, 'wire'))
+            source = os.path.join(self.repo, 'examples', 'gxml', 'testprojects',
+                                  'routed-gallery', 'wire', 'wire.go.txt')
+            with open(source, 'rb') as fh:
+                body = fh.read()
+            with open(os.path.join(project, 'wire', 'wire.go'), 'wb') as fh:
+                fh.write(body)
+            work = os.path.join(base, 'work')
+            os.mkdir(work)
+            report = {'checks': [], 'commands': [], 'mutations': []}
+
+            def capture(argv, case_id, raw_dir, **kwargs):
+                mutation = next(m for m in self.mod.MUTATIONS if case_id.startswith(m['id']))
+                if case_id.endswith('-test'):
+                    rc = 1
+                    text = ('--- FAIL: %s (0.00s)\nroute_test.go:1: %s\n'
+                            % (mutation['test'], mutation['expectAny'][0]))
+                elif case_id.endswith('-control'):
+                    rc = 0
+                    text = ('testing: warning: no tests to run\nPASS\n' if mode == 'zero'
+                            else '=== RUN   %s\n--- SKIP: %s (0.00s)\n'
+                            % (mutation['test'], mutation['test']))
+                else:
+                    rc, text = 0, ''
+                case_dir = os.path.join(base, case_id)
+                os.mkdir(case_dir)
+                stdout = os.path.join(case_dir, 'stdout')
+                stderr = os.path.join(case_dir, 'stderr')
+                with open(stdout, 'w', encoding='utf-8') as fh:
+                    fh.write(text)
+                with open(stderr, 'wb'):
+                    pass
+                return {'caseId': case_id, 'argv': argv, 'cwd': project, 'rc': rc,
+                        'rcSource': 'observed', 'timedOut': False, 'contained': True,
+                        'ok': True, 'okReasons': [], 'elapsedSec': 0, 'caseDir': case_dir,
+                        'stdout': {'path': stdout}, 'stderr': {'path': stderr}}
+
+            fake = types.SimpleNamespace(GO_ENV_FIXED={}, run_capture=capture)
+            ctx = self.mod.Ctx(project, 'unused', base, work, 'unused',
+                               1, self.spec, report, fake)
+            self.mod.case_mutations(ctx)
+            checks = [c for c in report['checks'] if c['id'].endswith('.control')]
+            assert len(checks) == 2 and all(not c['ok'] for c in checks), \
+                '%s 健康对照被错误接受：%s' % (mode, checks)
+        case.detail = '受控零用例与 SKIP 对照均失败，未跑 Go'
+
+    def t_audit_duplicate_completion(self, case):
+        raw = self._expected_text(self.spec)
+        raw += ('    route_test.go:1: %s %s\n' %
+                (self.spec['completionMarker'], self.spec['expectedTests'][0])).encode()
+        audit = self.mod.audit_test_run(raw, self.spec)
+        assert audit['problems'], '重复完成标记被当作完整且唯一的台账'
+        case.detail = '完成标记数量也必须与规格一致'
+
     # -- 入口 -------------------------------------------------------------
 
     def run_all(self):
@@ -310,6 +424,10 @@ class Runner(object):
             ('变异锚点唯一', self.t_mutate_anchor_unique),
             ('副本目录新建', self.t_copy_project_refuses_existing),
             ('runId 与 schema', self.t_run_id_and_report_path),
+            ('主验收收口失败', self.t_main_capture_failure),
+            ('报告副本抢占', self.t_report_collision),
+            ('变异对照需实际用例', self.t_controls_require_test),
+            ('台账：重复完成标记', self.t_audit_duplicate_completion),
         ]
         for name, fn in plan:
             self.run(name, fn)

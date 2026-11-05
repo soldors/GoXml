@@ -101,7 +101,7 @@ python scripts/verify-gallery-accept.py \
 | `report.json` | 判据清单 + 命令台账 + 每一步前后的字节/mtime 快照（条数以报告 `counts` 为准；R22-C 实测 76 条） |
 
 成功打印 `GALLERY-ACCEPT-OK <runId>`；失败逐条打印 `[判据 id] 名称: 详情`。
-同一份判据的**低成本自检**（14 条反例，不跑 Go、秒级）在
+同一份判据的**低成本自检**（18 条反例，不跑 Go、秒级）在
 `scripts/test-verify-gallery-accept.py`：重复目录、旧报告、锁忙、缺用例、SKIP/FAIL、
 完成标记缺项、mtime-only 改动、变异锚点不唯一，各有一条。
 
