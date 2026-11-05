@@ -1,0 +1,5 @@
+# 历史归档目录：原件逐字节保留，禁止行尾归一化。
+# 根 .gitattributes 的 `* text=auto eol=lf` / `*.md text eol=lf`
+# 会把 CRLF 原件在 git add 时改写成 LF，导致提交 blob 与冻结原件 SHA-256 不符。
+# 本目录仅存放非现行规则的历史原件与索引，用 -text 关闭所有转换。
+* -text -eol
