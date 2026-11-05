@@ -220,14 +220,20 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// R22-A：把用户 GOFLAGS/GOENV 的 -overlay 中**落在 Analyzer 加载包目录**的条目
-	// 并入 Analyzer overlay，使类型/方法检查与 go build/--check/定名口径一致。
+	// R22-A/R1：把用户 GOFLAGS/GOENV 的 -overlay 交由 **Go 权威选源** 后并入 Analyzer overlay，
+	// 使类型/方法检查与 go build/--check/定名口径一致（含跨包 VM 与依赖闭包）。
 	// 已证工具自有旧产物（goOverlay 中已置 ignore）优先，不被用户条目覆盖。
-	vmDirs := make([]string, 0, len(missResolved))
-	for _, r := range missResolved {
-		vmDirs = append(vmDirs, r.in.sourceDir)
+	userMap, umErr := userOverlayMap(ctxValues.GOFLAGS, moduleRoot)
+	if umErr != nil {
+		return umErr
 	}
-	userAnalyzerOverlay, uovErr := scopedUserOverlayForAnalyzer(ctxValues.GOFLAGS, moduleRoot, vmDirs)
+	vmImportPaths := make([]string, 0, len(missResolved))
+	for _, r := range missResolved {
+		if ip := vmImportPathOf(r); ip != "" {
+			vmImportPaths = append(vmImportPaths, ip)
+		}
+	}
+	userAnalyzerOverlay, uovErr := scopedUserOverlayForAnalyzer(goExe, moduleRoot, vmImportPaths, userMap)
 	if uovErr != nil {
 		return uovErr
 	}
