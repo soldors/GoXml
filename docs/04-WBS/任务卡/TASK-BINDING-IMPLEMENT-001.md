@@ -2,7 +2,7 @@
 
 ## 元信息
 
-- 状态：**步骤 1 直接 Codegen 与步骤 2 已完成；Pipeline 集成未完成；步骤 3 显示缓存实现已交付，完整验收见子任务卡** | 优先级：P0 | 预计：3h
+- 状态：**步骤 1 直接 Codegen、步骤 2 与 Pipeline ModulePath 接线已完成；步骤 3 显示缓存实现已交付，完整验收见子任务卡** | 优先级：P0 | 预计：3h
 - 依赖：`TASK-BINDING-CONTRACT-001`（契约已冻结）、`TASK-CODEGEN-STATIC-CACHE-001`（静态缓存基线）
 - 范围：**只做步骤 1–3**，不扩展到完整状态更新机制
 
@@ -10,7 +10,7 @@
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| **1** | 接通 `Facts → Codegen`，生成绑定取值表达式 | 直接 `Generate` 的字段和零参方法读取已接通并有定向验证；默认 Pipeline 尚未传 `ModulePath`，集成验收未关闭 |
+| **1** | 接通 `Facts → Codegen`，生成绑定取值表达式 | 直接 `Generate` 的字段和零参方法读取已接通并有定向验证；默认 Pipeline 已传 `ModulePath`，跨包工程已完成真实生成/构建；不以此替代步骤 3 全维度验收 |
 | **2** | 最小运行时读取验证 | ✅ `TASK-BINDING-IMPLEMENT-002` 已完成；多段路径、指针访问、零参方法、显式重新布局和失败分类均有测试 |
 | **3** | 绑定显示缓存与性能验证（三层分离） | 当前实现按绑定节点回放已录制结果；稳定帧分配与局部行为已测，契约全维度验收见 `TASK-BINDING-IMPLEMENT-003` |
 
@@ -40,7 +40,7 @@
 ### 3.3 方法路径已修复并验证
 
 Analyzer 通过 `PathStep.IsMethod` 传递方法身份，Codegen 生成 `vm.Display()`；
-`TestBindingRuntimePathKinds/零参方法` 已真实编译并运行。Pipeline 的 `ModulePath` 接线仍未完成。
+`TestBindingRuntimePathKinds/零参方法` 已真实编译并运行。此处原有“Pipeline 接线仍未完成”已过期：当前接线和跨包工程已发布，后续缓存全维度验收另列。
 
 ## 3.3 步骤 1 已完成（2026-10-19）
 
