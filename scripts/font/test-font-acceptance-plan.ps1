@@ -46,7 +46,7 @@ function New-Record([string]$id, [string]$load, [string]$head, [bool]$valid, [bo
         stdoutTail=@('RESULT verdict='+$verdict); stderrTail=@();
         observed=[ordered]@{
             fontComparisonContract='font-init-v1'; fontComparisonMeasured='true'; fontComparisonColdProvider='true';
-            fontInitAtNs=100; fontReadyAtNs=200; fontReadyElapsedNs=$fr; fontToFirstFrameElapsedNs=50;
+            fontInitAtNs=100; fontReadyAtNs=$(if ($zero) { 100 } else { 200 }); fontReadyElapsedNs=$fr; fontToFirstFrameElapsedNs=$(if ($zero) { 0 } else { 50 });
             m1ElapsedNs=$m1; m1ElapsedNsPresent=$true; m1Measured=$true;
             layoutFirstEntryNs=151; layoutFirstEntryNsPresent=$true; layoutFirstAtMeasured=$true;
             framesObserved=3; frameWindowNs=$null; procStartNs=$null; ctorEntryNs=$null; ctorDoneNs=$null;
@@ -64,10 +64,11 @@ $mockCollector = Join-Path $mockDir 'mock-collect.ps1'
 $mockBody = @'
 param([string]$RepoDir,[string]$ExpectedHead,[string]$OutDir,[string]$Load,[switch]$CompareFonts,[int]$Runs,[switch]$Strict,[string]$LockFile)
 $ErrorActionPreference='Stop'
+if ($Runs -ne 1 -or -not $CompareFonts) { throw 'argv-invalid' }
 $null = New-Item -ItemType Directory -Path $OutDir -Force
 function New-Record([string]$id,[string]$load,[string]$head,[bool]$valid,[bool]$zero) {
   $m1 = if ($zero) { 0 } else { 20 }; $fr = if ($zero) { 0 } else { 100 }; $first = if ($zero) { 100 } else { 150 }
-  [ordered]@{ id=$id; measurementContract='font-init-v1'; runtimeProcsPolicy='inherit'; runtimeProcsObserved=2; agent='MOCK'; baseSHA=$head; load=$load; requestedFrames=3; args='MOCK'; exeSha256='fixture'; sourceSha256='fixture'; pid=0; handleCached=$false; killConfirmName=''; start='2026-11-06T01:00:00+08:00'; end='2026-11-06T01:00:00+08:00'; durationMs=4; exitCode=0; exitCodeKnown=$true; terminatedByCollector=$false; probeTimeout=$false; timedOut=$false; verdict='OK'; stdoutEmpty=$false; stdoutPath=''; stderrPath=''; stdoutTail=@('RESULT verdict=OK'); stderrTail=@(); observed=[ordered]@{ fontComparisonContract='font-init-v1'; fontComparisonMeasured='true'; fontComparisonColdProvider='true'; fontInitAtNs=100; fontReadyAtNs=200; fontReadyElapsedNs=$fr; fontToFirstFrameElapsedNs=50; m1ElapsedNs=$m1; m1ElapsedNsPresent=$true; m1Measured=$true; layoutFirstEntryNs=151; layoutFirstEntryNsPresent=$true; layoutFirstAtMeasured=$true; framesObserved=3; frameWindowNs=$null; procStartNs=$null; ctorEntryNs=$null; ctorDoneNs=$null; createdAtNs=$null; firstFrameAtNs=$first; lazyState=$null; lazyTempElapsedNs=$null; lazyProbeElapsedNs=$null; lazyLoadElapsedNs=$null; lazyProbeRan=$null }; valid=$valid; belowGranularity=$false; invalidReasons=@(); verificationRun=$false }
+  [ordered]@{ id=$id; measurementContract='font-init-v1'; runtimeProcsPolicy='inherit'; runtimeProcsObserved=2; agent='MOCK'; baseSHA=$head; load=$load; requestedFrames=3; args='MOCK'; exeSha256='fixture'; sourceSha256='fixture'; pid=0; handleCached=$false; killConfirmName=''; start='2026-11-06T01:00:00+08:00'; end='2026-11-06T01:00:00+08:00'; durationMs=4; exitCode=0; exitCodeKnown=$true; terminatedByCollector=$false; probeTimeout=$false; timedOut=$false; verdict='OK'; stdoutEmpty=$false; stdoutPath=''; stderrPath=''; stdoutTail=@('RESULT verdict=OK'); stderrTail=@(); observed=[ordered]@{ fontComparisonContract='font-init-v1'; fontComparisonMeasured='true'; fontComparisonColdProvider='true'; fontInitAtNs=100; fontReadyAtNs=$(if ($zero) { 100 } else { 200 }); fontReadyElapsedNs=$fr; fontToFirstFrameElapsedNs=$(if ($zero) { 0 } else { 50 }); m1ElapsedNs=$m1; m1ElapsedNsPresent=$true; m1Measured=$true; layoutFirstEntryNs=151; layoutFirstEntryNsPresent=$true; layoutFirstAtMeasured=$true; framesObserved=3; frameWindowNs=$null; procStartNs=$null; ctorEntryNs=$null; ctorDoneNs=$null; createdAtNs=$null; firstFrameAtNs=$first; lazyState=$null; lazyTempElapsedNs=$null; lazyProbeElapsedNs=$null; lazyLoadElapsedNs=$null; lazyProbeRan=$null }; valid=$valid; belowGranularity=$false; invalidReasons=@(); verificationRun=$false }
 }
 if ($env:MOCK_FATAL_ON -eq $Load -and -not $env:MOCK_FATAL_DONE) { $env:MOCK_FATAL_DONE='1'; exit 7 }
 if ($env:MOCK_MISSING -eq $Load) { exit 0 }   # no samples.jsonl
@@ -97,7 +98,7 @@ function Base-Args([string]$ev, [string]$order) {
       '-OutDir', $ev, '-Order', $order, '-Execute',
       '-CollectorScript', $mockCollector, '-SummarizerScript', $realSummary)
 }
-function Clear-Switches() { $env:MOCK_FATAL_ON=$null; $env:MOCK_INVALID=$null; $env:MOCK_MISSING=$null; $env:MOCK_ROWS2=$null; $env:MOCK_NOID=$null; $env:MOCK_ZERO=$null; $env:MOCK_WRONGMODE=$null; $env:MOCK_BADBASE=$null }
+function Clear-Switches() { $env:MOCK_FATAL_ON=$null; $env:MOCK_INVALID=$null; $env:MOCK_MISSING=$null; $env:MOCK_ROWS2=$null; $env:MOCK_NOID=$null; $env:MOCK_ZERO=$null; $env:MOCK_WRONGMODE=$null; $env:MOCK_BADBASE=$null; $env:MOCK_FORGE=$null }
 
 # 1) healthy alternating 2 (sync,lazy), real summary accepted=2 rejected=0 groups=2, entry rc0
 Clear-Switches
@@ -173,31 +174,95 @@ Assert-Check ($rc -eq 2) "prepare rc=$rc expected 2"
 Assert-Check ($prepSamples.Count -eq 0) 'prepare must not produce sample dirs'
 Assert-Check (Test-Path (Join-Path $ev 'prepare-plan.json')) 'prepare writes prepare-plan.json'
 
-# 9) two behavior mutations run the SAME health guard to real FAIL (bounded), then restore PASS
-function Clone-Runner([string]$name, [scriptblock]$edit) {
-    $dst = Join-Path $mockDir ($name + '.ps1')
-    (Get-Content -LiteralPath $runner -Raw | ForEach-Object { & $edit $_ }) | Set-Content -LiteralPath $dst -Encoding UTF8
-    return $dst
-}
-$mutA = Clone-Runner 'runner-mut-continue' { param($t) $t -replace 'throw "collector fault rc=\$rc \(\$caseName\); stop scheduling, keep all recorded evidence"', 'Write-Host "MUT: continue"; continue' }
-$mutB = Clone-Runner 'runner-mut-dupid' { param($t) $t -replace '\$derivedId = \$caseName \+ ''/'' \+ \$originalId', '$derivedId = $originalId' }
-
-# Mutation A: fatal in middle -> healthy entry stops at 2 samples; mutated continues past (real behavior diff).
-Clear-Switches; $env:MOCK_FATAL_ON='lazy'
-$ev = Join-Path $OutDir 'mut-continue'
-$env:MOCK_FATAL_DONE=$null
-& $psExe -NoProfile -NonInteractive -File $mutA @('-RepoDir',$runnerDir,'-ExpectedHead','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','-OutDir',$ev,'-Order','sync,lazy,sync,lazy','-Execute','-CollectorScript',$mockCollector,'-SummarizerScript',$realSummary) *> (Join-Path $OutDir 'mut-continue.log')
-$samplesA = @(Get-ChildItem -LiteralPath $ev -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'sample-*' })
-Clear-Switches; $env:MOCK_FATAL_DONE=$null
-Assert-Check ($samplesA.Count -gt 2) "mutA(continue-after-fatal) must run >2 samples, actual $($samplesA.Count)"
-
-# Mutation B: no namespace on 4 balanced samples -> duplicate derived ids in summary/derived
+# Additional direct contracts: zero measurements, order-file, and missing records.
+Clear-Switches; $env:MOCK_ZERO='sync'
+$ev = Join-Path $OutDir 'legal-zero'
+$rc = Invoke-Runner 'legal-zero' (Base-Args $ev 'sync,lazy') 0
 Clear-Switches
-$ev = Join-Path $OutDir 'mut-dupid'
-& $psExe -NoProfile -NonInteractive -File $mutB @('-RepoDir',$runnerDir,'-ExpectedHead','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','-OutDir',$ev,'-Order','sync,lazy,sync,lazy','-Execute','-CollectorScript',$mockCollector,'-SummarizerScript',$realSummary) *> (Join-Path $OutDir 'mut-dupid.log')
-$idsB = @(Get-Content -LiteralPath (Join-Path $ev 'derived\samples.jsonl') | Where-Object { $_.Trim() } | ForEach-Object { ($_ | ConvertFrom-Json).id })
-$uniqB = @($idsB | Sort-Object -Unique)
-Assert-Check ($uniqB.Count -lt $idsB.Count) "mutB(no-namespace) must produce duplicate derived ids; unique=$($uniqB.Count)/total=$($idsB.Count)"
+$sj = Get-Content -LiteralPath (Join-Path $ev 'summary/summary.json') -Raw | ConvertFrom-Json
+$zeroRecord = Get-Content -LiteralPath (Join-Path $ev 'sample-00-sync/samples.jsonl') -Raw | ConvertFrom-Json
+Assert-Check ($rc -eq 0 -and $sj.valid -eq 2 -and $sj.rejected -eq 0) 'legal measured zero must reach the real summary'
+Assert-Check ($zeroRecord.observed.m1ElapsedNs -eq 0 -and $zeroRecord.observed.fontReadyElapsedNs -eq 0) 'zero fixture must actually contain zero measurements'
+$zeroStats = @($sj.groups | Where-Object { $_.groupKey -like '*|sync|*' } | ForEach-Object { $_.stats } | Where-Object { $_.metric -eq 'm1ElapsedNs' })
+Assert-Check ($zeroStats.Count -eq 1 -and $zeroStats[0].median -eq 0) 'real summary must preserve zero median'
 
-Write-Host ("PASS: {0} checks; healthy->mutation-FAIL->restore, real summarizer end-to-end. Evidence: {1}" -f $check, $OutDir)
+$orderPath = Join-Path $OutDir 'order-input.txt'
+Set-Content -LiteralPath $orderPath -Value @('sync','lazy') -Encoding UTF8
+$ev = Join-Path $OutDir 'order-file'
+$rc = Invoke-Runner 'order-file' (@('-RepoDir',$runnerDir,'-ExpectedHead','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','-OutDir',$ev,'-OrderFile',$orderPath,'-Execute','-CollectorScript',$mockCollector,'-SummarizerScript',$realSummary)) 0
+Assert-Check ($rc -eq 0) 'OrderFile alternating pair must succeed'
+foreach ($badOrder in @('sync,lazy,sync','sync,sync,lazy,lazy')) {
+    $caseId = 'bad-order-' + $badOrder.Replace(',','-')
+    $ev = Join-Path $OutDir $caseId
+    $rc = Invoke-Runner $caseId (Base-Args $ev $badOrder) 1
+    Assert-Check ($rc -ne 0 -and -not (Test-Path -LiteralPath $ev)) 'invalid order must fail before creating evidence'
+}
+Clear-Switches; $env:MOCK_MISSING='sync'
+$ev = Join-Path $OutDir 'missing-record'
+$rc = Invoke-Runner 'missing-record' (Base-Args $ev 'sync,lazy') 1
+Clear-Switches
+Assert-Check ($rc -ne 0 -and -not (Test-Path (Join-Path $ev 'derived'))) 'missing record must stop before derivation'
+
+# Real collector rejects a nonexistent audited SHA before lock/build/window launch.
+$ev = Join-Path $OutDir 'unknown-head'
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $runnerDir '../..'))
+$rc = Invoke-Runner 'unknown-head' (@('-RepoDir',$repoRoot,'-ExpectedHead',('0'*40),'-OutDir',$ev,'-Order','sync,lazy','-Execute')) 1
+$collectorLog = Get-Content -LiteralPath (Join-Path $ev 'sample-00-sync.log') -Raw
+Assert-Check ($rc -ne 0 -and $collectorLog -match 'baseline mismatch') 'unknown actual SHA must be rejected by real collector precheck'
+Assert-Check (-not (Test-Path (Join-Path $ev 'sample-00-sync'))) 'identity precheck must not create a sample/build directory'
+
+# Same executable health contract for healthy -> mutant FAIL -> restored PASS.
+$guard = Join-Path $mockDir 'health-contract.ps1'
+@'
+param([string]$Runner,[string]$Collector,[string]$Summary,[string]$Repo,[string]$Ev,[string]$Kind)
+$ErrorActionPreference='Stop'
+$ps = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
+$env:MOCK_FATAL_ON = if ($Kind -eq 'fatal') { 'lazy' } else { $null }
+$env:MOCK_FATAL_DONE=$null
+# Native stderr is expected for the fatal health case; inspect rc explicitly.
+$ErrorActionPreference='Continue'
+& $ps -NoProfile -NonInteractive -File $Runner -RepoDir $Repo -ExpectedHead aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -OutDir $Ev -Order sync,lazy,sync,lazy -Execute -CollectorScript $Collector -SummarizerScript $Summary *> ($Ev+'.runner.log')
+$rc=$LASTEXITCODE
+$ErrorActionPreference='Stop'
+if ($Kind -eq 'fatal') {
+    $dirs=@(Get-ChildItem -LiteralPath $Ev -Directory | Where-Object { $_.Name -like 'sample-*' })
+    if ($rc -eq 0 -or $dirs.Count -ne 2 -or (Test-Path (Join-Path $Ev 'derived'))) { throw "CONTRACT-FAIL fatal: rc=$rc scheduled=$($dirs.Count), expected stop at 2" }
+} else {
+    if ($rc -ne 0) { throw "CONTRACT-FAIL healthy runner rc=$rc" }
+    $ids=@(Get-Content -LiteralPath (Join-Path $Ev 'derived/samples.jsonl') | ForEach-Object { ($_ | ConvertFrom-Json).id })
+    if ($ids.Count -ne 4 -or @($ids | Sort-Object -Unique).Count -ne 4) { throw 'CONTRACT-FAIL unique: four distinct derived IDs required' }
+}
+Write-Host "CONTRACT-PASS $Kind"
+exit 0
+'@ | Set-Content -LiteralPath $guard -Encoding UTF8
+
+$source = Get-Content -LiteralPath $runner -Raw
+$mutA = Join-Path $mockDir 'runner-mut-continue.ps1'
+$textA = $source.Replace('throw "collector fault rc=$rc ($caseName); stop scheduling, keep all recorded evidence"','Write-Host "MUT: continue"; continue')
+Assert-Check ($textA -ne $source) 'fatal mutation anchor must match'
+$textA | Set-Content -LiteralPath $mutA -Encoding UTF8
+$mutB = Join-Path $mockDir 'runner-mut-dupid.ps1'
+$textB = $source.Replace('$derivedId = $caseName + ''/'' + $originalId','$derivedId = $originalId')
+Assert-Check ($textB -ne $source) 'ID mutation anchor must match'
+$textB | Set-Content -LiteralPath $mutB -Encoding UTF8
+foreach ($contract in @(@{kind='fatal'; mutant=$mutA},@{kind='unique'; mutant=$mutB})) {
+    foreach ($phase in @('healthy','mutant','restored')) {
+        Clear-Switches
+        $id = 'contract-' + $contract.kind + '-' + $phase
+        $selected = if ($phase -eq 'mutant') { $contract.mutant } else { $runner }
+        $ev = Join-Path $OutDir $id
+        $log = Join-Path $OutDir ($id+'.log')
+        & $psExe -NoProfile -NonInteractive -File $guard -Runner $selected -Collector $mockCollector -Summary $realSummary -Repo $runnerDir -Ev $ev -Kind $contract.kind *> $log
+        $rc=$LASTEXITCODE
+        [ordered]@{id=$id;runner=$selected;guard=$guard;rc=$rc} | ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $OutDir 'results.jsonl') -Encoding UTF8
+        $guardText=Get-Content -LiteralPath $log -Raw
+        if ($phase -eq 'mutant') {
+            Assert-Check ($rc -ne 0 -and $guardText -match 'CONTRACT-FAIL') "$id must actually fail the same executable health guard"
+        } else {
+            Assert-Check ($rc -eq 0 -and $guardText -match 'CONTRACT-PASS') "$id must pass the same executable health guard"
+        }
+    }
+}
+Clear-Switches
+Write-Host ("PASS: {0} checks; real summarizer, actual health-guard FAIL on both mutants, healthy/restored PASS. Evidence: {1}" -f $check, $OutDir)
 exit 0

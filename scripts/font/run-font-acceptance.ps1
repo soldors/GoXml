@@ -22,7 +22,7 @@
       * Real run needs -Execute. Without -Execute it only validates/prepares (writes
         order.json, dry-run argv) and exits 2 (prepare state is NOT a pass); it does not
         call the collector and produces no samples.
-* Prepared vs execute validation scope (F-A3): prepare validates argv/order/ExpectedHead
+      * Prepared vs execute validation scope (F-A3): prepare validates argv/order/ExpectedHead
         format/dir uniqueness only and does NOT claim provenance or summary validity; execute
         additionally binds each record's load/baseSHA to the preregistered mode and ExpectedHead,
         then enforces summary.json conservation. Any provenance failure is rejected before the
@@ -180,9 +180,8 @@ $summaryDir = Join-Path $OutDir 'summary'
 if ($LASTEXITCODE -ne 0) { throw 'derived summary rejected (-AllowMixed); do not record as sampling pass' }
 
 # F-A1: summarizer exits 0 even when it rejects records; rc is NOT the business gate.
-# Read the real summary.json and enforce conservation: no rejections, accepted==valid==
-# expected-accepted (rc==0 samples), total==derived count, invalid==expected-invalid (rc==5
-# legit-invalid kept, not a failure). Preserve originals; do not cast invalid as forged.
+# Read summary.json: accepted=valid+invalid=derived, rejected=0, invalid equals rc=5.
+# Preserve legitimate invalid samples; do not confuse them with rejected records.
 $summaryJsonPath = Join-Path $summaryDir 'summary.json'
 if (-not (Test-Path -LiteralPath $summaryJsonPath)) { throw 'summary.json not produced; cannot verify summary, do not record as pass' }
 $sj = Get-Content -LiteralPath $summaryJsonPath -Raw | ConvertFrom-Json
