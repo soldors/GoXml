@@ -1,0 +1,705 @@
+package form
+
+// 组件布局实验台 · 表单视图的离屏语义测试（复制成临时工程后落在 view/form 包内）。
+//
+// 这一包要证明的是**组合语义**，不是「生成了几个控件」：
+//
+//	Def     两次调用各自克隆：props 默认值可被实参覆盖，且覆盖在运行时可观测
+//	Slot    插槽内容真的被替换进来；不传子节点时 Slot 整个消失
+//	Grid    固定列 + 弹性列的组合规则：弹性列吃掉全部剩余宽度，固定列左边界不动
+//	绑定    绑定槽位只跟随 ViewModel 字段；静态文本（Def props 替换后的徽标）不进槽位
+//	事件    每个控件落到**自己**那条接线上，不串到同一 Def 的另一个实例
+//
+// 四条纪律（与仓库既有 preferences / taskboard / gallery 工程测试同源）：
+//
+//   - 坐标一律**实测扫描**，不硬编码像素：控件尺寸随字体/主题/DPI 变化；
+//   - 判据读模型计数（CountA / CountB / SlotAClicks / Probes），不读 LastAction：
+//     LastAction 是诊断字段，残留值会让「点到了哪个按钮」出现假命中；
+//   - 文案断言用 == 逐字比较，不用 Contains（默认值与覆盖值的长度差是本页的几何判据，
+//     Contains 会让「覆盖没生效」也变绿）；
+//   - 直接写模型只用于**布置前置状态**（扫描前清诊断字段），不作任何验收判据：
+//     所有交互都经 input.Router 投递真实 pointer / key 事件。
+//
+// 本页只用基线已支持的语法：Def/Slot、Grid、Text/Input/Button，全静态颜色，
+// 不含 ThemeRef、不含 <Expanded>。
+
+import (
+	"image"
+	"os"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+)
+
+// sharedTheme 只构建一次：material.NewTheme 相对慢，扫描要跑上万帧。
+var sharedTheme = material.NewTheme()
+
+const (
+	// frameW 是扫描时的视口宽度（dp）。取 520 是为了让 Grid 的弹性列拿到非零宽度：
+	// 内容宽 520-2*12=496，固定列 72+96、两道 8 的间距 ⇒ 弹性列 312。
+	frameW = 520
+
+	// scanStep 是扫描步长（dp）。按钮 / 输入框的可点高度都远大于 2*scanStep，
+	// 步长 6 保证不会从两个命中点之间跨过去。
+	scanStep = 6
+
+	// maxFrames 只约束**不扫描**的主链路用例：一次交互一到三帧就该收敛。
+	maxFrames = 12
+
+	// widthDelta 是 Grid 列规则用例里的视口加宽量（dp）。
+	// 必须是 scanStep 的整数倍：两次扫描的采样网格对齐后，命中点之差才能逐像素比较。
+	widthDelta = 160
+)
+
+// 动作名逐字对应 form.gxml 里的处理器名（Click="ApplyA" → m.ApplyA → LastAction="apply-a"）。
+const (
+	actionApplyA = "apply-a"
+	actionApplyB = "apply-b"
+	actionSlotA  = "slot-a"
+	actionProbe  = "probe"
+)
+
+// harness 是一份离屏环境：真实生成的 View + 真实 input.Router，不创建原生窗口。
+type harness struct {
+	m      *model.Lab
+	v      *GoxmlFormView
+	r      input.Router
+	gtx    layout.Context
+	dims   layout.Dimensions
+	frames int
+}
+
+// newHarnessDPI 在指定宽度与 DPI 下建一份环境。
+//
+// 约束只给 Max，不给 Min：页面根是 Column，它按内容取高；宽度方向由 Grid 的
+// 弹性列撑满 Max，所以「Max 宽 = 视口宽」和 Exact 宽等价，但高度不必预先知道。
+func newHarnessDPI(t *testing.T, w, dpi int) *harness {
+	t.Helper()
+	m := model.NewLab()
+	v, err := NewGoxmlFormView(m)
+	if err != nil {
+		t.Fatalf("生成视图构造失败：%v", err)
+	}
+	h := &harness{m: m, v: v}
+	h.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Constraints{Max: image.Pt(w*dpi, 4096)},
+		Metric:      unit.Metric{PxPerDp: float32(dpi), PxPerSp: float32(dpi)},
+		Source:      h.r.Source(),
+	}
+	return h
+}
+
+func newHarness(t *testing.T) *harness { return newHarnessDPI(t, frameW, 1) }
+
+func (h *harness) frame() {
+	h.frames++
+	h.gtx.Reset()
+	h.dims = h.v.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+}
+
+func (h *harness) click(x, y float32) {
+	h.r.Queue(
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
+		pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Release, Source: pointer.Mouse},
+	)
+	h.frame()
+}
+
+// hit 点一次并报告这一击落到了哪条接线上（以及点击后两个编辑器的焦点）。
+//
+// LastAction 在**每个点位前**清空。它只是诊断字段：判据读计数，
+// 但「这一击有没有命中任何处理器」必须能区分开空点，所以这里显式置空。
+func (h *harness) hit(x, y int) (action string, focus0, focus1 bool) {
+	h.m.LastAction = ""
+	h.click(float32(x), float32(y))
+	return h.m.LastAction, h.gtx.Focused(&h.v.input0), h.gtx.Focused(&h.v.input1)
+}
+
+// point 是一个实测命中点（dp 坐标）。
+type point struct{ x, y int }
+
+// frameMap 是一次全页扫描的结果：每个动作的首个命中点、两个编辑器的首个可聚焦点、
+// 以及「探针按钮按 y 聚成几带」「插槽按钮按 y 聚成几带」。
+type frameMap struct {
+	hits     map[string]point
+	focus    [2]point
+	focusOK  [2]bool
+	probeL   [2]int // 两条探针按钮的左边界（按 y 从上到下）
+	probeY   [2]int
+	probeNum int // 探针按钮的 y 带数 = 被克隆出几个 LabCell 实例
+	slotNum  int // 插槽按钮的 y 带数 = 有几处插槽内容真的被渲染
+	height   int // 页面内容高度（dp）
+}
+
+// discover 全页扫描一次并缓存：后续每个用例都用同一张地图，避免各自盲扫。
+//
+// 扫描用**同一份** harness：本页的交互不会改变几何——
+// 两个「应用」按钮写的是已保存值（文字长度不变、Grid 列宽固定），
+// 探针与插槽按钮只加计数。所以复用一份环境不会让坐标漂移；
+// 这也让「扫到的点位在另一份新环境里能复现」成为一条额外判据（各用例都在新环境里点）。
+var cached *frameMap
+
+func discover(t *testing.T) *frameMap {
+	t.Helper()
+	if cached != nil {
+		return cached
+	}
+	h := newHarness(t)
+	h.frame()
+	height := h.dims.Size.Y
+	if height <= 0 || height >= 4096 {
+		t.Fatalf("页面内容高度异常：%d dp（约束上限 4096，可能被裁切）", height)
+	}
+	fm := &frameMap{hits: map[string]point{}, height: height}
+	var probePts, slotPts []point
+	for y := 1; y < height; y += scanStep {
+		for x := 1; x < frameW; x += scanStep {
+			action, f0, f1 := h.hit(x, y)
+			switch action {
+			case actionApplyA, actionApplyB, actionSlotA, actionProbe:
+				if _, seen := fm.hits[action]; !seen {
+					fm.hits[action] = point{x, y}
+				}
+				if action == actionProbe {
+					probePts = append(probePts, point{x, y})
+				}
+				if action == actionSlotA {
+					slotPts = append(slotPts, point{x, y})
+				}
+			}
+			if f0 && !fm.focusOK[0] {
+				fm.focus[0], fm.focusOK[0] = point{x, y}, true
+			}
+			if f1 && !fm.focusOK[1] {
+				fm.focus[1], fm.focusOK[1] = point{x, y}, true
+			}
+		}
+	}
+	fm.probeNum = countBands(probePts)
+	fm.slotNum = countBands(slotPts)
+	if fm.probeNum != 2 {
+		t.Fatalf("探针按钮应恰好聚成 2 带（两个 LabCell 实例各一个），实测 %d 带，点位 %v",
+			fm.probeNum, probePts)
+	}
+	if fm.slotNum != 1 {
+		t.Fatalf("插槽内容应恰好聚成 1 带（面板乙是空插槽，不该有可点内容），实测 %d 带，点位 %v",
+			fm.slotNum, slotPts)
+	}
+	// 带内最左命中点往左逐像素收，得到按钮左边界：徽标覆盖与否只改变这条边界。
+	for i, band := range bands(probePts) {
+		fm.probeY[i] = band[0].y
+		fm.probeL[i] = refineLeft(t, h, band[0].y, band[0].x)
+	}
+	for _, name := range []string{actionApplyA, actionApplyB, actionSlotA, actionProbe} {
+		if _, ok := fm.hits[name]; !ok {
+			t.Fatalf("全页扫描（x 步长 %d / y 步长 %d，高度 %d）未命中动作 %q：离屏环境限制，不是用例通过",
+				scanStep, scanStep, height, name)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if !fm.focusOK[i] {
+			t.Fatalf("全页扫描未能聚焦 input%d：离屏环境限制，不是用例通过", i)
+		}
+	}
+	cached = fm
+	t.Logf("OBS 扫描：高度=%ddp 探针左界=(%d,%d) 探针y=(%d,%d) 焦点=(%v,%v) 插槽带=%d",
+		fm.height, fm.probeL[0], fm.probeL[1], fm.probeY[0], fm.probeY[1],
+		fm.focus[0], fm.focus[1], fm.slotNum)
+	return fm
+}
+
+// countBands 按 y 把命中点切带：相邻两点的 y 差超过 2*scanStep 就换带。
+func countBands(pts []point) int { return len(bands(pts)) }
+
+// bands 按 y 升序把点分组（扫描是行优先，输入本身已按 y 递增）。
+func bands(pts []point) [][]point {
+	var out [][]point
+	lastY := -1 << 30
+	for _, p := range pts {
+		if len(out) == 0 || p.y-lastY > 2*scanStep {
+			out = append(out, []point{p})
+		} else {
+			out[len(out)-1] = append(out[len(out)-1], p)
+		}
+		lastY = p.y
+	}
+	return out
+}
+
+// refineLeft 在固定 y 上把命中点往左收，返回按钮左边界。
+func refineLeft(t *testing.T, h *harness, y, x int) int {
+	t.Helper()
+	for x > 1 {
+		action, _, _ := h.hit(x-1, y)
+		if action != actionProbe {
+			break
+		}
+		x--
+	}
+	return x
+}
+
+// scanRow 在固定 y 上按 scanStep 扫 x∈[from,to)，返回首个命中 want 的点。
+//
+// 只用于「宽度变了、y 没变」这类用例：Grid 的列规则只改横坐标，行高由内容决定。
+func scanRow(t *testing.T, h *harness, y, from, to int, want string) (point, bool) {
+	t.Helper()
+	for x := from; x < to; x += 4 {
+		action, _, _ := h.hit(x, y)
+		if action == want {
+			return point{x, y}, true
+		}
+	}
+	return point{}, false
+}
+
+// replaceAll 投递一次真实 EditEvent，把编辑器现有文本整体替换成 text。
+//
+// 用显式 Range 而不是「插在光标处」：插入会让断言依赖初始文本的前缀，只能写 Contains；
+// 整体替换才能对草稿做逐字断言。
+func (h *harness) replaceAll(idx int, text string) {
+	n := utf8.RuneCountInString(h.editor(idx).Text())
+	h.r.Queue(key.EditEvent{Range: key.Range{Start: 0, End: n}, Text: text})
+	h.frame()
+}
+
+func (h *harness) editor(idx int) *widget.Editor {
+	if idx == 0 {
+		return &h.v.input0
+	}
+	return &h.v.input1
+}
+
+// ret 回车：Press 与 Release 同帧投递（代码生成输出契约 §4.3）。
+func (h *harness) ret() {
+	h.r.Queue(key.Event{Name: key.NameReturn, State: key.Press})
+	h.r.Queue(key.Event{Name: key.NameReturn, State: key.Release})
+	h.frame()
+}
+
+// newFocused 用**真实点击**把焦点送到第 idx 个输入框。
+func newFocused(t *testing.T, idx int) *harness {
+	t.Helper()
+	fm := discover(t)
+	h := newHarness(t)
+	h.frame()
+	p := fm.focus[idx]
+	h.click(float32(p.x), float32(p.y))
+	if !h.gtx.Focused(h.editor(idx)) {
+		t.Fatalf("探测到的焦点坐标 (%d,%d) 未复现 input%d：离屏环境限制", p.x, p.y, idx)
+	}
+	return h
+}
+
+func checkFrames(t *testing.T, h *harness, name string) {
+	t.Helper()
+	if h.frames > maxFrames {
+		t.Fatalf("%s 用了 %d 帧，超过每例 %d 帧的硬上限", name, h.frames, maxFrames)
+	}
+	t.Logf("OBS %s 主链路帧数=%d（上限 %d）", name, h.frames, maxFrames)
+}
+
+// TestLabFormDefDefaultAndOverrideAreDistinct 同一个 Def 调两次：一次用默认徽标，
+// 一次显式覆盖。两条判据必须同时成立：
+//
+//	生成期 —— 产物里两个**静态**徽标串各自烙进去（props 是生成期替换，不是运行时变量）；
+//	运行时 —— 覆盖值的宽度把同行探针按钮推右，左边界差 ≥ 一个按钮宽。
+//
+// 只查生成物源码不够（那只是文本），只查几何也不够（看不出哪个值被烙进去）。
+func TestLabFormDefDefaultAndOverrideAreDistinct(t *testing.T) {
+	fm := discover(t)
+	if n := utf8.RuneCountInString(model.BadgeOverride) - utf8.RuneCountInString(model.BadgeDefault); n < 3 {
+		t.Fatalf("材料失效：BadgeOverride 只比 BadgeDefault 长 %d 个字符，几何判据不再有分辨力", n)
+	}
+
+	// 生成期判据：两个徽标串都是**静态文本**（material.Body1(th, "字面量")），
+	// 各出现一次。用 == 逐字比较而不是 Contains（见文件头第 3 条纪律）。
+	src, err := os.ReadFile("form_gen.go")
+	if err != nil {
+		t.Fatalf("读生成物失败：%v", err)
+	}
+	text := string(src)
+	for _, badge := range []string{model.BadgeDefault, model.BadgeOverride} {
+		lit := `material.Body1(th, "` + badge + `")`
+		if n := strings.Count(text, lit); n != 1 {
+			t.Fatalf("生成物里静态徽标 %q 应恰好出现 1 次，实际 %d 次", badge, n)
+		}
+	}
+	// 绑定槽位只有 2 个：两个 LabCell 的 Value="{SavedA|SavedB}"。
+	// 徽标、Label、Title 都是 props 替换后的静态文本，**不占槽位**——
+	// 这条是 C1 合同矩阵里的语义，一旦生成器改动它就会在这里变红。
+	if !strings.Contains(text, "if len(v.slots) != 2 {") {
+		t.Fatalf("绑定槽位数应为 2（SavedA/SavedB），生成物未见 `len(v.slots) != 2`")
+	}
+
+	// 运行时判据：两条探针按钮的左边界之差 = 两个徽标的宽度差。
+	dx := fm.probeL[1] - fm.probeL[0]
+	const minDelta = 24 // 一个探针按钮的最小可点宽度量级；4 个 CJK 字宽远超它
+	if dx < minDelta {
+		t.Fatalf("第二个实例的探针按钮应被更宽的徽标推右 ≥%ddp，实测左界 %d→%d（差 %d）",
+			minDelta, fm.probeL[0], fm.probeL[1], dx)
+	}
+	if dx > 400 {
+		t.Fatalf("左界差 %d dp 超出合理范围：两个实例可能不在同一行起点了", dx)
+	}
+
+	// 两条探针按钮都在跑**同一条**接线（Def 只有一份定义），点过之后计数增加。
+	h := newHarness(t)
+	h.frame()
+	for i := 0; i < 2; i++ {
+		h.click(float32(fm.probeL[i]+3), float32(fm.probeY[i]))
+		if h.m.LastAction != actionProbe {
+			t.Fatalf("点第 %d 个探针按钮（%d,%d）应触发 %q，实际 %q",
+				i+1, fm.probeL[i]+3, fm.probeY[i], actionProbe, h.m.LastAction)
+		}
+	}
+	if h.m.Probes != 2 {
+		t.Fatalf("两次探针点击应恰好记 2 次，实际 %d", h.m.Probes)
+	}
+	checkFrames(t, h, "两个 Def 实例的徽标")
+	t.Logf("OBS 徽标：默认左界=%ddp 覆盖左界=%ddp 差=%ddp Probes=%d",
+		fm.probeL[0], fm.probeL[1], dx, h.m.Probes)
+	t.Log("LAB-DONE TestLabFormDefDefaultAndOverrideAreDistinct")
+}
+
+// TestLabFormGridFlexibleColumnAbsorbsWidth 验证 «72 * 96» 的列规则：
+//
+//	加宽视口 → 弹性列吃掉全部增量 → 第三列（固定 96）左边界**精确**平移 ΔW；
+//	第二列（弹性列）左边界不动 → 输入框的焦点坐标不随视口宽度变化。
+//
+// 两条一起构成判据：只看「按钮右移了」不能排除「整页居中 / 内边距变化」。
+func TestLabFormGridFlexibleColumnAbsorbsWidth(t *testing.T) {
+	fm := discover(t)
+	y := fm.hits[actionApplyA].y
+
+	w1 := newHarness(t)
+	w1.frame()
+	p1, ok := scanRow(t, w1, y, 200, frameW, actionApplyA)
+	if !ok {
+		t.Fatalf("宽度 %d 下在 y=%d 未扫到「应用甲」", frameW, y)
+	}
+
+	w2 := newHarnessDPI(t, frameW+widthDelta, 1)
+	w2.frame()
+	p2, ok := scanRow(t, w2, y, 200, frameW+widthDelta, actionApplyA)
+	if !ok {
+		t.Fatalf("宽度 %d 下在 y=%d 未扫到「应用甲」", frameW+widthDelta, y)
+	}
+	if got := p2.x - p1.x; got != widthDelta {
+		t.Fatalf("弹性列应吃掉全部 %ddp 增量：第三列左边界应精确右移 %ddp，实测 %ddp→%ddp（差 %d）",
+			widthDelta, widthDelta, p1.x, p2.x, got)
+	}
+
+	// 弹性列起点不动：同一个焦点坐标在加宽后的视口里仍然聚焦 input0。
+	w3 := newHarnessDPI(t, frameW+widthDelta, 1)
+	w3.frame()
+	w3.click(float32(fm.focus[0].x), float32(fm.focus[0].y))
+	if !w3.gtx.Focused(&w3.v.input0) {
+		t.Fatalf("加宽 %ddp 后焦点坐标 (%d,%d) 不再落在 input0：弹性列左边界被挪动了",
+			widthDelta, fm.focus[0].x, fm.focus[0].y)
+	}
+	// 原来的按钮位置现在不该再有动作：第三列整体右移，原位置落在弹性列里。
+	// （不断言它一定聚焦 input0：编辑器的可点区域只覆盖它自己的内容宽度，
+	//  右半段是空白，所以只看「没有动作 + 焦点不在任何控件上」这两个信号。）
+	w4 := newHarnessDPI(t, frameW+widthDelta, 1)
+	w4.frame()
+	action, focus0, focus1 := w4.hit(p1.x, y)
+	if action != "" {
+		t.Fatalf("加宽后原按钮位置 (%d,%d) 不该再触发任何动作，实际 %q", p1.x, y, action)
+	}
+	if focus0 || focus1 {
+		t.Fatalf("原按钮位置不该落到输入框的可点区域：focus0=%v focus1=%v", focus0, focus1)
+	}
+	// 本用例的帧数来自**扫描**（逐点扫一行），不是交互链路，所以不走 maxFrames 预算；
+	// 只把实测值记下来，便于和扫描步长一起复核。
+	t.Logf("OBS 列规则：宽度 %d→%d，「应用甲」左界 %d→%d（差 %d），焦点 (%d,%d) 不变；扫描帧数 %d+%d",
+		frameW, frameW+widthDelta, p1.x, p2.x, p2.x-p1.x, fm.focus[0].x, fm.focus[0].y,
+		w1.frames, w2.frames)
+	t.Log("LAB-DONE TestLabFormGridFlexibleColumnAbsorbsWidth")
+}
+
+// TestLabFormDpiScalesHitTargets 同一份 dp 布局在 PxPerDp=2 下：命中点坐标精确翻倍，
+// 内容像素高度也翻倍（单位换算全部经 unit.Metric，没有硬编码像素）。
+func TestLabFormDpiScalesHitTargets(t *testing.T) {
+	fm := discover(t)
+	h := newHarnessDPI(t, frameW, 2)
+	h.frame()
+
+	// 内容像素高度按 DPI 翻倍。判据给 2% 容差：每个节点各自四舍五入到整像素，
+	// 十几个节点累起来的差在本机实测是 9px / 1084px（0.8%）。
+	// 判据要挡住的是「DPI 没生效」（会差一倍），不是抹平像素级舍入。
+	want := 2 * fm.height
+	if got := h.dims.Size.Y; abs(got-want)*50 > want {
+		t.Fatalf("DPI=2 的内容像素高度应约为 2×%ddp=%dpx（±2%%），实测 %dpx",
+			fm.height, want, got)
+	}
+	p := fm.hits[actionApplyA]
+	h.click(float32(2*p.x), float32(2*p.y))
+	if h.m.LastAction != actionApplyA || h.m.CountA != 1 {
+		t.Fatalf("DPI=2 下点 (%d,%d) 应触发 %q 且计 1 次，实际 %q / %d",
+			2*p.x, 2*p.y, actionApplyA, h.m.LastAction, h.m.CountA)
+	}
+	f := fm.focus[0]
+	h.click(float32(2*f.x), float32(2*f.y))
+	if !h.gtx.Focused(&h.v.input0) {
+		t.Fatalf("DPI=2 下点 (%d,%d) 应聚焦 input0", 2*f.x, 2*f.y)
+	}
+	if h.v.slots[0].text != model.DefaultDraftA {
+		t.Fatalf("DPI 变化不应影响绑定槽位内容：slots[0]=%q", h.v.slots[0].text)
+	}
+	checkFrames(t, h, "DPI 缩放")
+	t.Logf("OBS DPI：dp 高度=%d px 高度=%d（2×=%d）；命中点 (%d,%d)→(%d,%d)",
+		fm.height, h.dims.Size.Y, 2*fm.height, p.x, p.y, 2*p.x, 2*p.y)
+	t.Log("LAB-DONE TestLabFormDpiScalesHitTargets")
+}
+
+// TestLabFormSlotReplacedAndEmptySlotVanishes 面板甲传入按钮子节点（插槽被替换），
+// 面板乙不传子节点（Slot 节点整个被移除）。判据：
+//
+//	全页只有**一带**能触发 slot-a —— 如果空插槽也渲染了点东西，会出现第二带；
+//	重复点同一处每次都计数 —— 插槽内容是真控件，不是静态绘制；
+//	面板乙的标题仍在（Def 自身结构没丢），只是它没有可点子节点。
+func TestLabFormSlotReplacedAndEmptySlotVanishes(t *testing.T) {
+	fm := discover(t)
+	if fm.slotNum != 1 {
+		t.Fatalf("插槽内容应恰好 1 带，实测 %d 带", fm.slotNum)
+	}
+	h := newHarness(t)
+	h.frame()
+	p := fm.hits[actionSlotA]
+	for i := 1; i <= 3; i++ {
+		h.click(float32(p.x), float32(p.y))
+		if h.m.SlotAClicks != i {
+			t.Fatalf("第 %d 次点插槽按钮应记 %d 次，实际 %d（LastAction=%q）",
+				i, i, h.m.SlotAClicks, h.m.LastAction)
+		}
+	}
+	if h.m.CountA != 0 || h.m.CountB != 0 {
+		t.Fatalf("插槽按钮不应串到「应用」接线：CountA=%d CountB=%d", h.m.CountA, h.m.CountB)
+	}
+	checkFrames(t, h, "插槽替换 / 空插槽")
+	t.Logf("OBS 插槽：命中点 (%d,%d) 连点 3 次 → SlotAClicks=%d，CountA=%d",
+		p.x, p.y, h.m.SlotAClicks, h.m.CountA)
+	t.Log("LAB-DONE TestLabFormSlotReplacedAndEmptySlotVanishes")
+}
+
+// TestLabFormEventAttributionSeparatesInstances 每个控件落到自己那条接线：
+//
+//	点「应用甲」只动 SavedA/CountA；点「应用乙」只动 SavedB/CountB；
+//	改草稿不写已保存值（绑定槽位跟的是 Saved*，不是 Draft*）。
+func TestLabFormEventAttributionSeparatesInstances(t *testing.T) {
+	fm := discover(t)
+	h := newHarness(t)
+	h.frame()
+	if h.v.slots[0].text != model.DefaultDraftA || h.v.slots[1].text != model.DefaultDraftB {
+		t.Fatalf("初始槽位应为 %q/%q，实际 %q/%q",
+			model.DefaultDraftA, model.DefaultDraftB, h.v.slots[0].text, h.v.slots[1].text)
+	}
+
+	p := fm.hits[actionApplyA]
+	h.click(float32(p.x), float32(p.y))
+	if h.m.CountA != 1 || h.m.CountB != 0 {
+		t.Fatalf("点「应用甲」后计数应为 1/0，实际 %d/%d", h.m.CountA, h.m.CountB)
+	}
+	if h.m.SavedA != model.DefaultDraftA || h.m.SavedB != model.DefaultDraftB {
+		t.Fatalf("点「应用甲」不应动 SavedB：SavedA=%q SavedB=%q", h.m.SavedA, h.m.SavedB)
+	}
+
+	pb := fm.hits[actionApplyB]
+	h.click(float32(pb.x), float32(pb.y))
+	if h.m.CountA != 1 || h.m.CountB != 1 {
+		t.Fatalf("点「应用乙」后计数应为 1/1，实际 %d/%d", h.m.CountA, h.m.CountB)
+	}
+
+	// 改草稿：只有 Draft 变，槽位（绑定 Saved*）保持不动。
+	h.click(float32(fm.focus[0].x), float32(fm.focus[0].y))
+	if !h.gtx.Focused(&h.v.input0) {
+		t.Fatal("未能聚焦 input0")
+	}
+	h.replaceAll(0, "甲改稿")
+	h.frame() // 一帧沉降：EditEvent 在编辑器自身 Layout 时消费，回写晚于本帧渲染
+	if h.m.DraftA != "甲改稿" {
+		t.Fatalf("改稿后 DraftA 应为 %q，实际 %q", "甲改稿", h.m.DraftA)
+	}
+	if h.m.SavedA != model.DefaultDraftA {
+		t.Fatalf("改稿不应写已保存值：SavedA=%q", h.m.SavedA)
+	}
+	if h.v.slots[0].text != model.DefaultDraftA {
+		t.Fatalf("绑定槽位跟的是 SavedA，改稿后仍应为 %q，实际 %q", model.DefaultDraftA, h.v.slots[0].text)
+	}
+	if h.m.DraftB != model.DefaultDraftB {
+		t.Fatalf("改甲草稿串写了乙：DraftB=%q", h.m.DraftB)
+	}
+
+	// 再点「应用甲」：已保存值跟上草稿，槽位随下一帧更新。
+	h.click(float32(p.x), float32(p.y))
+	if h.m.SavedA != "甲改稿" || h.m.CountA != 2 {
+		t.Fatalf("应用后 SavedA/CountA 应为 甲改稿/2，实际 %q/%d", h.m.SavedA, h.m.CountA)
+	}
+	if h.v.slots[0].text != "甲改稿" {
+		t.Fatalf("应用后渲染串应更新为 %q，实际 %q", "甲改稿", h.v.slots[0].text)
+	}
+	if h.v.slots[1].text != model.DefaultDraftB {
+		t.Fatalf("甲的更新不应影响乙的槽位：slots[1]=%q", h.v.slots[1].text)
+	}
+	checkFrames(t, h, "事件归属")
+	t.Logf("OBS 归属：CountA=%d CountB=%d SavedA=%q SavedB=%q slots=%q/%q",
+		h.m.CountA, h.m.CountB, h.m.SavedA, h.m.SavedB, h.v.slots[0].text, h.v.slots[1].text)
+	t.Log("LAB-DONE TestLabFormEventAttributionSeparatesInstances")
+}
+
+// TestLabFormReturnPayloadStaysOnItsOwnInput 两个输入框各自接 Submit：回车只把载荷记到
+// 自己那一侧，且不回写草稿（代码生成输出契约 §4.3）。
+func TestLabFormReturnPayloadStaysOnItsOwnInput(t *testing.T) {
+	h := newFocused(t, 0)
+	h.replaceAll(0, "回车甲")
+	h.ret()
+	if h.m.SubmitsA != 1 || h.m.SubmitsB != 0 {
+		t.Fatalf("甲框回车后计数应为 1/0，实际 %d/%d", h.m.SubmitsA, h.m.SubmitsB)
+	}
+	if h.m.LastSubmitA != "回车甲" {
+		t.Fatalf("Submit 载荷应为回车瞬间的编辑器文本 %q，实际 %q", "回车甲", h.m.LastSubmitA)
+	}
+	if h.m.DraftA != "回车甲" {
+		t.Fatalf("Submit 不应回写草稿：DraftA=%q", h.m.DraftA)
+	}
+
+	h2 := newFocused(t, 1)
+	if !h2.gtx.Focused(h2.editor(1)) {
+		t.Fatal("未能聚焦 input1")
+	}
+	h2.replaceAll(1, "回车乙")
+	h2.ret()
+	if h2.m.SubmitsB != 1 || h2.m.SubmitsA != 0 {
+		t.Fatalf("乙框回车后计数应为 0/1，实际 %d/%d", h2.m.SubmitsA, h2.m.SubmitsB)
+	}
+	if h2.m.LastSubmitB != "回车乙" {
+		t.Fatalf("乙框 Submit 载荷应为 %q，实际 %q", "回车乙", h2.m.LastSubmitB)
+	}
+	if h2.m.DraftA != model.DefaultDraftA {
+		t.Fatalf("乙框回车串写了甲草稿：DraftA=%q", h2.m.DraftA)
+	}
+	checkFrames(t, h, "回车载荷")
+	t.Logf("OBS 回车：A=%d/%q B=%d/%q", h.m.SubmitsA, h.m.LastSubmitA, h2.m.SubmitsB, h2.m.LastSubmitB)
+	t.Log("LAB-DONE TestLabFormReturnPayloadStaysOnItsOwnInput")
+}
+
+// TestLabFormInstancesIsolated 两份生成的 View 各自持有独立模型：互不串状态。
+func TestLabFormInstancesIsolated(t *testing.T) {
+	fm := discover(t)
+	a := newHarness(t)
+	a.frame()
+	b := newHarness(t)
+	b.frame()
+	if a.m == b.m {
+		t.Fatal("两个实例必须持有不同模型指针")
+	}
+	p := fm.hits[actionApplyA]
+	a.click(float32(p.x), float32(p.y))
+	if a.m.CountA != 1 {
+		t.Fatalf("实例 A 应记 1 次，实际 %d", a.m.CountA)
+	}
+	if b.m.CountA != 0 || b.m.SlotAClicks != 0 || b.m.Probes != 0 {
+		t.Fatalf("实例 B 被串改：CountA=%d SlotAClicks=%d Probes=%d",
+			b.m.CountA, b.m.SlotAClicks, b.m.Probes)
+	}
+	if b.v.slots[0].text != model.DefaultDraftA {
+		t.Fatalf("实例 B 的渲染状态被串改：slots[0]=%q", b.v.slots[0].text)
+	}
+	checkFrames(t, a, "实例隔离")
+	t.Logf("OBS 隔离：A.CountA=%d B.CountA=%d", a.m.CountA, b.m.CountA)
+	t.Log("LAB-DONE TestLabFormInstancesIsolated")
+}
+
+// TestLabFormTwoViewsShareOneModel 生成视图**不复制** ViewModel：两个视图实例绑定同一个
+// *model.Lab 时，在其中一个上按真实事件改的状态，另一个下一帧就渲染出来。
+//
+// 这正是 cmd/lab 里 form + report 的关系；跨包读另一个视图的槽位做不到（槽位是
+// 生成包的未导出字段），所以端到端那条链路在 report 包用自己的槽位补上，
+// 本用例负责证明「事件 → 同一份模型 → 另一个视图的渲染串」这一段。
+func TestLabFormTwoViewsShareOneModel(t *testing.T) {
+	fm := discover(t)
+	m := model.NewLab()
+	v1, err := NewGoxmlFormView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := NewGoxmlFormView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1 == v2 {
+		t.Fatal("两次构造应得到两个不同的视图")
+	}
+	h1 := &harness{m: m, v: v1}
+	h1.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Constraints{Max: image.Pt(frameW, 4096)},
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h1.r.Source(),
+	}
+	h1.frame()
+	h2 := &harness{m: m, v: v2}
+	h2.gtx = layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Constraints{Max: image.Pt(frameW, 4096)},
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Source:      h2.r.Source(),
+	}
+	h2.frame()
+	if v1.slots[0].text != model.DefaultDraftA || v2.slots[0].text != model.DefaultDraftA {
+		t.Fatalf("两视图初始槽位都应为 %q，实际 %q / %q",
+			model.DefaultDraftA, v1.slots[0].text, v2.slots[0].text)
+	}
+
+	// 真的在视图 1 上敲键盘、点按钮。
+	h1.click(float32(fm.focus[0].x), float32(fm.focus[0].y))
+	if !h1.gtx.Focused(&v1.input0) {
+		t.Fatal("未能聚焦视图 1 的 input0")
+	}
+	h1.replaceAll(0, "共享甲")
+	p := fm.hits[actionApplyA]
+	h1.click(float32(p.x), float32(p.y))
+	if h1.m.CountA != 1 || h1.m.SavedA != "共享甲" {
+		t.Fatalf("视图 1 的事件应写进共享模型：CountA=%d SavedA=%q", h1.m.CountA, h1.m.SavedA)
+	}
+	if v1.slots[0].text != "共享甲" {
+		t.Fatalf("视图 1 的槽位应更新为 %q，实际 %q", "共享甲", v1.slots[0].text)
+	}
+
+	// 视图 2 没有收到任何事件，但它读的是同一份模型：下一帧就同值。
+	h2.frame()
+	if v2.slots[0].text != "共享甲" {
+		t.Fatalf("视图 2 应渲染共享模型里的 %q，实际 %q（视图复制了模型而不是持有指针）",
+			"共享甲", v2.slots[0].text)
+	}
+	// 字段名以生成物为准：ViewModel 存在 `vm` 上（不是 `m`）。
+	if v2.vm != h1.m {
+		t.Fatal("两个视图必须持有同一个模型指针")
+	}
+	checkFrames(t, h1, "两视图共享模型")
+	t.Logf("OBS 共享：点击后 SavedA=%q v1.slots[0]=%q v2.slots[0]=%q",
+		h1.m.SavedA, v1.slots[0].text, v2.slots[0].text)
+	t.Log("LAB-DONE TestLabFormTwoViewsShareOneModel")
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}

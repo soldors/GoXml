@@ -127,6 +127,30 @@ PROJECTS = {
             'TestRouteDetailImageEmbedded',
         ],
     },
+    # R25-C：Def/Slot/Grid 的组件布局实验台。仍是「一次目录 generate 覆盖两页」的批次形状，
+    # 但验收重心不同：产物侧钉住「Def 的 props 在生成期替换、静态文本不占绑定槽位」，
+    # 离屏侧钉住「同一 Def 的两次调用参数不串、Slot 替换与空 Slot、Grid 定宽+弹性列的几何」。
+    # 用例名与完成标记独立（LAB-DONE）：四个工程各有一套，不能互相顶替。
+    'component-layout-lab': {
+        'entry': 'cmd/lab',
+        'testTargets': ['./view/...'],
+        'testRun': '^TestLab',
+        'completionMarker': 'LAB-DONE',
+        'expectedTests': [
+            'TestLabFormDefDefaultAndOverrideAreDistinct',
+            'TestLabFormGridFlexibleColumnAbsorbsWidth',
+            'TestLabFormDpiScalesHitTargets',
+            'TestLabFormSlotReplacedAndEmptySlotVanishes',
+            'TestLabFormEventAttributionSeparatesInstances',
+            'TestLabFormReturnPayloadStaysOnItsOwnInput',
+            'TestLabFormInstancesIsolated',
+            'TestLabFormTwoViewsShareOneModel',
+            'TestLabReportSlotsArePerNodeAndFollowModel',
+            'TestLabReportEmptyStringSlotStaysSlot',
+            'TestLabReportFollowsFormHandlerOnSameModel',
+            'TestLabReportInstancesIsolated',
+        ],
+    },
 }
 
 PLACEHOLDER_MODULE = '__MODULE__'

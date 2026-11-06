@@ -1,0 +1,7 @@
+// Package report 是汇总视图的包。
+//
+// 与 form 一样：这个占位包让第一次生成之前目录就能被 go list 解析。
+// 生成产物 report_gen.go 落在同一目录、同一 package report。
+//
+// 复制模板时把本文件改名为 doc.go。
+package report

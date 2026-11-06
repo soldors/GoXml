@@ -1,0 +1,67 @@
+// 窗口入口模板。生成两个视图之后复制到 cmd/lab/main.go，
+// 并把 __MODULE__ 换成 go.mod 里的模块路径。
+//
+// 这是窗口入口：只有运行它才会创建原生窗口。自动测试只编译本文件，从不执行它。
+//
+// 关键点：model.NewLab() 只调用一次，同一个指针交给两个生成视图。
+// 表单视图改的是这份模型，汇总视图读的也是这份模型——不是复制数据同步。
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"gioui.org/layout"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/form"
+	"__MODULE__/view/report"
+
+	"github.com/goxml/goxml/pkg/runtime/app"
+)
+
+// shell 用现有 Go 把两个生成视图上下组合成一个 app.View。
+// Goxml 当前没有路由接线（pkg/runtime/router 仍是规划项），这里不做页面切换。
+type shell struct {
+	form   *form.GoxmlFormView
+	report *report.GoxmlReportView
+}
+
+// Layout 实现 app.View（layout.Context + *material.Theme -> Dimensions）。
+func (s *shell) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	inset := layout.UniformInset(unit.Dp(10))
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return s.form.Layout(gtx, th)
+			})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return s.report.Layout(gtx, th)
+			})
+		}),
+	)
+}
+
+func main() {
+	m := model.NewLab()
+	fv, err := form.NewGoxmlFormView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	rv, err := report.NewGoxmlReportView(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	view := &shell{form: fv, report: rv}
+	if err := app.Run(view, app.Config{Title: "Goxml component layout lab",
+		Width: 760, Height: 900}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

@@ -1,0 +1,230 @@
+package report
+
+// 组件布局实验台 · 汇总视图（只读）的离屏语义测试。
+//
+// 这一包不接任何事件（没有按钮、没有输入框），要证明的是**渲染侧**的组合语义：
+//
+//	槽位粒度   每个绑定 <Text> 节点各有独立槽位，不按「值相同」合并；
+//	           SavedA 在两个节点上各渲染一次 ⇒ 占**两个**槽位
+//	逐帧取值   绑定每帧重新读 ViewModel 字段，不是首帧快照
+//	跨文件 Def  report.gxml 自带 LabStat / LabPanel 定义——v1 不支持 Def 跨文件导入，
+//	           两个 .gxml 各自声明同名 Def 是隔离的（本测试顺带守住这条边界）
+//
+// 视图侧没有输入口，所以状态一律用模型**公开方法**布置（与真实事件处理器同一入口），
+// 不用反射改字段；判据读渲染串，逐字比较。
+
+import (
+	"image"
+	"strconv"
+	"testing"
+
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
+
+	"__MODULE__/model"
+	"__MODULE__/view/form"
+)
+
+var sharedTheme = material.NewTheme()
+
+const (
+	frameW = 520
+
+	// reportSlots 与生成物里的 `if len(v.slots) != N` 常量逐字对齐：
+	// Grid 内 SavedA/SavedB（2）+ 4 个 LabStat 的 Value（CountAText/CountBText/
+	// SlotText/SummaryText）+ 只读面板插槽里的 SavedA（1）。
+	reportSlots = 7
+)
+
+// slotNames 是槽位索引到「它绑的是哪个字段」的映射，用于失败信息可读。
+var slotNames = [reportSlots]string{
+	0: "Grid/SavedA",
+	1: "Grid/SavedB",
+	2: "LabStat/CountAText",
+	3: "LabStat/CountBText",
+	4: "LabStat/SlotText",
+	5: "LabStat/SummaryText",
+	6: "LabPanel/SavedA",
+}
+
+type harness struct {
+	m *model.Lab
+	v *GoxmlReportView
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	m := model.NewLab()
+	v, err := NewGoxmlReportView(m)
+	if err != nil {
+		t.Fatalf("生成视图构造失败：%v", err)
+	}
+	return &harness{m: m, v: v}
+}
+
+// frame 渲染一帧：只读视图没有输入，不需要 input.Router。
+func (h *harness) frame() {
+	gtx := layout.Context{
+		Ops:         new(op.Ops),
+		Constraints: layout.Constraints{Max: image.Pt(frameW, 4096)},
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+	}
+	h.v.Layout(gtx, sharedTheme)
+}
+
+// expect 是「从模型逐字重算」的期望槽位内容。
+//
+// 不把结果写死成字符串字面量：那样改了文案公式，测试会跟着「正确」地错下去。
+func expect(m *model.Lab) [reportSlots]string {
+	return [reportSlots]string{
+		0: m.SavedA,
+		1: m.SavedB,
+		2: "甲=" + strconv.Itoa(m.CountA),
+		3: "乙=" + strconv.Itoa(m.CountB),
+		4: "插槽=" + strconv.Itoa(m.SlotAClicks),
+		5: m.SavedA + " / " + m.SavedB +
+			"（甲 " + strconv.Itoa(m.CountA) + " 次，乙 " + strconv.Itoa(m.CountB) + " 次）",
+		6: m.SavedA,
+	}
+}
+
+func checkSlots(t *testing.T, h *harness, stage string) {
+	t.Helper()
+	if len(h.v.slots) != reportSlots {
+		t.Fatalf("%s：绑定槽位数应为 %d，实际 %d", stage, reportSlots, len(h.v.slots))
+	}
+	want := expect(h.m)
+	for i := 0; i < reportSlots; i++ {
+		if got := h.v.slots[i].text; got != want[i] {
+			t.Fatalf("%s：槽位 %d（%s）渲染串应为 %q，实际 %q",
+				stage, i, slotNames[i], want[i], got)
+		}
+	}
+}
+
+// TestLabReportSlotsArePerNodeAndFollowModel 逐帧取值 + 每节点独立槽位。
+//
+// 关键判据是槽位 0 与槽位 6：两处绑的都是 SavedA，渲染串必然相同。
+// 如果生成器按「值相同」合并槽位，槽位数会变成 6、槽位 6 会读不到——
+// 这条断言就是「一节点一槽位」的可观测形态。
+func TestLabReportSlotsArePerNodeAndFollowModel(t *testing.T) {
+	h := newHarness(t)
+	h.frame()
+	checkSlots(t, h, "初始帧")
+
+	// 用模型公开方法推状态：与真实事件处理器同一入口（ApplyA/SlotA 就是按钮的处理器）。
+	h.m.DraftA = "改后甲"
+	h.m.ApplyA()
+	h.m.ApplyB()
+	h.m.SlotA()
+	h.frame()
+	checkSlots(t, h, "推状态后")
+
+	// 再推一次，证明不是「首帧快照」：同一份 View 不重建也能跟上。
+	h.m.DraftB = "改后乙"
+	h.m.ApplyB()
+	h.frame()
+	checkSlots(t, h, "二次推状态后")
+
+	if h.v.slots[0].text != h.v.slots[6].text {
+		t.Fatalf("两处 SavedA 应渲染同一串：slots[0]=%q slots[6]=%q",
+			h.v.slots[0].text, h.v.slots[6].text)
+	}
+	if h.m.CountA != 1 || h.m.CountB != 2 || h.m.SlotAClicks != 1 {
+		t.Fatalf("前置状态不符：CountA=%d CountB=%d SlotAClicks=%d",
+			h.m.CountA, h.m.CountB, h.m.SlotAClicks)
+	}
+	t.Logf("OBS 汇总：槽位数=%d SavedA=%q 甲=%q 乙=%q 插槽=%q 汇总=%q",
+		len(h.v.slots), h.v.slots[0].text, h.v.slots[2].text,
+		h.v.slots[3].text, h.v.slots[4].text, h.v.slots[5].text)
+	t.Log("LAB-DONE TestLabReportSlotsArePerNodeAndFollowModel")
+}
+
+// TestLabReportEmptyStringSlotStaysSlot 空串是**合法**绑定值：槽位保留、渲染空串，
+// 不会因为「没内容」把槽位塌掉（槽位索引必须与源码顺序一一对应）。
+func TestLabReportEmptyStringSlotStaysSlot(t *testing.T) {
+	h := newHarness(t)
+	h.frame()
+	h.m.DraftA = ""
+	h.m.ApplyA()
+	h.frame()
+	if len(h.v.slots) != reportSlots {
+		t.Fatalf("空串不应改变槽位数：期望 %d，实际 %d", reportSlots, len(h.v.slots))
+	}
+	if h.v.slots[0].text != "" || h.v.slots[6].text != "" {
+		t.Fatalf("两个 SavedA 槽位都应为空串，实际 %q / %q", h.v.slots[0].text, h.v.slots[6].text)
+	}
+	checkSlots(t, h, "空串")
+	t.Logf("OBS 空串：slots[0]=%q slots[5]=%q", h.v.slots[0].text, h.v.slots[5].text)
+	t.Log("LAB-DONE TestLabReportEmptyStringSlotStaysSlot")
+}
+
+// TestLabReportFollowsFormHandlerOnSameModel 端到端那段链路的收口：
+//
+//	form 视图的 Click="ApplyA" → 生成物调用 vm.ApplyA() → 同一份 *model.Lab 变化
+//	→ report 视图下一帧渲染出新值。
+//
+// 这里省略的是「指针点击怎么落到 ApplyA」那一步：它由 form 包自己的离屏测试
+// （TestLabFormEventAttributionSeparatesInstances / TestLabFormTwoViewsShareOneModel）
+// 用真实 input.Router 事件证明。跨包读对方视图的未导出槽位做不到，所以两段分两处证，
+// 中间链接点用**同一个**公开方法（ApplyA 就是被绑定的处理器）对齐——这是本工程的
+// 已知未证边界（见 README「未测边界」）。
+func TestLabReportFollowsFormHandlerOnSameModel(t *testing.T) {
+	m := model.NewLab()
+	// 两个生成的视图持有同一个指针：form 侧只用来确认「同一实例能被两个包同时持有」，
+	// 不读它的槽位（未导出）。
+	if _, err := form.NewGoxmlFormView(m); err != nil {
+		t.Fatalf("form 视图构造失败：%v", err)
+	}
+	v, err := NewGoxmlReportView(m)
+	if err != nil {
+		t.Fatalf("report 视图构造失败：%v", err)
+	}
+	h := &harness{m: m, v: v}
+	h.frame()
+	if h.v.slots[2].text != "甲=0" || h.v.slots[4].text != "插槽=0" {
+		t.Fatalf("初始派生串应为 甲=0 / 插槽=0，实际 %q / %q", h.v.slots[2].text, h.v.slots[4].text)
+	}
+
+	m.DraftA = "表单改的甲"
+	m.ApplyA() // 与 form.gxml 里 Click="ApplyA" 绑定的是同一个方法
+	m.SlotA()  // 与 form.gxml 里插槽按钮 Click="SlotA" 绑定的是同一个方法
+	h.frame()
+	if h.v.slots[0].text != "表单改的甲" || h.v.slots[2].text != "甲=1" || h.v.slots[4].text != "插槽=1" {
+		t.Fatalf("汇总视图未跟上共享模型：slots[0]=%q slots[2]=%q slots[4]=%q",
+			h.v.slots[0].text, h.v.slots[2].text, h.v.slots[4].text)
+	}
+	if h.v.slots[5].text != m.SummaryText {
+		t.Fatalf("汇总串应为模型里的 %q，实际 %q", m.SummaryText, h.v.slots[5].text)
+	}
+	checkSlots(t, h, "处理器写入后")
+	t.Logf("OBS 结束到端：SavedA=%q slots[0]=%q slots[2]=%q slots[4]=%q",
+		m.SavedA, h.v.slots[0].text, h.v.slots[2].text, h.v.slots[4].text)
+	t.Log("LAB-DONE TestLabReportFollowsFormHandlerOnSameModel")
+}
+
+// TestLabReportInstancesIsolated 两份生成的 View 各自持有独立模型：互不串状态。
+func TestLabReportInstancesIsolated(t *testing.T) {
+	a := newHarness(t)
+	a.frame()
+	b := newHarness(t)
+	b.frame()
+	if a.m == b.m {
+		t.Fatal("两个实例必须持有不同模型指针")
+	}
+	a.m.DraftA = "实例甲"
+	a.m.ApplyA()
+	a.frame()
+	b.frame()
+	if a.v.slots[0].text != "实例甲" {
+		t.Fatalf("实例 A 应渲染 %q，实际 %q", "实例甲", a.v.slots[0].text)
+	}
+	if b.m.SavedA != model.DefaultDraftA || b.v.slots[0].text != model.DefaultDraftA {
+		t.Fatalf("实例 B 被串改：SavedA=%q slots[0]=%q", b.m.SavedA, b.v.slots[0].text)
+	}
+	checkSlots(t, b, "实例 B")
+	t.Logf("OBS 隔离：A.slots[0]=%q B.slots[0]=%q", a.v.slots[0].text, b.v.slots[0].text)
+	t.Log("LAB-DONE TestLabReportInstancesIsolated")
+}

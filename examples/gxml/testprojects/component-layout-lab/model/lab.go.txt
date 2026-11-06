@@ -1,0 +1,154 @@
+// Package model 是「组件布局实验台」工程模板的唯一状态所有者。
+//
+// 两个生成视图（view/form 与 view/report）声明**同一个** ViewModel（model.Lab），
+// 由入口 cmd/lab 把同一个 *Lab 指针交给两个生成视图：表单视图改状态，
+// 汇总视图只读展示——两边不是靠复制数据同步，而是同一个指针。
+//
+// 状态分四组，不能混：
+//
+//	DraftA / DraftB   两个 <Input> 的草稿；ValueChanged 只写自己的那一份
+//	SavedA / SavedB   点「应用」之后才写入；两个按钮各写各的
+//	CountA / CountB   两个「应用」按钮各自被点击的次数（事件归属的判据）
+//	SlotAClicks       面板甲插槽内按钮的点击次数（插槽内容真的被渲染且可交互的判据）
+//
+// 显示串（CountAText 等）一律在**事件处理器**里算好，不在 Layout 里逐帧拼接。
+package model
+
+import "strconv"
+
+// 草稿初值与徽标文案是**逐字常量**：模板里的默认值与测试里的断言都引用这里，
+// 三处（model / .gxml / sem_test）任何一处不一致都会让断言直接变红。
+const (
+	DefaultDraftA = "甲草稿"
+	DefaultDraftB = "乙草稿"
+
+	// BadgeDefault 是 <Def Name="LabCell" Props="...; Badge:string=默认"> 的默认值；
+	// BadgeOverride 是第二个实例显式传入的覆盖值。
+	//
+	// 两者**故意长度不同**（2 个字符 vs 6 个字符）：徽标是静态文本，不进文本缓存槽位，
+	// 但它的宽度会推动同一行里紧随其后的探针按钮 —— 两个实例的探针按钮 X 坐标差
+	// 就是「默认值被覆盖」的运行时几何判据（不依赖具体字体度量，只比较相对位置）。
+	BadgeDefault  = "默认"
+	BadgeOverride = "覆盖徽标文本"
+)
+
+// Lab 是共享视图模型。两个生成视图持有**同一个** *Lab。
+type Lab struct {
+	// DraftA / DraftB 是两份独立草稿：各自绑定一个 <Input> 的 Value，
+	// 只能被各自的 ValueChanged 回写。两个实例互不串值是本模板的核心判据之一。
+	DraftA string
+	DraftB string
+
+	// SavedA / SavedB 只在对应「应用」按钮被点击时写入。
+	SavedA string
+	SavedB string
+
+	// CountA / CountB 记录两个「应用」按钮各自的点击次数。
+	// 断言读计数而不是 LastAction：残留的 LastAction 会让「点到了哪个按钮」出现假命中。
+	CountA int
+	CountB int
+
+	// SlotAClicks 是面板甲插槽按钮的点击次数。面板乙没有子节点（空插槽），
+	// 因此它不可能产生这个计数——「插槽替换」与「空插槽」的差别由此可观测。
+	SlotAClicks int
+
+	// Probes 记录两个单元里探针按钮被点击的总次数。探针按钮不承载业务，
+	// 只用来把「徽标文本宽度」变成可扫描的几何证据（见 BadgeDefault 注释）。
+	Probes int
+
+	// SubmitsA / SubmitsB 记录两个输入框回车（Submit）的次数与载荷。
+	// 回车只记录、不回写草稿（合同 §4.2）。
+	SubmitsA    int
+	SubmitsB    int
+	LastSubmitA string
+	LastSubmitB string
+
+	// 派生显示串：事件处理器里算好，视图只绑定。
+	CountAText  string
+	CountBText  string
+	SlotText    string
+	SummaryText string
+
+	// LastAction 只用于扫描时判断「点到了哪个按钮」。浏览器式断言不依赖它：
+	// 所有验收判据读上面的计数。
+	LastAction string
+}
+
+// NewLab 构造初始状态：草稿与已保存值一致。
+func NewLab() *Lab {
+	m := &Lab{
+		DraftA: DefaultDraftA,
+		DraftB: DefaultDraftB,
+		SavedA: DefaultDraftA,
+		SavedB: DefaultDraftB,
+	}
+	m.refresh()
+	return m
+}
+
+// refresh 在事件处理器里准备所有显示串。
+func (m *Lab) refresh() {
+	m.CountAText = "甲=" + strconv.Itoa(m.CountA)
+	m.CountBText = "乙=" + strconv.Itoa(m.CountB)
+	m.SlotText = "插槽=" + strconv.Itoa(m.SlotAClicks)
+	m.SummaryText = m.SavedA + " / " + m.SavedB +
+		"（甲 " + strconv.Itoa(m.CountA) + " 次，乙 " + strconv.Itoa(m.CountB) + " 次）"
+}
+
+// OnDraftAChanged 是甲输入框的 ValueChanged：只写甲草稿。
+func (m *Lab) OnDraftAChanged(value string) {
+	m.DraftA = value
+	m.LastAction = "a-change"
+	m.refresh()
+}
+
+// OnDraftBChanged 是乙输入框的 ValueChanged：只写乙草稿。
+func (m *Lab) OnDraftBChanged(value string) {
+	m.DraftB = value
+	m.LastAction = "b-change"
+	m.refresh()
+}
+
+// OnSubmitA 是甲输入框的回车处理器：只记录载荷，不回写草稿。
+func (m *Lab) OnSubmitA(text string) {
+	m.SubmitsA++
+	m.LastSubmitA = text
+	m.LastAction = "a-submit"
+}
+
+// OnSubmitB 是乙输入框的回车处理器。
+func (m *Lab) OnSubmitB(text string) {
+	m.SubmitsB++
+	m.LastSubmitB = text
+	m.LastAction = "b-submit"
+}
+
+// ApplyA 把甲草稿写进已保存值，并给甲的计数加一。
+func (m *Lab) ApplyA() {
+	m.SavedA = m.DraftA
+	m.CountA++
+	m.LastAction = "apply-a"
+	m.refresh()
+}
+
+// ApplyB 把乙草稿写进已保存值，并给乙的计数加一。
+func (m *Lab) ApplyB() {
+	m.SavedB = m.DraftB
+	m.CountB++
+	m.LastAction = "apply-b"
+	m.refresh()
+}
+
+// SlotA 是面板甲插槽内按钮的处理器：只有插槽内容真的被渲染，它才可能被点到。
+func (m *Lab) SlotA() {
+	m.SlotAClicks++
+	m.LastAction = "slot-a"
+	m.refresh()
+}
+
+// Probe 是单元内探针按钮的处理器：不承载业务，只让几何扫描有可观测的命中信号。
+func (m *Lab) Probe() {
+	m.Probes++
+	m.LastAction = "probe"
+	m.refresh()
+}
