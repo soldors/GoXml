@@ -61,7 +61,7 @@ func validateAssetRefs(refs []codegen.AssetRef, cfg Config, file string) []contr
 
 	out := make([]contracts.CompilerError, 0, len(refs))
 	for _, ref := range refs {
-		data, diag := readAssetBytes(rootAbs, file, ref)
+		data, diag := readAssetBytes(rootAbs, cfg.AssetOverlay, file, ref)
 		if diag != nil {
 			out = append(out, *diag)
 			continue
@@ -75,7 +75,7 @@ func validateAssetRefs(refs []codegen.AssetRef, cfg Config, file string) []contr
 
 // ReadAssetForFingerprint reads an asset through the same path and byte-budget
 // checks as the generation gate. Format validation remains in validateAssets.
-func ReadAssetForFingerprint(root, rel string) ([]byte, bool) {
+func ReadAssetForFingerprint(root, rel string, overlay map[string]string) ([]byte, bool) {
 	norm, err := codegen.NormalizeAssetSrc(rel)
 	if err != nil || root == "" {
 		return nil, false
@@ -84,11 +84,11 @@ func ReadAssetForFingerprint(root, rel string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	data, diag := readAssetBytes(rootAbs, "", codegen.AssetRef{Path: norm})
+	data, diag := readAssetBytes(rootAbs, overlay, "", codegen.AssetRef{Path: norm})
 	return data, diag == nil
 }
 
-func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contracts.CompilerError) {
+func readAssetBytes(rootAbs string, overlay map[string]string, file string, ref codegen.AssetRef) ([]byte, *contracts.CompilerError) {
 	full, err := assetPathInPackage(rootAbs, ref.Path)
 	if err == nil {
 		err = assetBoundaryProblem(rootAbs, ref.Path)
@@ -99,6 +99,28 @@ func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contra
 	if err != nil {
 		d := codegen.AssetPathDiagnostic(file, ref, err)
 		return nil, &d
+	}
+	// R25-A repair: if Go's -overlay will replace this asset's on-disk file, the bytes Go
+	// actually embeds are the overlay target's bytes (or none, if deleted). Validate THOSE
+	// bytes so "validated bytes" and "embedded bytes" cannot diverge. The disk path already
+	// passed the Src path/boundary/spelling checks above (trusted-dir unchanged); the
+	// overlay target is an explicit build input whose bytes must be validated too.
+	if len(overlay) > 0 {
+		fullAbs, aerr := filepath.Abs(full)
+		if aerr != nil {
+			d := codegen.AssetReadDiagnostic(file, ref, aerr)
+			return nil, &d
+		}
+		if to, overlaid := overlay[filepath.Clean(fullAbs)]; overlaid {
+			if to == "" {
+				// overlay deletes the asset: Go would embed nothing / fail. Fail-closed.
+				d := codegen.AssetReadDiagnostic(file, ref,
+					fmt.Errorf("asset %q is deleted by the Go overlay; effective embedded bytes are absent", ref.Path))
+				return nil, &d
+			}
+			// Validate the EFFECTIVE (overlay) bytes through the same budget pipeline.
+			return readOverlayAssetBytes(file, ref, to)
+		}
 	}
 	readError := func(err error) ([]byte, *contracts.CompilerError) {
 		d := codegen.AssetReadDiagnostic(file, ref, err)
@@ -126,6 +148,45 @@ func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contra
 	}
 	defer f.Close()
 	// LimitReader keeps growth after Stat from bypassing the byte budget.
+	data, err := io.ReadAll(io.LimitReader(f, codegen.MaxAssetBytes+1))
+	if err != nil {
+		return readError(err)
+	}
+	if len(data) > codegen.MaxAssetBytes {
+		return tooLarge(int64(len(data)))
+	}
+	return data, nil
+}
+
+// readOverlayAssetBytes reads and budget-checks the EFFECTIVE bytes that Go will embed for
+// an asset whose disk path is replaced by a Go -overlay entry. It mirrors readAssetBytes'
+// regular-file/size/ReadAll guards; format validation still happens in ValidateAssetBytes.
+func readOverlayAssetBytes(file string, ref codegen.AssetRef, targetAbs string) ([]byte, *contracts.CompilerError) {
+	readError := func(err error) ([]byte, *contracts.CompilerError) {
+		d := codegen.AssetReadDiagnostic(file, ref,
+			fmt.Errorf("effective asset bytes (Go overlay) %q: %w", ref.Path, err))
+		return nil, &d
+	}
+	tooLarge := func(size int64) ([]byte, *contracts.CompilerError) {
+		d := contracts.NewError(file, ref.Span, codegen.CodeAssetLimit,
+			"asset %q is %d bytes; limit is %d", ref.Path, size, codegen.MaxAssetBytes)
+		return nil, &d
+	}
+	info, err := os.Stat(targetAbs)
+	if err != nil {
+		return readError(err)
+	}
+	if !info.Mode().IsRegular() {
+		return readError(fmt.Errorf("%s is not a regular file", ref.Path))
+	}
+	if info.Size() > codegen.MaxAssetBytes {
+		return tooLarge(info.Size())
+	}
+	f, err := os.Open(targetAbs)
+	if err != nil {
+		return readError(err)
+	}
+	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, codegen.MaxAssetBytes+1))
 	if err != nil {
 		return readError(err)

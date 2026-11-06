@@ -147,6 +147,9 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		// R25-A repair：把本次运行只读一次的 user overlay 交给资产指纹/门禁，
+		// 使缓存键与资产校验都基于 Go 实际嵌入的"有效字节"。
+		r.assetOverlay = userOverlay
 		if prev, dup := seen[r.target]; dup {
 			return fmt.Errorf("输出冲突：%q 与 %q 都映射到 %s", prev, in.rel, r.target)
 		}
@@ -284,6 +287,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 				ViewModelPackageName: d.r.srcPkgName,
 				SourcePath:           d.r.sourcePath,
 				GoOverlay:            goOverlay,
+				AssetOverlay:         d.r.assetOverlay,
 			}, pipelineHooks)
 		}
 		res := pipeline.RunPrepared(prep, pipelineHooks)
@@ -473,6 +477,7 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			ViewModelPackageName: r.srcPkgName,
 			SourcePath:           r.sourcePath,
 			GoOverlay:            goOverlay,
+			AssetOverlay:         r.assetOverlay,
 		}
 		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
 		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)

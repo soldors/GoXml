@@ -18,6 +18,7 @@ package cli
 //   8) 跨包 --out-dir：资产以生成包目录为根，缓存身份沿用新目录（同一源改变 out-dir 仍需正确校验）
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,24 +196,142 @@ func TestR25AssetBatchWarmMixedPreserves(t *testing.T) {
 	}
 }
 
-// 7) overlay 指向资产路径但磁盘资产损坏 -> 门禁读磁盘真相，拒绝（overlay 不能替换资产字节）。
-func TestR25OverlayCannotSubstituteAssetBytes(t *testing.T) {
-	root := r25TwoPageAssetProject(t)
-	r25Env(t)
-	ui := filepath.Join(root, "ui")
-	src := filepath.Join(ui, "a.gxml")
-	if code, _, se := runStandaloneCLI(t, src); code != ExitOK {
-		t.Fatalf("cold: %s", se)
+// ---- overlay helpers (R25-A repair F-A2) ----
+//
+// 用 encoding/json 生成 overlay JSON（避免反斜杠转义错误），并把整个 `-overlay=` flag
+// 用双引号包起来（goFlagsSplit 只认"整 token 引号"，路径含空格时必需）。
+
+func writeOverlayJSON(t *testing.T, root string, replace map[string]string) string {
+	t.Helper()
+	type ov struct {
+		Replace map[string]string
 	}
-	ovFile := filepath.Join(root, "ov.json")
-	repl := filepath.Join(ui, "assets", "b.png") // 一个合法 PNG，作为 overlay 目标
-	writeCLIFile(t, ovFile, []byte(`{"Replace":{"`+repl+`":"`+repl+`"}}`))
-	t.Setenv("GOFLAGS", "-mod=readonly -overlay="+ovFile)
-	// 把 a 的真实磁盘资产改坏：embed/门禁读磁盘 => 必须拒绝，overlay 无法"提供"好字节
-	writeCLIFileMkdir(t, filepath.Join(ui, "assets", "a.png"), []byte("not-a-png"))
-	code, stdout, _ := runStandaloneCLI(t, src)
+	b, err := json.Marshal(ov{Replace: replace})
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	p := filepath.Join(root, "overlay.json")
+	writeCLIFile(t, p, b)
+	return p
+}
+
+func goFlagsWithOverlay(t *testing.T, ovFile string) string {
+	t.Helper()
+	return "-mod=readonly \"-overlay=" + ovFile + "\""
+}
+
+// diskPNGAssetProject 造单页 home.gxml 引用 assets/a.png（磁盘为合法 PNG）。
+func diskPNGAssetProject(t *testing.T) string {
+	t.Helper()
+	root := standaloneCLIProject(t)
+	_ = os.Remove(filepath.Join(root, "home.gxml"))
+	writeCLIFileMkdir(t, filepath.Join(root, "ui", "doc.go"), []byte("package ui\n"))
+	writeCLIFileMkdir(t, filepath.Join(root, "ui", "home.gxml"),
+		[]byte(`<Goxml Version="1"><Page Route="/"><Image Src="assets/a.png"/><Text Value="x"/></Page></Goxml>`))
+	writeCLIFileMkdir(t, filepath.Join(root, "ui", "assets", "a.png"), r25PNG(t, 4, 4))
+	return root
+}
+
+// 7a) 磁盘合法 PNG + overlay 把被引用的 a.png 映射到“坏字节” replacement：
+// 修复后资产门禁读取**有效（overlay）字节** → CODEGEN-ASSET-002 拒绝，rc2 且不写产物。
+// 且用真实 go build 的 Go 构造测试确认 Go 实际嵌入的是 overlay 字节（bad bytes → decode panic），
+// 正面证明"校验字节==嵌入字节"这条判别成立。
+func TestR25OverlayBadBytesRejected(t *testing.T) {
+	root := diskPNGAssetProject(t)
+	ui := filepath.Join(root, "ui")
+	src := filepath.Join(ui, "home.gxml")
+	diskAbs := filepath.Join(ui, "assets", "a.png")
+	badRepl := filepath.Join(root, "bad.bin")
+	writeCLIFile(t, badRepl, []byte("not-a-png"))
+	ov := writeOverlayJSON(t, root, map[string]string{diskAbs: badRepl})
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", goFlagsWithOverlay(t, ov))
+
+	code, stdout, stderr := runStandaloneCLI(t, src, "--check")
 	if code == ExitOK {
-		t.Fatalf("overlay must NOT substitute asset bytes; broken disk asset must reject: %s", stdout)
+		t.Fatalf("bad overlay effective bytes must be rejected (rc0 now), stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "CODEGEN-ASSET-002") {
+		t.Fatalf("must fail with CODEGEN-ASSET-002 (effective bytes invalid), stderr=%s", stderr)
+	}
+	// --check 不得写产物
+	if _, err := os.Stat(filepath.Join(ui, "home_gen.go")); !os.IsNotExist(err) {
+		t.Fatalf("rejected --check must not write artifact")
+	}
+	// 真实 Go 嵌入有效性对照：生成“不受门禁保护”的同一 //go:embed 夹具，go build 后构造即 panic。
+	// 这一步证明 Go 的确把 overlay 坏字节嵌入，故门禁必须按有效字节判。
+	if panicked, msg := embedBadOverlayPanics(t, root, diskAbs, badRepl); !panicked || !strings.Contains(msg, "unknown format") {
+		t.Fatalf("Go overlay should embed bad bytes causing decode panic; panicked=%v msg=%q", panicked, msg)
+	}
+}
+
+// 7b) 正控制：overlay 把被引用 a.png 映射到另一个**合法 PNG** → 有效字节合法 → 接受（rc0）。
+// 说明修复不是"一律拒绝 overlay"，而是按有效字节判。
+func TestR25OverlayValidReplacementAccepted(t *testing.T) {
+	root := diskPNGAssetProject(t)
+	ui := filepath.Join(root, "ui")
+	src := filepath.Join(ui, "home.gxml")
+	diskAbs := filepath.Join(ui, "assets", "a.png")
+	goodRepl := filepath.Join(root, "good-replacement.png")
+	writeCLIFile(t, goodRepl, r25PNG(t, 8, 8))
+	ov := writeOverlayJSON(t, root, map[string]string{diskAbs: goodRepl})
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", goFlagsWithOverlay(t, ov))
+	code, stdout, stderr := runStandaloneCLI(t, src, "--check")
+	if code != ExitOK {
+		t.Fatalf("valid overlay replacement must be accepted, rc=%d stderr=%s", code, stderr)
+	}
+	_ = stdout
+	// 真实 Go 构造测试：embed 的是合法 PNG → 构造成功不 panic。
+	if panicked, msg := embedBadOverlayPanics(t, root, diskAbs, goodRepl); panicked {
+		t.Fatalf("valid overlay bytes should construct fine, but panicked=%q", msg)
+	}
+}
+
+// 7c) overlay 把被引用资产映射为“删除”（""）：有效字节缺失 → 拒绝（fail-closed）。
+func TestR25OverlayDeleteRejected(t *testing.T) {
+	root := diskPNGAssetProject(t)
+	ui := filepath.Join(root, "ui")
+	src := filepath.Join(ui, "home.gxml")
+	diskAbs := filepath.Join(ui, "assets", "a.png")
+	ov := writeOverlayJSON(t, root, map[string]string{diskAbs: ""})
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", goFlagsWithOverlay(t, ov))
+	code, stdout, stderr := runStandaloneCLI(t, src, "--check")
+	if code == ExitOK {
+		t.Fatalf("overlay-deleted asset must reject (effective bytes absent), stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "CODEGEN-ASSET") {
+		t.Fatalf("expected CODEGEN-ASSET diagnostic, stderr=%s", stderr)
+	}
+}
+
+// 7d) overlay 有效字节变化 → 缓存键（K12 有效字节指纹）变化 → 安全 miss（不假命中）。
+func TestR25OverlayEffectiveBytesEnterCacheKey(t *testing.T) {
+	root := diskPNGAssetProject(t)
+	ui := filepath.Join(root, "ui")
+	src := filepath.Join(ui, "home.gxml")
+	diskAbs := filepath.Join(ui, "assets", "a.png")
+	repl := filepath.Join(root, "repl.png")
+	writeCLIFile(t, repl, r25PNG(t, 4, 4))
+	ov := writeOverlayJSON(t, root, map[string]string{diskAbs: repl})
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", goFlagsWithOverlay(t, ov))
+
+	// 直接对指纹函数断言：有效（overlay）字节进键。overlay 目标内容变化必须改变指纹。
+	srcBytes := readCLIFile(t, src)
+	overlay := map[string]string{filepath.Clean(diskAbs): repl}
+	fp1, ok1 := assetsFingerprint("home.gxml", srcBytes, ui, overlay)
+	if !ok1 || fp1 == "" {
+		t.Fatalf("fingerprint with overlay must be present: ok=%v", ok1)
+	}
+	writeCLIFile(t, repl, r25PNG(t, 9, 9)) // 有效字节变
+	fp2, ok2 := assetsFingerprint("home.gxml", srcBytes, ui, overlay)
+	if !ok2 {
+		t.Fatal("fingerprint second read failed")
+	}
+	if fp1 == fp2 {
+		t.Fatalf("effective overlay bytes MUST enter the cache fingerprint; got equal fp (fix missing): %q", fp1)
 	}
 }
 

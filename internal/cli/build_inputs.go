@@ -181,7 +181,7 @@ func assetRefsFromSource(file string, src []byte) []string {
 
 // assetsFingerprint 计算静态资产引用文件内容的稳定指纹（K12 分量）。
 // 返回空串表示页面无静态资产（无需额外分量）。
-func assetsFingerprint(file string, src []byte, targetDir string) (string, bool) {
+func assetsFingerprint(file string, src []byte, targetDir string, overlay map[string]string) (string, bool) {
 	srcs := assetRefsFromSource(file, src)
 	if len(srcs) == 0 {
 		return "", true
@@ -193,7 +193,7 @@ func assetsFingerprint(file string, src []byte, targetDir string) (string, bool)
 		if err != nil {
 			return "", false
 		}
-		data, ok := pipeline.ReadAssetForFingerprint(targetDir, norm)
+		data, ok := pipeline.ReadAssetForFingerprint(targetDir, norm, overlay)
 		if !ok {
 			return "", false
 		}

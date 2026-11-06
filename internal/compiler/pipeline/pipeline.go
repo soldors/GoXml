@@ -50,6 +50,13 @@ type Config struct {
 	// GoOverlay is a read-only Go loading snapshot supplied by the orchestrator.
 	// It changes neither source files nor the verified-document gate.
 	GoOverlay map[string][]byte
+	// AssetOverlay maps an asset's ABSOLUTE on-disk path to the ABSOLUTE replacement
+	// path Go's -overlay will actually embed ("" means the asset is deleted by overlay).
+	//
+	// R25-A repair: real Go -overlay replaces //go:embed bytes too. To keep the asset
+	// gate honest, the gate must validate the EFFECTIVE bytes Go will embed, not only the
+	// disk bytes. Empty/nil means no overlay (validate disk bytes, unchanged behavior).
+	AssetOverlay map[string]string
 }
 
 // Artifact 是内存中的完整生成结果。
