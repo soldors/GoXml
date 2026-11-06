@@ -61,7 +61,7 @@ func validateAssetRefs(refs []codegen.AssetRef, cfg Config, file string) []contr
 
 	out := make([]contracts.CompilerError, 0, len(refs))
 	for _, ref := range refs {
-		data, diag := readAssetBytes(rootAbs, file, ref)
+		data, diag := readAssetBytes(rootAbs, cfg.AssetOverlay, cfg.AssetOutputPaths, file, ref)
 		if diag != nil {
 			out = append(out, *diag)
 			continue
@@ -75,7 +75,7 @@ func validateAssetRefs(refs []codegen.AssetRef, cfg Config, file string) []contr
 
 // ReadAssetForFingerprint reads an asset through the same path and byte-budget
 // checks as the generation gate. Format validation remains in validateAssets.
-func ReadAssetForFingerprint(root, rel string) ([]byte, bool) {
+func ReadAssetForFingerprint(root, rel string, overlay map[string]string) ([]byte, bool) {
 	norm, err := codegen.NormalizeAssetSrc(rel)
 	if err != nil || root == "" {
 		return nil, false
@@ -84,11 +84,11 @@ func ReadAssetForFingerprint(root, rel string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	data, diag := readAssetBytes(rootAbs, "", codegen.AssetRef{Path: norm})
+	data, diag := readAssetBytes(rootAbs, overlay, nil, "", codegen.AssetRef{Path: norm})
 	return data, diag == nil
 }
 
-func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contracts.CompilerError) {
+func readAssetBytes(rootAbs string, overlay map[string]string, outputPaths map[string]bool, file string, ref codegen.AssetRef) ([]byte, *contracts.CompilerError) {
 	full, err := assetPathInPackage(rootAbs, ref.Path)
 	if err == nil {
 		err = assetBoundaryProblem(rootAbs, ref.Path)
@@ -99,6 +99,42 @@ func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contra
 	if err != nil {
 		d := codegen.AssetPathDiagnostic(file, ref, err)
 		return nil, &d
+	}
+	// R25-A repair-r2 (F-A5): the FINAL effective build overlay gives this batch's generated
+	// outputs and owned artifacts PRECEDENCE over the user overlay at the same path (see
+	// precommit merge). So if the referenced Src resolves to a generated/owned output path,
+	// the bytes Go embeds are generated Go source, which can never be a valid image. Fail-closed
+	// BEFORE writing, instead of validating a user overlay that the build will override.
+	fullAbsPre, aerrPre := filepath.Abs(full)
+	if aerrPre == nil {
+		if outputPaths != nil && outputPaths[filepath.Clean(fullAbsPre)] {
+			d := codegen.AssetReadDiagnostic(file, ref,
+				fmt.Errorf("asset %q resolves to a generated/owned Go output of this batch; effective embedded bytes are not an image", ref.Path))
+			return nil, &d
+		}
+	}
+	// R25-A repair: if Go's -overlay will change this asset's on-disk file (exact file OR an
+	// ancestor directory delete/replace), the bytes Go actually embeds are the overlay
+	// target's bytes or none. Validate THOSE so "validated bytes" and "embedded bytes" cannot
+	// diverge. The disk path already passed Src path/boundary/spelling checks above.
+	if len(overlay) > 0 {
+		fullAbs, aerr := filepath.Abs(full)
+		if aerr != nil {
+			d := codegen.AssetReadDiagnostic(file, ref, aerr)
+			return nil, &d
+		}
+		switch kind, target := resolveEffectiveAsset(filepath.Clean(fullAbs), overlay); kind {
+		case effDeleted:
+			d := codegen.AssetReadDiagnostic(file, ref,
+				fmt.Errorf("asset %q is deleted by the Go overlay (exact or ancestor); effective embedded bytes are absent", ref.Path))
+			return nil, &d
+		case effUnprovable:
+			d := codegen.AssetReadDiagnostic(file, ref,
+				fmt.Errorf("asset %q is under an overlay-replaced ancestor directory; effective embedded bytes cannot be equivalently resolved (fail-closed)", ref.Path))
+			return nil, &d
+		case effFile:
+			return readOverlayAssetBytes(file, ref, target)
+		}
 	}
 	readError := func(err error) ([]byte, *contracts.CompilerError) {
 		d := codegen.AssetReadDiagnostic(file, ref, err)
@@ -134,6 +170,90 @@ func readAssetBytes(rootAbs, file string, ref codegen.AssetRef) ([]byte, *contra
 		return tooLarge(int64(len(data)))
 	}
 	return data, nil
+}
+
+// readOverlayAssetBytes reads and budget-checks the EFFECTIVE bytes that Go will embed for
+// an asset whose disk path is replaced by a Go -overlay entry. It mirrors readAssetBytes'
+// regular-file/size/ReadAll guards; format validation still happens in ValidateAssetBytes.
+func readOverlayAssetBytes(file string, ref codegen.AssetRef, targetAbs string) ([]byte, *contracts.CompilerError) {
+	readError := func(err error) ([]byte, *contracts.CompilerError) {
+		d := codegen.AssetReadDiagnostic(file, ref,
+			fmt.Errorf("effective asset bytes (Go overlay) %q: %w", ref.Path, err))
+		return nil, &d
+	}
+	tooLarge := func(size int64) ([]byte, *contracts.CompilerError) {
+		d := contracts.NewError(file, ref.Span, codegen.CodeAssetLimit,
+			"asset %q is %d bytes; limit is %d", ref.Path, size, codegen.MaxAssetBytes)
+		return nil, &d
+	}
+	info, err := os.Stat(targetAbs)
+	if err != nil {
+		return readError(err)
+	}
+	if !info.Mode().IsRegular() {
+		return readError(fmt.Errorf("%s is not a regular file", ref.Path))
+	}
+	if info.Size() > codegen.MaxAssetBytes {
+		return tooLarge(info.Size())
+	}
+	f, err := os.Open(targetAbs)
+	if err != nil {
+		return readError(err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, codegen.MaxAssetBytes+1))
+	if err != nil {
+		return readError(err)
+	}
+	if len(data) > codegen.MaxAssetBytes {
+		return tooLarge(int64(len(data)))
+	}
+	return data, nil
+}
+
+// effectiveAssetKind 表示一个资产路径在 Go -overlay 下的“有效来源”类别。
+type effectiveAssetKind int
+
+const (
+	effNotOverlaid effectiveAssetKind = iota // 未受影响：读磁盘
+	effFile                                  // overlay 精确替换为某个文件：校验该文件字节
+	effDeleted                               // overlay 精确删除，或祖先目录被删：有效字节缺失
+	effUnprovable                            // 祖先目录被替换为非空目标：无法等价解析后代字节
+)
+
+// resolveEffectiveAsset 依据 Go 1.26 overlay 语义解析资产绝对路径 fullAbs 的有效来源：
+//   - 精确文件键 ""：删除；非空：替换文件；
+//   - 祖先目录键：Go 的 fsys.stat 对祖先“替换为删除”表现为其后代不存在（删）；
+//     祖先“替换为非空目标目录”无法等价解析后代文件（保守 fail-closed，不猜字节）；
+//   - 取**最长前缀祖先**（最具体者优先），与 Go 路径逐级 stat 一致。
+func resolveEffectiveAsset(fullAbs string, overlay map[string]string) (effectiveAssetKind, string) {
+	if to, ok := overlay[fullAbs]; ok {
+		if to == "" {
+			return effDeleted, ""
+		}
+		return effFile, to
+	}
+	// 逐级祖先（从最近的父目录往上），找最长匹配前缀。
+	sep := string(filepath.Separator)
+	// 规范化分隔符：fullAbs 用 OS 分隔符；overlay 键已 filepath.Clean。
+	cur := fullAbs
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur || parent == "." || parent == "" {
+			break
+		}
+		if to, ok := overlay[parent]; ok {
+			if to == "" {
+				// 祖先目录被删除 -> 后代在 Go 有效文件系统中不存在。
+				return effDeleted, ""
+			}
+			// 祖先目录被替换到另一个位置：无法等价定位后代字节，保守拒绝。
+			return effUnprovable, ""
+		}
+		cur = parent
+	}
+	_ = sep
+	return effNotOverlaid, ""
 }
 
 // assetPathInPackage 把归一化相对路径拼到包目录，并复核未逃逸。

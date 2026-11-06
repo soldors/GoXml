@@ -91,6 +91,10 @@ type resolvedInput struct {
 	cacheContextReady bool   // 是否已在本批测量并填入 cacheContext
 	cacheBuildInputs  string // GOFLAGS 引用的文件指纹，由同一次有效上下文测量得出
 	dependencyUnsafe  bool   // 依赖/上下文不可测 -> 强制 miss
+
+	// assetOverlay（R25-A repair）：用户 Go -overlay 的 abs(from)->abs(to) 映射（""=删除），
+	// 供资产内容指纹与资产门禁校验"有效字节"（Go 实际嵌入的字节），使校验字节与嵌入字节一致。
+	assetOverlay map[string]string
 }
 
 // resolveInput 解析一个输入，不触碰磁盘写入。
@@ -258,7 +262,7 @@ func cacheKeyFor(r *resolvedInput, exclude map[string]bool) (string, error) {
 	// K12（R16-A）：<Image Src> 静态资产文件内容也进键——避免"资产被删/改坏/改错大小写"
 	// 时缓存假命中、跳过资产门禁。资产内容/存在性变化 ⇒ 键变化 ⇒ 安全 miss ⇒ 门禁重跑。
 	// 资产路径无法安全读取时禁止命中，交由阶段一报告具体诊断。
-	if af, ok := assetsFingerprint(r.sourcePath, r.source, r.targetDir); ok {
+	if af, ok := assetsFingerprint(r.sourcePath, r.source, r.targetDir, r.assetOverlay); ok {
 		buildInputs += af
 	} else {
 		r.dependencyUnsafe = true

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **2026-11-06 R25-A（Image / Go overlay）**：资产门禁与缓存指纹使用 Go
+  overlay 的有效字节；损坏替换、删除资产或其父目录在写盘前拒绝并保留旧产物。
+  Src 与本批生成输出冲突时明确拒绝；历史 Manifest 输出须有保护头与 Source
+  证明，普通用户图片不会因单独登记而被当成工具产物。Windows 离屏与真实 CLI
+  回归通过；可信构建目录边界不扩大，Expanded 候选不在本次接纳范围。
+
 > 下面按轮次倒序追加 **2026-11-05 R23 / R23-R1 事实对齐**。更下方的 2026-10-19 等历史条目按
 > 各自日期理解，例如「FONT-001-A..D 未实现」「CLI 与 router 待开发」不改写，也不当作现行状态。
 

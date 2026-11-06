@@ -30,17 +30,17 @@ func TestImageFingerprintUsesAssetBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, ok := ReadAssetForFingerprint(root, "logo.png"); !ok || !bytes.Equal(got, valid) {
+	if got, ok := ReadAssetForFingerprint(root, "logo.png", nil); !ok || !bytes.Equal(got, valid) {
 		t.Fatalf("合法资产的缓存指纹应读取原始字节，ok=%v", ok)
 	}
 	for _, path := range []string{"LOGO.png", "missing.png", "large.png", "directory.png", "../logo.png"} {
 		t.Run(path, func(t *testing.T) {
-			if data, ok := ReadAssetForFingerprint(root, path); ok || data != nil {
+			if data, ok := ReadAssetForFingerprint(root, path, nil); ok || data != nil {
 				t.Fatalf("无效路径不得提供缓存指纹，ok=%v bytes=%d", ok, len(data))
 			}
 		})
 	}
-	if data, ok := ReadAssetForFingerprint("", "logo.png"); ok || data != nil {
+	if data, ok := ReadAssetForFingerprint("", "logo.png", nil); ok || data != nil {
 		t.Fatalf("缺少目标目录时不得提供缓存指纹，ok=%v bytes=%d", ok, len(data))
 	}
 }

@@ -147,12 +147,42 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		// R25-A repair：把本次运行只读一次的 user overlay 交给资产指纹/门禁，
+		// 使缓存键与资产校验都基于 Go 实际嵌入的"有效字节"。
+		r.assetOverlay = userOverlay
 		if prev, dup := seen[r.target]; dup {
 			return fmt.Errorf("输出冲突：%q 与 %q 都映射到 %s", prev, in.rel, r.target)
 		}
 		seen[r.target] = in.rel
 		resolved = append(resolved, r)
 		targets = append(targets, r.target)
+	}
+	// R25-A repair-r2 (F-A5)：本批生成产物 + Manifest 已登记(owned)产物，作为“构建优先级高于
+	// 用户 overlay 的输出路径集合”交给资产门禁。Src 若解析到其中，有效字节是生成 Go 源而非图片，
+	// 门禁在写盘前 fail-closed（与 precommit 候选优先于用户 overlay 一致）。
+	assetOutputPaths := make(map[string]bool, len(resolved)+len(nameMan.Entries))
+	for _, r := range resolved {
+		if a, aerr := filepath.Abs(r.target); aerr == nil {
+			assetOutputPaths[filepath.Clean(a)] = true
+		}
+	}
+	for _, e := range nameMan.Entries {
+		if e.Output == "" {
+			continue
+		}
+		full := filepath.Join(moduleRoot, filepath.FromSlash(e.Output))
+		data, exists, readErr := readOutput(full)
+		if readErr != nil {
+			return readErr
+		}
+		// Manifest is only a claim. Match the same header + Source proof used
+		// by targetNameOverlay before assigning tool priority over user bytes.
+		if !exists || !codegen.HasProtectedHeader(data) || !headerSourceMatches(data, filepath.Base(filepath.FromSlash(e.Source))) {
+			continue
+		}
+		if a, aerr := filepath.Abs(full); aerr == nil {
+			assetOutputPaths[filepath.Clean(a)] = true
+		}
 	}
 
 	// ---------- 阶段零 B：缓存判定（读 Manifest、算键、建 K3 排除集）----------
@@ -248,7 +278,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			goOverlay[pth] = data
 		}
 	}
-	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay); err != nil {
+	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay, assetOutputPaths); err != nil {
 		return err
 	}
 
@@ -284,6 +314,8 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 				ViewModelPackageName: d.r.srcPkgName,
 				SourcePath:           d.r.sourcePath,
 				GoOverlay:            goOverlay,
+				AssetOverlay:         d.r.assetOverlay,
+				AssetOutputPaths:     assetOutputPaths,
 			}, pipelineHooks)
 		}
 		res := pipeline.RunPrepared(prep, pipelineHooks)
@@ -458,7 +490,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 // 错误，预检不该抢在前面声称自己"确定"槽位数，更不能把语法错误伪装成命名冲突。
 //
 // 有诊断即返回 error：调用方（runPipeline）在阶段一之前调用，故磁盘零变更。
-func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer, goOverlay map[string][]byte) error {
+func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer, goOverlay map[string][]byte, assetOutputPaths map[string]bool) error {
 	if len(rs) == 0 {
 		return nil
 	}
@@ -473,6 +505,8 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			ViewModelPackageName: r.srcPkgName,
 			SourcePath:           r.sourcePath,
 			GoOverlay:            goOverlay,
+			AssetOverlay:         r.assetOverlay,
+			AssetOutputPaths:     assetOutputPaths,
 		}
 		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
 		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)
