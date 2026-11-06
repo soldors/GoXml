@@ -1,5 +1,7 @@
 # 提交并同步到 GitHub
 
+> **2026-11-06 全库同步说明**：本页保留早期提交/推送工具说明；隔离 agent 分支按已签发任务冻结，由协调者审查后合入发布，不能把“每次本地提交后立即推送 origin/master”解释成所有隔离分支自动获准发布。远端状态用 `git ls-remote origin refs/heads/master` 实测，origin/master 只是本地跟踪引用。
+
 本仓库的固定工作流：**每次本地提交后立即推送到 origin/master**。
 
 ---
@@ -60,3 +62,10 @@ git push
 # 查看远端实际状态
 git log origin/master --oneline -3
 ```
+
+## 已发布的工程与验收入口
+
+- [verify-projects.py](verify-projects.py)：四个 testprojects 共用复制、批次生成、构建、离屏测试入口。
+- [verify-gallery-accept.py](verify-gallery-accept.py)：图库缓存/有效资产/变异的真实链路验收。
+- [字体正式验收工具](font/README.md)：准备与正式执行区分；真实采样仍需独立授权。
+- [证据记录协议](../docs/05-开发/2026-11-02-R8-证据工具使用说明.md)：原始双通道、真实退出码、公共锁及工具/业务判定分离。

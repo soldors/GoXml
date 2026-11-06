@@ -113,6 +113,11 @@ v1 内置布局标签：
 `<Spacer/>` 等价于「空的弹性项」；`<Expanded>` 等价于「带一个子节点的弹性项」。
 需要「空白占位」用 `<Spacer/>`，需要「把某个内容撑开」用 `<Expanded>`。
 
+**R25 已批准的实现范围**：用于 Row/Column/Page 流式布局，必须且只能包含一个
+渲染子节点；缺省等权 1，自身显式 Width/Height 优先，子节点自身尺寸仍在 cell 内消费。
+Grid 内、显式权重、自身 Background/Padding 及其它未经准入的装饰/事件属性继续拒绝，
+不静默忽略。完整输出形态与无界阈值见 [输出契约 §4.9](代码生成输出契约.md)。
+
 > `Gap` 在 v1 早期草案中曾命名为 `Spacing`，为避免与 Gio 的空间分配语义混淆而更名，见 ADR-0008 §4。
 
 #### 3.1.2 对齐与分布
@@ -1085,5 +1090,11 @@ file.gxml:12:18: GXML-BIND-001: unknown binding path "User.Nmae"
 | v1（冻结） | 2026-10-18 | 初版语义冻结 | ADR-0001 ~ ADR-0005 |
 | v1.1 | 2026-10-18 | 新增 `Align`/`Justify`/`Gap`/`Width`/`Height`/`Columns` 与 `<Grid>` 标签；`Spacing` 更名 `Gap`；`<Row>` 默认 `Align=Center` | ADR-0008 |
 | v1.1 | 2026-10-18 | `<For>` 新增可选 `Virtualize`/`ItemExtent` | ADR-0006 |
+| v1.2 | 2026-10-31 | 定义 `<Image Src>` 的静态资产语义：包内相对路径、`//go:embed`、PNG/JPEG、体积/像素预算、运行时解码一次 | ADR-0015 |
+| v1.3 | 2026-10-31 | `<Image>` 新增可选静态 `Fit`：`Contain`/`Cover`/`Unscaled`，默认 `Contain` | ADR-0015 |
+
+表中 v1.2/v1.3 是 Image 条目的历史文档修订号，不是 `Goxml Version` 的新取值；
+当前语言标识与生成保护头仍为 `1`。Image 以已批准 ADR-0015 为准；
+R25 Expanded 基础范围已批准，Grid/权重/自身装饰扩展未批准。
 
 v1 的实现、测试和生成代码必须以本文件为唯一 GXML 语义依据。

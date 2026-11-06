@@ -68,3 +68,21 @@
 同模式同来源多次记录可合并至新的 `samples.jsonl` 后统计，ID 必须保持唯一、不得覆盖原始记录；
 sync／lazy 及旧 M1 跨组数据默认拒绝合并，`-AllowMixed` 仅分组输出，不会混算分布。
 解析与统计回归：`./scripts/font/test-comparison.ps1`（合成 fixture，不弹窗，原始日志保留到打印的临时目录）。
+
+## 正式验收编排入口（R24 已发布）
+
+随仓 [run-font-acceptance.ps1](run-font-acceptance.ps1) 复用既有 collector/summarizer，
+冻结偶数、平衡、严格交替的 sync/lazy 计划；每样本独立进程、`-Runs 1`、独占目录、
+一层公共锁。绑定完整 ExpectedHead、记录 load/baseSHA、原 ID/path/SHA；源记录不改，
+派生 ID 唯一，真实 summary 的 accepted/rejected/valid/invalid 必须守恒。
+
+```powershell
+# 只准备计划：预期 rc=2，不采样、不打开窗口，不算验收通过。
+./scripts/font/run-font-acceptance.ps1 -RepoDir C:/audit/Goxml -ExpectedHead <full-sha> -OutDir C:/evidence/new-font-plan -Order 'sync,lazy,sync,lazy' -LockFile D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock
+```
+
+`-Execute` 才会真正委派采集器；必须已有单独采样/开窗授权。本示例不授予执行权限，
+不设 M1/sync-vs-lazy 达标阈值，不把工具可运行当整体字体正式验收通过。
+无窗口合成自检为 `test-font-acceptance-plan.ps1`（真实 summarizer + 合成 collector），
+旧 `test-comparison.ps1` 继续覆盖汇总协议。方案见
+[正式验收执行方案](../../docs/03-架构/字体正式验收执行方案-R23R1B.md)。

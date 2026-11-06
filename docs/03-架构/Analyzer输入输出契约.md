@@ -156,7 +156,15 @@ Ident     := Go 标识符
 | 包缓存 | `TypeEnv.loaded` 按导入路径缓存，同一 `TypeEnv` 内不重复加载 |
 | 加载成功判据 | **检查 `pkg.Errors`**，不看 `err`，也不看 `Types != nil`（见下） |
 
-编排层可为已确认属于本批工具输出、且旧 package 子句与当前构建上下文不符的文件提供只读 Go overlay。`TypeEnv` 构造时复制 map 与字节内容，只允许模块内绝对路径；传给同一 `packages.Load`，不删除或改写磁盘文件，也不忽略任何加载错误。CLI 必须先核验 Manifest、保护头及 Source 一致性；该内部输入不是用户可覆盖任意源码的 CLI 选项。失败仍不得发放 VerifiedDoc 或写产物。
+编排层提供 compiler-owned 只读内存 overlay；`TypeEnv` 构造时复制 map 和字节，
+限定模块内绝对路径，传给同一 `packages.Load`，不改磁盘、不忽略加载错误。
+CLI 层已将有效 GOFLAGS/GOENV 的用户 `-overlay` 按 Go 实际选源接入：对 distinct VM
+导入路径查询依赖闭包，只读实际选中的替换 Go 源；未用/非 Go/平台排除映射不预读。
+已加载目录中磁盘 Go 源的删除用 ignore 占位表达，虚拟新增源按 Go 选中结果进入快照。
+这不把 Analyzer 变成任意文件系统 overlay API，正式输入仍由编排层构造。
+
+工具自有旧产物只有通过 Manifest+保护头+Source 证明后才可隐藏，同路径工具候选优先。
+空键/路径归一化重复 fail-closed；类型/方法检查按有效源，失败仍不得发放 VerifiedDoc 或写盘。
 
 #### go/packages 的实际行为（实测，x/tools v0.52.0）
 

@@ -1,5 +1,7 @@
 # TASK-CODEGEN-STATIC-CACHE-001：静态子树固化（`op.Record` / `op.CallOp`）
 
+> **2026-11-06 全库同步说明**：纯静态/局部静态缓存、Padding/Gap/If/For/Grid/Input/Image/Expanded 现均有后续实现。下文 A1–A6 数字和旧未实现项按日期保留；R13 混合页/R25 双实例缓存只证明各自限定范围，整项目性能未签收。
+
 ## 元信息
 
 - 状态：**Done**（A1–A6 全部完成）| 优先级：P0 | 预计：4h | 实际：约 7h

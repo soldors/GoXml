@@ -1,5 +1,7 @@
 # `<For>` 输出契约
 
+> **2026-11-06 实现与成本口径**：For/行 Key 事件已实现，草案未决项不自动冻结。循环布局切片、文本布局、Gio Router.Frame 成本应分别报告；不能把 INV-PERF-4 的绑定文本显示缓存条款用作所有 For 整页零分配保证。虚拟化目标和未列组合不因普通行事件通过而达标。
+
 - 状态：**草案（待冻结）**
 - 日期：2026-10-19
 - 范围：**Codegen 侧的列表生成**；Parser/Expander/Analyzer 的既有校验不重复定义
@@ -17,7 +19,7 @@
 | Parser | `For` 结构、`Each`/`In` 必填、**SCOPE-003**（含状态控件但缺 Key）、SCOPE-002 | ✅ 已实现 |
 | Expander | 属性分类 | ✅ |
 | Analyzer | 可迭代性（**SCOPE-004**）、`ForVar` 作用域与类型、`Key` 路径解析（`ResolvedFor.Key`） | ✅ |
-| **Codegen** | **列表渲染、行状态池、循环内事件、键生命周期** | ❌ **本契约** |
+| **Codegen** | **列表渲染、行状态池、循环内事件、键生命周期** | 已实现；任务板/混合页/Expanded 有真实行事件判据；草案未冻结条款不因实现而自动获批 |
 
 ### 0.2 已核实的关键事实
 
@@ -30,7 +32,7 @@
    （本契约起草前完成的前置修复。）
 3. **`ResolvedFor` 已含 Key**：`Key *ResolvedPath`（可为 nil）。
 4. **`pathExpr` 已支持 `RootForVar`**：绑定取值可生成 `item.Name`
-   （`codegen/binding.go`）；但**事件实参**目前显式拒绝 ForVar，本契约要求解除。
+   （`codegen/binding.go`）；事件实参也已支持 ForVar，当前行按稳定 Key 归属。
 
 ### 0.3 规范留下的真空（本契约必须填补）
 
@@ -227,7 +229,7 @@ for i, item := range items { ... }   // 有 Index="i" 且循环体**引用**了 
 > `gen.go:46:8: declared and not used: i`。该测试保留为回归防线。
 
 若 `Each`/`Index` 与生成代码的其它标识符冲突（`v`、`th`、`gtx`、`items`、
-`children`、`rec`、`k`、`ops`），Codegen **必须**报错——不得静默覆盖。
+`children`、`rec`、`k`、`ops` 以及循环体实际调用的 `append`），Codegen **必须**报错——不得静默覆盖。
 MVP 采用**显式报错**。
 
 ### 6.2 绑定取值
@@ -241,9 +243,7 @@ MVP 采用**显式报错**。
 
 ### 6.3 事件实参含 ForVar
 
-`事件处理输出契约` §5.4.3 当前对 `RootForVar` 实参显式报错。
-本契约要求**解除**：`Select(item.ID)` 生成 `v.vm.Select(item.ID)`，
-因为 `item` 在轮询闭包作用域内可见。
+`RootForVar` 实参已接通：`Select(item.ID)` 按当前行生成处理器调用；轮询/回收作用域与用户 Each/Index 作用域分开，重排/删除后仍以当前 Key 对应行归属。
 
 ---
 
@@ -293,7 +293,7 @@ MVP 采用**显式报错**。
 
 | # | 项 | 归属 |
 |---|---|---|
-| 1 | `<For>` 与父容器 `Columns`/`Grid` 的组合语义 | 待 Grid 实现后 |
-| 2 | 行内 `<Input>` 的受控语义 | 待 Input 事件 |
+| 1 | `<For>` 与 Grid 的组合扩展 | Grid 本身已实现，不因此批准此组合 |
+| 2 | 行内 `<Input>` 的受控语义 | Input 本身已实现；行内 Editor 生命周期未批准，SCOPE-005 继续拒绝 |
 | 3 | 列表指纹缓存（恢复零分配） | 性能专项 |
 | 4 | 嵌套 For 的作用域栈 | 后续 |

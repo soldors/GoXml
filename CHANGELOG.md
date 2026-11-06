@@ -1,5 +1,7 @@
 # Changelog
 
+- 全库文档同步：规范/手册/测试计划对齐已发布范围，归并原 9 项文档输入；历史证据与未批准 ThemeRef 明确分层，未扩大功能/安全/正式验收承诺。
+
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
