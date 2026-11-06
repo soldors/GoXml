@@ -831,11 +831,30 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		if len(n.Children) != 1 {
 			return "", fmt.Errorf("codegen: <Expanded> 恰好一个子节点，实际 %d", len(n.Children))
 		}
+		// R25-R2 S1 属性盘点（F-B4）：Expanded 自身已准入属性中，除
+		// Width/Height（尺寸职责，已支持）外，其余语义均未定义——按候选
+		// 边界**逐项显式拒绝**，不静默忽略（F-B4 Background、F-B2 Padding、
+		// 容器属性 Gap/Align/Justify、事件）。语义批准待负责人。
 		if !n.Padding.IsZero() {
-			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Padding（装饰语义未定义，R25-R1 F-B2 显式拒绝）")
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Padding（装饰/间距语义未定义，显式拒绝）")
+		}
+		if n.Background != nil {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Background（装饰语义未定义，显式拒绝；R25-R2 F-B4）")
+		}
+		if n.HasGap {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Gap（弹性项无子间距语义，显式拒绝）")
+		}
+		if n.Align != contracts.AlignUnset {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Align（交叉轴对齐语义未定义，显式拒绝）")
+		}
+		if n.Justify != contracts.JustifyUnset {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Justify（主轴分布语义未定义，显式拒绝）")
+		}
+		if len(n.Events) > 0 {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身事件（事件属于子节点，显式拒绝）")
 		}
 		if g.inGridCell {
-			return "", fmt.Errorf("codegen: <Expanded> 不支持 Grid 单元格内使用（准入语义未定义，R25-R1 F-B2 显式拒绝）")
+			return "", fmt.Errorf("codegen: <Expanded> 不支持 Grid 单元格内使用（准入语义未定义，显式拒绝）")
 		}
 		child := n.Children[0]
 		inner, err := g.nodeExpr(child)
