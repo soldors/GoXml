@@ -57,6 +57,11 @@ type Config struct {
 	// gate honest, the gate must validate the EFFECTIVE bytes Go will embed, not only the
 	// disk bytes. Empty/nil means no overlay (validate disk bytes, unchanged behavior).
 	AssetOverlay map[string]string
+	// AssetOutputPaths are ABSOLUTE paths that are this batch's generated outputs or owned
+	// artifacts. The build gives them precedence over the user overlay (precommit merge), so if
+	// an <Image Src> resolves to one of these, the effective embedded bytes are generated Go
+	// source (never a valid image) and the asset gate must fail closed. nil ⇒ none.
+	AssetOutputPaths map[string]bool
 }
 
 // Artifact 是内存中的完整生成结果。

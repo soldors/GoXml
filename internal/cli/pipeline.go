@@ -157,6 +157,23 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 		resolved = append(resolved, r)
 		targets = append(targets, r.target)
 	}
+	// R25-A repair-r2 (F-A5)：本批生成产物 + Manifest 已登记(owned)产物，作为“构建优先级高于
+	// 用户 overlay 的输出路径集合”交给资产门禁。Src 若解析到其中，有效字节是生成 Go 源而非图片，
+	// 门禁在写盘前 fail-closed（与 precommit 候选优先于用户 overlay 一致）。
+	assetOutputPaths := make(map[string]bool, len(resolved)+len(nameMan.Entries))
+	for _, r := range resolved {
+		if a, aerr := filepath.Abs(r.target); aerr == nil {
+			assetOutputPaths[filepath.Clean(a)] = true
+		}
+	}
+	for _, e := range nameMan.Entries {
+		if e.Output == "" {
+			continue
+		}
+		if a, aerr := filepath.Abs(filepath.Join(moduleRoot, filepath.FromSlash(e.Output))); aerr == nil {
+			assetOutputPaths[filepath.Clean(a)] = true
+		}
+	}
 
 	// ---------- 阶段零 B：缓存判定（读 Manifest、算键、建 K3 排除集）----------
 	man := nameMan // S1 定名阶段已只读加载，复用避免重复 IO。
@@ -251,7 +268,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 			goOverlay[pth] = data
 		}
 	}
-	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay); err != nil {
+	if err := precheckPackageSymbols(missResolved, moduleRoot, preparedFE, stderr, goOverlay, assetOutputPaths); err != nil {
 		return err
 	}
 
@@ -288,6 +305,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 				SourcePath:           d.r.sourcePath,
 				GoOverlay:            goOverlay,
 				AssetOverlay:         d.r.assetOverlay,
+				AssetOutputPaths:     assetOutputPaths,
 			}, pipelineHooks)
 		}
 		res := pipeline.RunPrepared(prep, pipelineHooks)
@@ -462,7 +480,7 @@ func runPipeline(opts *generateOptions, stdout, stderr io.Writer) error {
 // 错误，预检不该抢在前面声称自己"确定"槽位数，更不能把语法错误伪装成命名冲突。
 //
 // 有诊断即返回 error：调用方（runPipeline）在阶段一之前调用，故磁盘零变更。
-func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer, goOverlay map[string][]byte) error {
+func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE map[*resolvedInput]*pipeline.Prepared, stderr io.Writer, goOverlay map[string][]byte, assetOutputPaths map[string]bool) error {
 	if len(rs) == 0 {
 		return nil
 	}
@@ -478,6 +496,7 @@ func precheckPackageSymbols(rs []*resolvedInput, moduleRoot string, preparedFE m
 			SourcePath:           r.sourcePath,
 			GoOverlay:            goOverlay,
 			AssetOverlay:         r.assetOverlay,
+			AssetOutputPaths:     assetOutputPaths,
 		}
 		// 前端只跑一次：结果同时供预检（槽位数）与阶段一（生成）使用。
 		prep := pipeline.Prepare(r.sourcePath, r.source, cfg, pipelineHooks)
