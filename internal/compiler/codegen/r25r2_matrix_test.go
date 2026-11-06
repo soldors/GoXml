@@ -197,9 +197,13 @@ func TestProbeR25R2PerFrameConstraintChange(t *testing.T) {
 		Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1},
 		Source: r.Source(),
 	}
+	// R25-R3：当前约束宽度显式记录，click 后保持**当前阶段宽度**——
+	// 第二阶段持续 500 宽（不再每帧切回 300），逐阶段断言约束/结果。
+	curW := 0
 	layoutAt := func(w, h int) {
 		gtx.Reset()
 		gtx.Constraints = layout.Exact(image.Pt(w, h))
+		curW = w
 		v.Layout(gtx, th)
 		r.Frame(gtx.Ops)
 	}
@@ -208,17 +212,26 @@ func TestProbeR25R2PerFrameConstraintChange(t *testing.T) {
 			pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary},
 			pointer.Event{Position: f32.Pt(x, y), Kind: pointer.Release, Source: pointer.Mouse},
 		)
-		layoutAt(300, 60)
+		layoutAt(curW, 60)
 	}
 	layoutAt(300, 60)
 	click(250, 30)
-	if obj.CountB != 1 {
-		t.Fatalf("300 宽下 x=250 应命中：B=%d", obj.CountB)
+	if obj.CountB != 1 || curW != 300 {
+		t.Fatalf("300 宽阶段: B=%d curW=%d", obj.CountB, curW)
 	}
 	layoutAt(500, 60)
 	click(450, 30)
-	if obj.CountB != 2 {
-		t.Fatalf("约束变化到 500 宽后 x=450 应命中（逐帧约束生效）：B=%d", obj.CountB)
+	if obj.CountB != 2 || curW != 500 {
+		t.Fatalf("500 宽阶段: B=%d curW=%d（第二阶段应持续 500）", obj.CountB, curW)
+	}
+	click(250, 30)
+	if obj.CountB != 3 || curW != 500 {
+		t.Fatalf("500 宽阶段再点击 x=250 仍应命中（内容跟随当前约束）：B=%d", obj.CountB)
+	}
+	layoutAt(300, 60)
+	click(450, 30)
+	if obj.CountB != 3 {
+		t.Fatalf("回到 300 宽后 x=450 应脱靶（约束回退生效）：B=%d", obj.CountB)
 	}
 	fmt.Println("SCEN-DONE r25r2-constraint-change")
 }
@@ -409,34 +422,26 @@ func TestProbeR25R2DualInstance(t *testing.T) {
 	assertProbeHealth(t, "r25r2-dual-instance", out)
 }
 
-// TestR25R2DefSlotParity Def/Slot 场景的准入登记（非 Expanded 缺口）：
-// 当前管线把 <Slot> 节点留给 Codegen，而 Codegen 无 Slot 支持——**Plain Row
-// 与 Expanded 同样被拒**（对照实验证明缺口先于 Expanded 存在，非本候选
-// 语义问题）。守卫锁定「同错误、同拒绝」的对等行为；Slot 支持属独立缺口，
-// 交协调者登记，不在 Expanded 候选内实现。
-func TestR25R2DefSlotParity(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-	}{
-		{"expanded", `<Defs><Def Name="card"><Row Height="60"><Expanded><Button Text="点我" Click="TapA"/></Expanded></Row></Def></Defs><Page Route="/"><Column><Slot/></Column></Page>`},
-		{"plain-row", `<Defs><Def Name="card"><Row Height="60"><Text Value="普通"/></Row></Def></Defs><Page Route="/"><Column><Slot/></Column></Page>`},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			src := `<Goxml Version="1" ViewModel="internal/compiler/codegen/testdata/r25vm.VM">` + tc.body + `</Goxml>`
-			p := runFrontend(t, src)
-			r := analyzer.Analyze("case.gxml", p.doc, p.schemas, p.env)
-			if r.Status != analyzer.StatusOK {
-				t.Fatalf("Analyzer: %v", r.Diags)
-			}
-			v, err := r.Verified()
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = Generate(v, bindingOpts())
-			if err == nil || !strings.Contains(err.Error(), "Slot") {
-				t.Fatalf("Slot 应以同口径拒绝（对等缺口），实际 err=%v", err)
-			}
-		})
+// TestR25R2BareSlotNegative 裸 Slot 负例（R25-R3 准确命名）：Page 中未经
+// Def 实例化的 <Slot/> 到达 Codegen 被明确拒绝。**范围仅限裸 Slot 负例**——
+// 合法的 Def 内 Expanded + Page 实例化调用由 TestR25R2RealDefSlotRuntime
+// 正例覆盖（协调者复核确认可生成/编译/真实点击，"Def/Slot 不支持"的旧
+// 结论已撤销）。
+func TestR25R2BareSlotNegative(t *testing.T) {
+	src := `<Goxml Version="1" ViewModel="internal/compiler/codegen/testdata/r25vm.VM">
+  <Page Route="/"><Column><Slot/></Column></Page>
+</Goxml>`
+	p := runFrontend(t, src)
+	r := analyzer.Analyze("case.gxml", p.doc, p.schemas, p.env)
+	if r.Status != analyzer.StatusOK {
+		t.Fatalf("Analyzer: %v", r.Diags)
+	}
+	v, err := r.Verified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Generate(v, bindingOpts())
+	if err == nil || !strings.Contains(err.Error(), "Slot") {
+		t.Fatalf("裸 Slot 应被 Codegen 明确拒绝，实际 err=%v", err)
 	}
 }
