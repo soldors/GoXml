@@ -258,6 +258,7 @@ func run() error {
 	res := pipeline.Run("demo.gxml", []byte(page), pipeline.Config{
 		ModuleRoot:  root,
 		SourceDir:   filepath.Join(root, "examples", "demo"),
+		TargetDir:   filepath.Join(root, "examples", "demo"),
 		PackageName: "main",
 		SourcePath:  "demo.gxml",
 	}, pipeline.Hooks{})
