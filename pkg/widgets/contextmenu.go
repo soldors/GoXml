@@ -131,6 +131,8 @@ func (c *ContextMenu) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 	absorbArea(gtx, &c.panel, rect)
 
 	// 5. 条目自上而下；行高固定、整行命中；点击即选中并关闭。
+	// Gio 惯用法：先消费 Clicked 再 Layout（Clickable.layout 内部的
+	// update 会消费并丢弃点击结果）。
 	rowH := c.rowHeightPx(gtx)
 	for i := range c.items {
 		item := c.items[i]
@@ -140,13 +142,6 @@ func (c *ContextMenu) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 		}
 		c.itemRects[i] = rowRect.Add(pos)
 
-		rowGtx := gtx
-		if item.Disabled {
-			// 禁用条目：事件源置零，条目不接收任何指针事件。
-			rowGtx = gtx.Disabled()
-		}
-		c.drawRow(rowGtx, th, i, item, rect.Min.Add(rowRect.Min), rowRect.Size())
-
 		if !item.Disabled {
 			for c.clicks[i].Clicked(gtx) {
 				c.actionOK = true
@@ -154,6 +149,13 @@ func (c *ContextMenu) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 				c.open = false
 			}
 		}
+
+		rowGtx := gtx
+		if item.Disabled {
+			// 禁用条目：事件源置零，条目不接收任何指针事件。
+			rowGtx = gtx.Disabled()
+		}
+		c.drawRow(rowGtx, th, i, item, rect.Min.Add(rowRect.Min), rowRect.Size())
 	}
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }

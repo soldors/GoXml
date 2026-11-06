@@ -92,8 +92,12 @@ func absorbArea(gtx layout.Context, tag *overlayTag, rect image.Rectangle) {
 // escapeLayout 请求键盘焦点并消费本帧发往 tag 的 Escape（按下或释放都算）。
 // 焦点请求与事件消费同帧完成；「打开帧之后队列 Escape、下一帧收到」的
 // 真实路径由 B2 离屏 Router 测试验证。
+//
+// key.FocusFilter 注册是必须的：keyQueue.Frame 在帧末会摘除「不可聚焦」
+// 标签的焦点，而 focusable 资格只由 FocusFilter 授予（key.Filter 不算）。
 func escapeLayout(gtx layout.Context, tag *overlayTag) (escape bool) {
 	gtx.Execute(key.FocusCmd{Tag: tag})
+	gtx.Source.Event(key.FocusFilter{Target: tag})
 	for {
 		ev, ok := gtx.Source.Event(key.Filter{Focus: tag, Name: key.NameEscape})
 		if !ok {
