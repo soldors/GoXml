@@ -299,6 +299,7 @@ func TestDiagnosticCodePrefixes(t *testing.T) {
 		// 把它放进同一张表：格式与唯一性约束对它同样适用，
 		// 不能因为前缀族不同就让它逃脱校验。
 		CodePrefixCodegenName,
+		CodePrefixCodegenAsset,
 	}
 	// 允许的前缀族。GXML-* 面向 .gxml 源文本，CODEGEN-* 面向生成物与目标包。
 	allowed := []string{"GXML-", "CODEGEN-"}
@@ -331,5 +332,18 @@ func TestCodegenNamePrefixIsSeparate(t *testing.T) {
 	}
 	if CodePrefixCodegenName != "CODEGEN-NAME" {
 		t.Errorf("生成层前缀 = %q，期望 CODEGEN-NAME", CodePrefixCodegenName)
+	}
+}
+
+// TestCodegenAssetPrefixIsSeparate 锁定资产诊断码同样属于 CODEGEN-* 族。
+//
+// 资产缺失/格式错误不是 .gxml 文本错误：把用户引向「改资产或路径」，
+// 而不是让编辑器把光标标在属性值上当作语法问题。
+func TestCodegenAssetPrefixIsSeparate(t *testing.T) {
+	if strings.HasPrefix(CodePrefixCodegenAsset, "GXML-") {
+		t.Errorf("生成层前缀 %q 不应复用 GXML- 号段", CodePrefixCodegenAsset)
+	}
+	if CodePrefixCodegenAsset != "CODEGEN-ASSET" {
+		t.Errorf("生成层前缀 = %q，期望 CODEGEN-ASSET", CodePrefixCodegenAsset)
 	}
 }
