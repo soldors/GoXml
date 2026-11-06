@@ -22,6 +22,11 @@
       * Real run needs -Execute. Without -Execute it only validates/prepares (writes
         order.json, dry-run argv) and exits 2 (prepare state is NOT a pass); it does not
         call the collector and produces no samples.
+* Prepared vs execute validation scope (F-A3): prepare validates argv/order/ExpectedHead
+        format/dir uniqueness only and does NOT claim provenance or summary validity; execute
+        additionally binds each record's load/baseSHA to the preregistered mode and ExpectedHead,
+        then enforces summary.json conservation. Any provenance failure is rejected before the
+        derived summary is written and stops further scheduling; originals are preserved.
       * No thresholds, no sampling substitutes, no fabricated samples.
 
     Read-only: existing collector/summarizer are read-only by default; theme/app
@@ -47,8 +52,8 @@ if (-not $SummarizerScript) { $SummarizerScript = Join-Path $PSScriptRoot 'summa
 foreach ($s in @($CollectorScript, $SummarizerScript)) {
     if (-not (Test-Path -LiteralPath $s)) { throw "missing script: $s" }
 }
-if ([string]::IsNullOrWhiteSpace($ExpectedHead) -or $ExpectedHead.Length -lt 7) {
-    throw "ExpectedHead must be a full SHA, got '$ExpectedHead'"
+if ($ExpectedHead -notmatch '^[0-9a-f]{40}$') {
+    throw "ExpectedHead must be a full 40-hex SHA, got '$ExpectedHead'"
 }
 if (-not (Test-Path -LiteralPath $RepoDir)) { throw "RepoDir does not exist: $RepoDir" }
 
@@ -66,6 +71,19 @@ if ($OrderFile) {
 if ($orderSeq.Count -eq 0) { throw 'empty pre-registered order' }
 foreach ($m in $orderSeq) {
     if ($m -notin @('sync', 'lazy')) { throw "invalid mode '$m' (only sync/lazy; none is not a comparison sample)" }
+}
+# F-A2: strictly alternating (adjacent differ) + balanced (equal sync/lazy), even length.
+# Odd / unbalanced batches are rejected as NOT a balanced comparison (do not silently treat
+# a lone trailing mode as a balanced sample). To run an odd design, preregister a balanced set.
+if ($orderSeq.Count -lt 2) { throw "order needs at least 2 samples, got $($orderSeq.Count)" }
+if ($orderSeq.Count % 2 -ne 0) { throw "order length $($orderSeq.Count) is odd; a balanced alternating batch must be even" }
+$nSync = @($orderSeq | Where-Object { $_ -eq 'sync' }).Count
+$nLazy = @($orderSeq | Where-Object { $_ -eq 'lazy' }).Count
+if ($nSync -ne $nLazy) { throw "order not balanced: sync=$nSync lazy=$nLazy (must be equal)" }
+for ($k = 1; $k -lt $orderSeq.Count; $k++) {
+    if ($orderSeq[$k] -eq $orderSeq[$k - 1]) {
+        throw "order not alternating at index ${k}: '$($orderSeq[$k - 1])' repeats '$($orderSeq[$k])'"
+    }
 }
 
 if (Test-Path -LiteralPath $OutDir) { throw "evidence dir already exists, refusing to overwrite: $OutDir" }
@@ -102,6 +120,8 @@ $orderSeq | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutDir 'order.
 $psExe = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
 $derivedLines = New-Object 'System.Collections.Generic.List[string]'
 $manifest = New-Object 'System.Collections.Generic.List[object]'
+$expectedAccepted = 0
+$expectedInvalid = 0
 
 for ($i = 0; $i -lt $orderSeq.Count; $i++) {
     $mode = $orderSeq[$i]
@@ -127,6 +147,18 @@ for ($i = 0; $i -lt $orderSeq.Count; $i++) {
     $originalId = [string]$record.id
     if ([string]::IsNullOrWhiteSpace($originalId)) { throw "$caseName original record missing id" }
 
+    # F-A3: bind real provenance from the record itself, not the directory name.
+    # Expected load is the preregistered mode; baseSHA must equal the audited full SHA.
+    $recLoad = [string]$record.load
+    if ($recLoad -ne $mode) {
+        throw "$caseName record load='$recLoad' != preregistered mode '$mode' (source/provenance mismatch)"
+    }
+    $recBase = [string]$record.baseSHA
+    if ($recBase -ne $ExpectedHead) {
+        throw "$caseName record baseSHA='$recBase' != ExpectedHead '$ExpectedHead' (source/provenance mismatch)"
+    }
+    if ($rc -eq 0) { $expectedAccepted++ } else { $expectedInvalid++ }
+
     $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
     $derivedId = $caseName + '/' + $originalId
     $record | Add-Member -NotePropertyName aggregationSource -NotePropertyValue ([ordered]@{
@@ -147,5 +179,38 @@ $summaryDir = Join-Path $OutDir 'summary'
 & $psExe -NoProfile -NonInteractive -File $SummarizerScript -InputDir $derived -OutDir $summaryDir -AllowMixed *> (Join-Path $OutDir 'summary.log')
 if ($LASTEXITCODE -ne 0) { throw 'derived summary rejected (-AllowMixed); do not record as sampling pass' }
 
-Write-Host ("done: {0} samples, {1} derived, summary at {2}" -f $derivedLines.Count, $manifest.Count, $summaryDir)
+# F-A1: summarizer exits 0 even when it rejects records; rc is NOT the business gate.
+# Read the real summary.json and enforce conservation: no rejections, accepted==valid==
+# expected-accepted (rc==0 samples), total==derived count, invalid==expected-invalid (rc==5
+# legit-invalid kept, not a failure). Preserve originals; do not cast invalid as forged.
+$summaryJsonPath = Join-Path $summaryDir 'summary.json'
+if (-not (Test-Path -LiteralPath $summaryJsonPath)) { throw 'summary.json not produced; cannot verify summary, do not record as pass' }
+$sj = Get-Content -LiteralPath $summaryJsonPath -Raw | ConvertFrom-Json
+$totalRecords = [int]$sj.totalRecords
+$accepted     = [int]$sj.accepted
+$rejected     = [int]$sj.rejected
+$validN       = [int]$sj.valid
+$invalidN     = [int]$sj.invalid
+$nDerived     = $derivedLines.Count
+if ($rejected -ne 0) {
+    throw "summary rejected $rejected record(s) (must be 0); see summary.json rejections; do not record as pass"
+}
+if ($totalRecords -ne $nDerived) {
+    throw "summary totalRecords=$totalRecords != derived=$nDerived (record conservation broken)"
+}
+# summarize-m1.ps1 semantics: accepted = valid + invalid (invalid is a flagged subset of
+# accepted, NOT rejected). So accepted must equal all derived records; valid excludes the
+# legal-invalid; invalid equals the rc=5 samples. rejected must be 0 (forged/duration-mismatch).
+if ($accepted -ne $nDerived) {
+    throw "summary accepted=$accepted != derived=$nDerived (all recorded samples must be accepted, none rejected)"
+}
+if ($invalidN -ne $expectedInvalid) {
+    throw "summary invalid=$invalidN != expected-invalid(rc=5)=$expectedInvalid (legal invalid must be preserved, not dropped)"
+}
+if ($validN -ne ($nDerived - $expectedInvalid)) {
+    throw "summary valid=$validN != derived-invalid=$($nDerived - $expectedInvalid)"
+}
+
+Write-Host ("done: {0} samples ({1} accepted, {2} legal-invalid), rejected={3}, groups={4}, summary at {5}" -f `
+    $nDerived, $accepted, $invalidN, $rejected, [int]$sj.groupCount, $summaryDir)
 exit 0
