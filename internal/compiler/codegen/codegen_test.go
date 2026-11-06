@@ -513,12 +513,17 @@ func TestPageWithMultipleChildrenFails(t *testing.T) {
 }
 
 func TestUnsupportedTagFails(t *testing.T) {
-	// Column/Row/Text/Button/Input/Image 已支持；未支持的标签仍需明确失败。
-	// 用 <Expanded>（Parser/Expander 接受，但 Codegen 未实现）作为样本。
+	// Column/Row/Text/Button/Input/Image/Expanded 已支持；未支持的标签仍需
+	// 明确失败。R25-B candidateRef：<Expanded> 已实现（规范 §3.1.1.2），
+	// 本测试改用一个真正未实现的标签作为样本。
 	v := verified(t, `<Column><Expanded><Text Value="a"/></Expanded></Column>`)
-	_, err := Generate(v, defaultOpts())
+	if _, err := Generate(v, defaultOpts()); err != nil {
+		t.Fatalf("<Expanded> 已在 candidateRef 实现，不应失败: %v", err)
+	}
+	v2 := verified(t, `<Column><NotARealTag><Text Value="a"/></NotARealTag></Column>`)
+	_, err := Generate(v2, defaultOpts())
 	if err == nil {
-		t.Fatal("<Expanded> 在本切片不支持，应失败")
+		t.Fatal("未实现标签应明确失败")
 	}
 	if !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("错误信息应说明不支持: %v", err)

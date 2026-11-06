@@ -238,7 +238,10 @@ func axisIdent(g *generator, mainIsHorizontal bool) string {
 // 交叉轴的 `Fill` 仍走 §3.1.7 的「抬 Min」路径。
 func sizePlanFor(n *contracts.NodeIR, mainIsHorizontal bool) sizelayout.Plan {
 	w, h := n.Width, n.Height
-	if n.Tag == "Spacer" {
+	// R25-B candidateRef：<Expanded> 与 <Spacer> 互为特例（规范 §3.1.1.2）——
+	// 「带一个子节点的弹性项」。未显式给尺寸时主轴按 Fill 处理（生成
+	// Flexed(1)），让子节点真正撑开；显式尺寸优先，仍是固定尺寸项。
+	if n.Tag == "Spacer" || n.Tag == "Expanded" {
 		if mainIsHorizontal && w.Mode == contracts.SizeNatural {
 			w = contracts.FillSize()
 		}
