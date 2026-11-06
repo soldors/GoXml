@@ -628,9 +628,8 @@ func TestLabFormInstancesIsolated(t *testing.T) {
 // TestLabFormTwoViewsShareOneModel 生成视图**不复制** ViewModel：两个视图实例绑定同一个
 // *model.Lab 时，在其中一个上按真实事件改的状态，另一个下一帧就渲染出来。
 //
-// 这正是 cmd/lab 里 form + report 的关系；跨包读另一个视图的槽位做不到（槽位是
-// 生成包的未导出字段），所以端到端那条链路在 report 包用自己的槽位补上，
-// 本用例负责证明「事件 → 同一份模型 → 另一个视图的渲染串」这一段。
+// 此处验证同包两个form实例；report包的跨包集成用例另用公开form.Layout
+// 驱动真实指针事件并检查report自己的槽位，无需读form的私有字段。
 func TestLabFormTwoViewsShareOneModel(t *testing.T) {
 	fm := discover(t)
 	m := model.NewLab()

@@ -10,7 +10,7 @@ package report
 //	跨文件 Def  report.gxml 自带 LabStat / LabPanel 定义——v1 不支持 Def 跨文件导入，
 //	           两个 .gxml 各自声明同名 Def 是隔离的（本测试顺带守住这条边界）
 //
-// 视图侧没有输入口，所以状态一律用模型**公开方法**布置（与真实事件处理器同一入口），
+// 只读视图通常用模型公开方法布置状态；跨包集成用例驱动真实form指针事件，
 // 不用反射改字段；判据读渲染串，逐字比较。
 
 import (
@@ -18,6 +18,9 @@ import (
 	"strconv"
 	"testing"
 
+	"gioui.org/f32"
+	"gioui.org/io/input"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -161,23 +164,71 @@ func TestLabReportEmptyStringSlotStaysSlot(t *testing.T) {
 	t.Log("LAB-DONE TestLabReportEmptyStringSlotStaysSlot")
 }
 
-// TestLabReportFollowsFormHandlerOnSameModel 端到端那段链路的收口：
-//
-//	form 视图的 Click="ApplyA" → 生成物调用 vm.ApplyA() → 同一份 *model.Lab 变化
-//	→ report 视图下一帧渲染出新值。
-//
-// 这里省略的是「指针点击怎么落到 ApplyA」那一步：它由 form 包自己的离屏测试
-// （TestLabFormEventAttributionSeparatesInstances / TestLabFormTwoViewsShareOneModel）
-// 用真实 input.Router 事件证明。跨包读对方视图的未导出槽位做不到，所以两段分两处证，
-// 中间链接点用**同一个**公开方法（ApplyA 就是被绑定的处理器）对齐——这是本工程的
-// 已知未证边界（见 README「未测边界」）。
+// publicFormHarness drives the other package exclusively through its public Layout API.
+type publicFormHarness struct {
+	m   *model.Lab
+	v   *form.GoxmlFormView
+	r   input.Router
+	gtx layout.Context
+}
+
+func publicForm(t *testing.T, m *model.Lab) *publicFormHarness {
+	t.Helper()
+	v, err := form.NewGoxmlFormView(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &publicFormHarness{m: m, v: v}
+	h.gtx = layout.Context{Ops: new(op.Ops), Constraints: layout.Constraints{Max: image.Pt(frameW, 4096)}, Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Source: h.r.Source()}
+	return h
+}
+
+func (h *publicFormHarness) frame() layout.Dimensions {
+	h.gtx.Reset()
+	d := h.v.Layout(h.gtx, sharedTheme)
+	h.r.Frame(h.gtx.Ops)
+	return d
+}
+
+func (h *publicFormHarness) click(p image.Point) {
+	h.m.LastAction = ""
+	h.r.Queue(pointer.Event{Position: f32.Pt(float32(p.X), float32(p.Y)), Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary}, pointer.Event{Position: f32.Pt(float32(p.X), float32(p.Y)), Kind: pointer.Release, Source: pointer.Mouse})
+	h.frame()
+}
+
+func publicFormTargets(t *testing.T) map[string]image.Point {
+	t.Helper()
+	// Discovery uses a separate model; scan-induced actions cannot satisfy assertions below.
+	h := publicForm(t, model.NewLab())
+	height := h.frame().Size.Y
+	if height <= 0 || height >= 4096 {
+		t.Fatalf("invalid form height %d", height)
+	}
+	hits := map[string]image.Point{}
+	for y := 1; y < height; y += 6 {
+		for x := 1; x < frameW; x += 6 {
+			p := image.Pt(x, y)
+			h.click(p)
+			if h.m.LastAction == "apply-a" || h.m.LastAction == "slot-a" {
+				if _, ok := hits[h.m.LastAction]; !ok {
+					hits[h.m.LastAction] = p
+				}
+			}
+			if len(hits) == 2 {
+				return hits
+			}
+		}
+	}
+	t.Fatalf("public form action discovery incomplete: %v", hits)
+	return nil
+}
+
+// TestLabReportFollowsFormHandlerOnSameModel verifies real pointer events in form
+// update the shared model and report slots, using public form Layout only.
 func TestLabReportFollowsFormHandlerOnSameModel(t *testing.T) {
 	m := model.NewLab()
-	// 两个生成的视图持有同一个指针：form 侧只用来确认「同一实例能被两个包同时持有」，
-	// 不读它的槽位（未导出）。
-	if _, err := form.NewGoxmlFormView(m); err != nil {
-		t.Fatalf("form 视图构造失败：%v", err)
-	}
+	targets := publicFormTargets(t)
+	f := publicForm(t, m)
 	v, err := NewGoxmlReportView(m)
 	if err != nil {
 		t.Fatalf("report 视图构造失败：%v", err)
@@ -188,9 +239,16 @@ func TestLabReportFollowsFormHandlerOnSameModel(t *testing.T) {
 		t.Fatalf("初始派生串应为 甲=0 / 插槽=0，实际 %q / %q", h.v.slots[2].text, h.v.slots[4].text)
 	}
 
-	m.DraftA = "表单改的甲"
-	m.ApplyA() // 与 form.gxml 里 Click="ApplyA" 绑定的是同一个方法
-	m.SlotA()  // 与 form.gxml 里插槽按钮 Click="SlotA" 绑定的是同一个方法
+	m.DraftA = "表单改的甲" // arrange input state; only real clicks below commit it.
+	f.frame()
+	f.click(targets["apply-a"])
+	if m.LastAction != "apply-a" || m.CountA != 1 || m.SavedA != "表单改的甲" {
+		t.Fatalf("real form ApplyA did not commit: %+v", m)
+	}
+	f.click(targets["slot-a"])
+	if m.LastAction != "slot-a" || m.SlotAClicks != 1 {
+		t.Fatalf("real form SlotA did not execute: %+v", m)
+	}
 	h.frame()
 	if h.v.slots[0].text != "表单改的甲" || h.v.slots[2].text != "甲=1" || h.v.slots[4].text != "插槽=1" {
 		t.Fatalf("汇总视图未跟上共享模型：slots[0]=%q slots[2]=%q slots[4]=%q",

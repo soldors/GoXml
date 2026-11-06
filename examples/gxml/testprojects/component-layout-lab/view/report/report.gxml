@@ -11,8 +11,8 @@
       </Row>
     </Def>
     <Def Name="LabPanel" Props="Title:string; Tone:color=#F3F3F3">
-      <Column Padding="12" Gap="6" Background="{Tone}">
-        <Text Value="{Title}" Background="#E6E6E6" Padding="3"/>
+      <Column Padding="12" Gap="6">
+        <Text Value="{Title}" Background="{Tone}" Padding="3"/>
         <Slot/>
       </Column>
     </Def>

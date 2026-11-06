@@ -87,8 +87,8 @@ python scripts/verify-projects.py component-layout-lab \
 `package` 子句是各自目录的包名（`form` / `report`），并显式导入 `.../model`。
 入口 `cmd/lab/main.go` 调用 `model.NewLab()` **一次**，把同一个指针交给两个构造函数。
 
-`main.go` 用 `layout.Flex` 把两个 View 上下组合：**Goxml 目前没有路由**
-（`pkg/runtime/router` 仍是规划项），所以这里不做页面切换。上下排列的好处是
+`main.go` 用 `layout.Flex` 把两个 View 上下组合。框架已有 `runtime/router`，
+本工程选择上下组合，不演示页面切换。上下排列的好处是
 「共享同一个模型」肉眼可见：上面点「应用甲」，下面下一帧就是新的已保存值。
 
 ## 现行文法边界（都是本工程实测撞出来的，不是推测）
@@ -99,13 +99,15 @@ python scripts/verify-projects.py component-layout-lab \
    Badge:string=默认"` 里的 `{Badge}` 在展开时就被实参或默认值替换成**静态文本**，
    于是它**不占文本缓存槽位**。实测：`form.gxml` 两个 `LabCell` 里的徽标、`Label`、
    面板标题全是静态串，产物里只有 `SavedA` / `SavedB` 两个绑定 → `if len(v.slots) != 2`。
-   这条直接决定了「默认值被覆盖」在运行时的可观测形态：**只能看几何**，不能看槽位文本。
+   因此本例用几何验证默认值覆盖；徽标不在绑定槽位中，不能用槽位文本断言它。
    所以 `LabCell` 把徽标与探针按钮放进同一个 `<Row Gap="0">`，徽标宽度推动按钮左边界。
 2. **尺寸类属性只接受静态值。**给 `LabPanel` 加 `Inset:insets` 再写
    `<Column Padding="{Inset}">` 会被拒：
    `GXML-ATTR-003: ... must be a static value, not a binding`（退出码 2）。
    只有**颜色**属性的绑定形式由 Expander 做 prop 替换（`parseColorStatic`），
-   所以本页 `Tone:color` + `Background="{Tone}"` 可用、`Padding="{Inset}"` 不可用。
+   所以本页在已支持的 `Text` 上用 `Tone:color` + `Background="{Tone}"` 展示标题背景；
+   不把它挂在尚未实现背景绘制的容器上。`Padding="{Inset}"` 不可用。
+   此处比较尺寸与颜色属性，不代表文本等其它属性不能绑定或接受 props 替换。
 3. **`<Def>` 不能跨文件导入。**`report.gxml` 需要用 `LabPanel` 时只能**自带一份**同名定义。
    两个文件里的同名 `Def` 是隔离的——各自展开、各自克隆，互不影响。
 4. **`<Slot/>` 只能有一个子节点、最多出现一次。**面板甲传一个 `<Button>`（替换）；
@@ -165,16 +167,16 @@ python scripts/verify-projects.py component-layout-lab \
   颜色全是静态字面量。
 - 不注册成第六个示例：`examples/gxml/testdata/` 下的五个示例与注册项保持不变，
   本目录在 `testprojects/` 下，不参与 `-Example` 选择器。
-- 不声称框架支持路由或滚动：上下组合是**入口自己**用 Go 布局代码写的，不是 `Page Route`
-  生效。`Route` 只是声明，当前不驱动导航。
+- 本工程不演示路由或滚动：框架已有 Router，本入口选择用 Go 布局上下组合；
+  `Page Route` 声明不会自动为本入口接入导航。
 
 ## 未测边界（如实列出）
 
 1. **原生窗口、真实 DPI、输入法**不在自动验证范围：自动测试只**构建** `cmd/lab`，
    从不执行它。本文里的 DPI 验证是离屏 `unit.Metric` 缩放，不是真实显示器缩放。
-2. **跨视图端到端只到「处理器写入」这一跳**：跨包读另一个视图的未导出槽位做不到，
-   所以「点击 → 处理器 → 模型」在 `form` 包里用真实事件证，「模型 → report 槽位」在
-   `report` 包里用同一个公开方法证。中间链接点是**同一个** `ApplyA`/`SlotA`。
+2. **跨包交互链路**：report包用公开form.Layout与真实input.Router点击表单和插槽按钮，
+   检查同一模型更新后report自己的槽位；扫描用独立模型，计数/渲染判据来自新建组合。
+   自动测试仍未运行原生窗口，也不等同于IME或真实显示器验收。
 3. **字体度量未固定**：探针左边界差只断言「≥ 一个按钮宽」与「在合理区间内」，
    不断言具体像素值——具体值取决于主题字体，写死会在换字体时假失败。
 4. **`Grid` 只覆盖 `72 * 96` 与 `120 *` 两种列规则组合**，以及一维的宽度变化；

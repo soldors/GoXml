@@ -23,7 +23,7 @@ import (
 )
 
 // shell 用现有 Go 把两个生成视图上下组合成一个 app.View。
-// Goxml 当前没有路由接线（pkg/runtime/router 仍是规划项），这里不做页面切换。
+// Goxml 已有 runtime/router；本工程选择上下组合，不演示页面切换。
 type shell struct {
 	form   *form.GoxmlFormView
 	report *report.GoxmlReportView

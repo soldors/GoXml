@@ -20,11 +20,11 @@
       </Column>
     </Def>
 
-    <!-- LabPanel：color prop + 默认值 + 默认插槽。面板甲传 Tone 覆盖默认背景色，
+    <!-- LabPanel：color prop + 默认值 + 默认插槽。面板甲传 Tone 覆盖标题文字的静态背景色，
          面板乙不传子节点（空插槽）。 -->
     <Def Name="LabPanel" Props="Title:string; Tone:color=#F3F3F3">
-      <Column Padding="12" Gap="6" Background="{Tone}">
-        <Text Value="{Title}" Background="#E6E6E6" Padding="3"/>
+      <Column Padding="12" Gap="6">
+        <Text Value="{Title}" Background="{Tone}" Padding="3"/>
         <Slot/>
       </Column>
     </Def>
@@ -43,7 +43,7 @@
         <Button Text="应用乙" Click="ApplyB" Background="#E3F2FD" Padding="3"/>
       </Grid>
       <!-- 面板甲：插槽内容是一个真实按钮，点它只会增加 SlotAClicks；
-           显式传 Tone 覆盖默认背景色。 -->
+           显式传 Tone 覆盖标题文字的静态背景色。 -->
       <LabPanel Title="面板甲（带插槽）" Tone="#FFF8E1">
         <Button Text="插槽按钮甲" Click="SlotA" Background="#FFF3E0" Padding="3"/>
       </LabPanel>

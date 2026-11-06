@@ -193,6 +193,8 @@ func TestComponentLayoutProject(t *testing.T) {
 		{`v.vm.ApplyA()`, "「应用甲」接到 ApplyA"},
 		{`v.vm.ApplyB()`, "「应用乙」接到 ApplyB"},
 		{`v.vm.SlotA()`, "面板甲插槽里的按钮接到 SlotA"},
+		{`paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 248, B: 225, A: 255})`, "覆盖Tone在已支持的Text背景实际绘制"},
+		{`paint.Fill(gtx.Ops, color.NRGBA{R: 243, G: 243, B: 243, A: 255})`, "默认Tone在Text背景实际绘制"},
 	} {
 		if n := strings.Count(formGen, want.frag); n != 1 {
 			t.Fatalf("form 产物应恰好 1 处 %q（%s），实际 %d 处", want.frag, want.note, n)
@@ -390,8 +392,8 @@ func TestComponentLayoutProject(t *testing.T) {
 		},
 		{
 			id: "N4-padding-binding", file: "view/form/form.gxml",
-			anchor: `<Column Padding="12" Gap="6" Background="{Tone}">`,
-			repl:   `<Column Padding="{Title}" Gap="6" Background="{Tone}">`,
+			anchor: `<Column Padding="12" Gap="6">`,
+			repl:   `<Column Padding="{Title}" Gap="6">`,
 			code:   "GXML-ATTR-003", note: "尺寸属性写成绑定",
 		},
 		{
