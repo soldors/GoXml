@@ -23,6 +23,8 @@
       <Grid Columns="120 *" Gap="8" Align="Center">
         <Text Value="标签"/>
         <Image Src="assets/logo.png"/>
+        <Text Value="照片"/>
+        <Image Src="assets/photo.jpg"/>
       </Grid>
       <Card Title="带插槽">
         <Text Value="插槽内容" Background="#FFF8E1" Padding="2"/>

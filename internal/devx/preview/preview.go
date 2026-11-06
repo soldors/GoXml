@@ -63,6 +63,8 @@ const (
 	PhaseGenerated Phase = "generated"
 	// PhaseHost 隔离宿主目录布置失败。
 	PhaseHost Phase = "host"
+	// PhaseBuild 宿主 go build 失败（证据保留在宿主目录）。
+	PhaseBuild Phase = "build"
 	// PhaseBuilt 宿主 go build 成功（本线终点：只 build 不运行原生窗口）。
 	PhaseBuilt Phase = "built"
 )
@@ -128,9 +130,9 @@ type Result struct {
 
 	// HostDir / HostExe 在宿主阶段成功后填充；失败时 HostDir 也可能
 	// 被填充（保留证据），KeptForEvidence 说明原因。
-	HostDir          string
-	HostExe          string
-	KeptForEvidence  bool
+	HostDir         string
+	HostExe         string
+	KeptForEvidence bool
 
 	// 未导出：宿主布置/资产复制所需的中间状态。
 	assets    []codegen.AssetRef // 门禁通过的唯一静态资产引用

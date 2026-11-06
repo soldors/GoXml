@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -46,7 +47,8 @@ func copyProject(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	// 合成 4x4 PNG：内容不重要，门禁只认「合法 PNG 且在预算内」。
+	// 合成 4x4 PNG 与 4x4 JPEG（两种门禁批准格式）：内容不重要，
+	// 门禁只认「合法格式且在预算内」；字节一致性断言用原始字节比对。
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
@@ -58,6 +60,13 @@ func copyProject(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dst, "assets", "logo.png"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var jbuf bytes.Buffer
+	if err := jpeg.Encode(&jbuf, img, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "assets", "photo.jpg"), jbuf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dst
@@ -74,12 +83,20 @@ func runOn(t *testing.T, proj, name string) *Result {
 
 // TestRunGeneratesStaticPage 正例：批准范围内的纯静态页（布局/Def/Slot/
 // Image/Expanded）走完整前端 + Codegen，产出可解析的生成 View。
+// SkipHost：宿主构建在 host_test.go 的 TestRunBuildsRealHost 单独验收。
 func TestRunGeneratesStaticPage(t *testing.T) {
 	proj := copyProject(t)
-	res := runOn(t, proj, "static_basic.gxml")
+	res, err := Run(Options{
+		File:     filepath.Join(proj, "static_basic.gxml"),
+		WorkDir:  proj,
+		SkipHost: true,
+	})
+	if err != nil {
+		t.Fatalf("Run 操作故障（不该发生）: %v", err)
+	}
 
 	if res.Phase != PhaseGenerated || !res.OK() {
-		t.Fatalf("应生成成功，实到 Phase=%s，诊断 %d 条：%v", res.Phase, len(res.Diags), res.Diags)
+		t.Fatalf("应生成成功（PhaseGenerated），实到 Phase=%s，诊断 %d 条：%v", res.Phase, len(res.Diags), res.Diags)
 	}
 	src := string(res.Source)
 	if res.PkgName != "preview" {
