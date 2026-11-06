@@ -238,7 +238,10 @@ func axisIdent(g *generator, mainIsHorizontal bool) string {
 // 交叉轴的 `Fill` 仍走 §3.1.7 的「抬 Min」路径。
 func sizePlanFor(n *contracts.NodeIR, mainIsHorizontal bool) sizelayout.Plan {
 	w, h := n.Width, n.Height
-	if n.Tag == "Spacer" {
+	// R25-B candidateRef：<Expanded> 与 <Spacer> 互为特例（规范 §3.1.1.2）——
+	// 「带一个子节点的弹性项」。未显式给尺寸时主轴按 Fill 处理（生成
+	// Flexed(1)），让子节点真正撑开；显式尺寸优先，仍是固定尺寸项。
+	if n.Tag == "Spacer" || n.Tag == "Expanded" {
 		if mainIsHorizontal && w.Mode == contracts.SizeNatural {
 			w = contracts.FillSize()
 		}
@@ -274,6 +277,25 @@ func sizePlanFor(n *contracts.NodeIR, mainIsHorizontal bool) sizelayout.Plan {
 //		return <inner>
 //	})
 func sizeWrap(g *generator, n *contracts.NodeIR, inner string, mainIsHorizontal bool) string {
+	plan := sizePlanFor(n, mainIsHorizontal)
+	pre := sizeConstraintsExpr(g, n, mainIsHorizontal)
+
+	body := pre.String() + "\t\t\treturn " + inner + "\n\t\t})"
+
+	// 主轴 Fill 才用 Flexed(1)；交叉轴 Fill 仍是 Rigid + 约束转换。
+	ql := g.q("gioui.org/layout", "layout")
+	if plan.Main == sizelayout.DirectiveFlex {
+		return ql + ".Flexed(1, func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
+	}
+	return ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
+}
+
+// sizeConstraintsExpr 生成节点尺寸计划的**约束改写语句**（不含 Flexed/Rigid
+// 包装）。R25-R1 F-B1 拆出：Expanded 的弹性 cell 内需先写**子节点自身**的
+// Exact/Fill 约束改写再渲染子内容——包装节点（Expanded→Flexed，沿用
+// sizeWrap）与子节点（自身尺寸→约束改写）职责分离，子节点布局属性不再丢失。
+// 返回 strings.Builder 以复用 writeExactConstraint 的既有出口。
+func sizeConstraintsExpr(g *generator, n *contracts.NodeIR, mainIsHorizontal bool) strings.Builder {
 	// 主轴/交叉轴各对应哪个属性：Row 的主轴是 Width，Column/Page 的主轴是 Height。
 	mainSpec, crossSpec := n.Height, n.Width
 	if mainIsHorizontal {
@@ -299,15 +321,7 @@ func sizeWrap(g *generator, n *contracts.NodeIR, inner string, mainIsHorizontal 
 		pre.WriteString("\t\t\t\tgtx.Constraints.Min." + a + " = gtx.Constraints.Max." + a + "\n")
 		pre.WriteString("\t\t\t}\n")
 	}
-
-	body := pre.String() + "\t\t\treturn " + inner + "\n\t\t})"
-
-	// 主轴 Fill 才用 Flexed(1)；交叉轴 Fill 仍是 Rigid + 约束转换。
-	ql := g.q("gioui.org/layout", "layout")
-	if plan.Main == sizelayout.DirectiveFlex {
-		return ql + ".Flexed(1, func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
-	}
-	return ql + ".Rigid(func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + body
+	return pre
 }
 
 // writeExactConstraint 生成固定尺寸的两行约束。

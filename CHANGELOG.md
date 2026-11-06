@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **R25-B Expanded 基础范围**：支持流式布局中的单子节点等权弹性项、显式尺寸
+  与子节点约束；未批准的 Grid/权重/自身装饰仍明确拒绝。输出修订 gen-4，
+  缓存格式 v8 和语言版本 1 不变。基础范围的发布以负责人接纳为前提。
+
 - **2026-11-06 R25-A（Image / Go overlay）**：资产门禁与缓存指纹使用 Go
   overlay 的有效字节；损坏替换、删除资产或其父目录在写盘前拒绝并保留旧产物。
   Src 与本批生成输出冲突时明确拒绝；历史 Manifest 输出须有保护头与 Source
