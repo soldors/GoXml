@@ -1,7 +1,7 @@
 # 2026-11-06 R25-A IMAGE-OVERLAY-CACHE-SAFETY（DeepSeek）dev-log
 
 固定基线 `95173db73c9a0dc4d2d204a8aec4f808e79dead3`（开工核验 clean，主库 9 WIP，索引空）。分支 `codex/r25-deepseek`，树 `r25-deepseek`。所有权：`internal/cli` 资产/overlay/缓存及专属测试、`internal/compiler/pipeline` 资产校验及专属测试；安全边界补正建议；本 dev-log。codegen/layout 归 ZCode 未触碰；collector/font 工具未动；`font_lazy_strict_test.go` 未动。
-记录提交：`95173db`（base）→ 本切片（组合回归 + 边界补正建议）→ 本 dev-log。
+记录提交：`95173db`（base）→ 8c1b8a4（组合回归 + 边界补正建议）→ 本 dev-log。
 
 ## A1 事实矩阵（真实 Go + 真实 CLI，见 deepseek/raw 与 fact-matrix.md）
 冷生成→真命中（产物字节/mtime/Manifest 不动）；同路径内容变→安全 miss 重生成；删除/损坏→rc2 miss 拒旧保留；恢复→命中；大小写错拼→miss 拒绝（既有用例）；`--no-cache` 冷批坏资产→整批不落盘；暖批坏资产→整批拒绝保兄弟/Manifest；overlay 指向资产仍读磁盘真相（不替换 embed 字节）；跨包 out-dir 资产根=生成包目录。
