@@ -137,6 +137,9 @@ func (g *generator) gridExpr(n *contracts.NodeIR) (string, error) {
 // 纵向 Flex 不带 Gap/Alignment：单元格内只有一个子项，加 Gap 不会生效，
 // 加 Alignment 会与 Grid 的行对齐（已作用于横向 Flex）语义重复。
 func (g *generator) gridCellExpr(col contracts.GridColumn, child *contracts.NodeIR) (string, error) {
+	prevGrid := g.inGridCell
+	g.inGridCell = true
+	defer func() { g.inGridCell = prevGrid }()
 	inner, err := g.nodeExpr(child)
 	if err != nil {
 		return "", err

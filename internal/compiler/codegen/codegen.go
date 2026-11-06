@@ -304,11 +304,13 @@ type generator struct {
 	// inLocalStatic 是当前生成深度是否处于某个局部静态子树内部（>0）。
 	// 内部节点由外层槽位整体覆盖，不得再分配嵌套槽位。
 	inLocalStatic int
-	// curMainAxis 是当前容器的**主轴方向**（R25-B candidateRef）：<Expanded>
-	// 生成弹性包装时需要知道「Width 在主轴还是交叉轴」。由 containerExpr /
-	// dynamicContainerExpr / emitForChildren / emitIfChildren 在生成子节点
-	// 前设置（保存/恢复），Page 顶层为 vertical（false）。
+	// curMainAxis 是当前容器主轴方向（R25-R1 恢复：Expanded 子节点约束
+	// 改写需要知道 Width/Height 各属主/交叉轴——这是它在本实现中的唯一
+	// 消费点；由四类容器设置/恢复，Page 顶层为 vertical）。
 	curMainAxis bool
+	// inGridCell 表示当前处于 Grid 单元格生成内（R25-R1 F-B2：Expanded
+	// 在 Grid 内准入未定义 → 显式拒绝）。
+	inGridCell bool
 }
 
 // clickSlot 是一个待轮询的控件状态槽位。
@@ -424,6 +426,9 @@ func (g *generator) page(n *contracts.NodeIR) (string, error) {
 // 「Axis 写成 Horizontal 却按 Vertical 解释尺寸」这种只错一半的组合。
 func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
 	ql := g.q("gioui.org/layout", "layout")
+	prevAxis := g.curMainAxis
+	g.curMainAxis = mainIsHorizontal
+	defer func() { g.curMainAxis = prevAxis }()
 
 	if hasForChild(children) || hasIfChild(children) {
 		return g.dynamicContainerExpr(children, mainIsHorizontal, ops, fields)
@@ -460,6 +465,9 @@ func (g *generator) containerExpr(children []*contracts.NodeIR, mainIsHorizontal
 // Rigid/Flexed 与约束改写，主轴方向由调用方逐层透传。
 func (g *generator) dynamicContainerExpr(children []*contracts.NodeIR, mainIsHorizontal bool, ops, fields string) (string, error) {
 	ql := g.q("gioui.org/layout", "layout")
+	prevAxis := g.curMainAxis
+	g.curMainAxis = mainIsHorizontal
+	defer func() { g.curMainAxis = prevAxis }()
 	// 初始容量取静态子项数；<For> 的项数编译期不可知，由 append 增长。
 	static := 0
 	for _, c := range children {
@@ -572,7 +580,6 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 			if err := g.emitIfChildren(b, c, indent+"\t\t", mainIsHorizontal); err != nil {
 				g.inFor = prevInFor
 				g.currentFor = prevFor
-				g.curMainAxis = prevAxis
 				return err
 			}
 			continue
@@ -581,7 +588,6 @@ func (g *generator) emitForChildren(b *strings.Builder, n *contracts.NodeIR, ind
 		if err != nil {
 			g.inFor = prevInFor
 			g.currentFor = prevFor
-			g.curMainAxis = prevAxis
 			return err
 		}
 		// 逐项 append 与静态子项共用 sizeWrap：循环内的尺寸语义不另起一套。
@@ -814,16 +820,34 @@ func (g *generator) nodeExpr(n *contracts.NodeIR) (string, error) {
 		return g.spacerExpr(n)
 
 	case "Expanded":
-		// R25-B candidateRef：规范 §3.1.1.2——「带一个子节点的弹性项」。
-		// 语义=「带内容的 Spacer」：nodeExpr 直通子节点（绑定/事件/静态
-		// 缓存接缝全部保留），弹性包装由父容器的 sizeWrap 统一生成——
-		// sizePlanFor 对 Expanded 与 Spacer 同款特例（无显式尺寸 → 主轴
-		// Fill → Flexed），FlexChild 位置由调用方（containerExpr/
-		// emitForChildren/emitIfChildren）保证。
+		// R25-R1 F-B1 修复：包装节点与子节点**各自尺寸职责**分离——
+		//   - 弹性角色：父容器对 Expanded 节点的 sizeWrap 生成 Flexed(1)
+		//     （sizePlanFor 特例；Expanded 自身显式尺寸仍优先为 Exact）；
+		//   - 子节点自身尺寸：Exact/Fill 约束改写在弹性 cell 内、渲染前
+		//     生效（IIFE 注入，gtx 影子同值），不再直通丢失
+		//     （R22 复核 F-B1：Width=12 与无 Width 产物相同的缺陷）。
+		// 绑定/事件/静态缓存接缝经 nodeExpr(child) 全保留；不重复包装
+		// FlexChild（子约束是语句注入，不是第二层 FlexChild）。
 		if len(n.Children) != 1 {
 			return "", fmt.Errorf("codegen: <Expanded> 恰好一个子节点，实际 %d", len(n.Children))
 		}
-		return g.nodeExpr(n.Children[0])
+		if !n.Padding.IsZero() {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持自身 Padding（装饰语义未定义，R25-R1 F-B2 显式拒绝）")
+		}
+		if g.inGridCell {
+			return "", fmt.Errorf("codegen: <Expanded> 不支持 Grid 单元格内使用（准入语义未定义，R25-R1 F-B2 显式拒绝）")
+		}
+		child := n.Children[0]
+		inner, err := g.nodeExpr(child)
+		if err != nil {
+			return "", err
+		}
+		pre := sizeConstraintsExpr(g, child, g.curMainAxis)
+		if pre.Len() == 0 {
+			return inner, nil
+		}
+		ql := g.q("gioui.org/layout", "layout")
+		return "func(gtx " + ql + ".Context) " + ql + ".Dimensions {\n" + pre.String() + "\t\t\treturn " + inner + "\n\t\t}(gtx)", nil
 
 	default:
 		return "", fmt.Errorf("codegen: <%s> is not supported in this slice", n.Tag)
