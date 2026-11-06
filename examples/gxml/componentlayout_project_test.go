@@ -1,0 +1,595 @@
+package examples
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/goxml/goxml/internal/cli"
+)
+
+// layoutLabModule 是临时 module 的模块路径。模板里的 __MODULE__ 会被替换成它。
+const layoutLabModule = "example.com/r25labproj"
+
+// layoutLabMarker 是本工程离屏测试的完成标记。
+//
+// 与 preferences（CROSS-DONE）、taskboard（TASKBOARD-DONE）、gallery（ROUTE-DONE）
+// 各用一枚：不同工程的用例集合不能互相顶替。
+const layoutLabMarker = "LAB-DONE"
+
+// layoutLabViews 是本工程的两个生成视图。顺序即生成顺序。
+//
+// 两个 .gxml 都声明 ViewModel="model.Lab"（跨包），因此产物落在各自目录的包里、
+// 并 import `.../model`。
+var layoutLabViews = []struct {
+	name   string // 视图名（日志用）
+	gxml   string // .gxml 相对工程目录
+	out    string // 产物相对工程目录
+	symbol string // 生成的视图类型名
+}{
+	{name: "form", gxml: "view/form/form.gxml", out: "view/form/form_gen.go", symbol: "GoxmlFormView"},
+	{name: "report", gxml: "view/report/report.gxml", out: "view/report/report_gen.go", symbol: "GoxmlReportView"},
+}
+
+// layoutLabSemTests 是模板自带的离屏语义测试（12 例：form 8 + report 4）。
+// 它们和模板一起复制，所以工程测试与教程读的是同一份材料。
+var layoutLabSemTests = []string{
+	"TestLabFormDefDefaultAndOverrideAreDistinct",
+	"TestLabFormGridFlexibleColumnAbsorbsWidth",
+	"TestLabFormDpiScalesHitTargets",
+	"TestLabFormSlotReplacedAndEmptySlotVanishes",
+	"TestLabFormEventAttributionSeparatesInstances",
+	"TestLabFormReturnPayloadStaysOnItsOwnInput",
+	"TestLabFormInstancesIsolated",
+	"TestLabFormTwoViewsShareOneModel",
+	"TestLabReportSlotsArePerNodeAndFollowModel",
+	"TestLabReportEmptyStringSlotStaysSlot",
+	"TestLabReportFollowsFormHandlerOnSameModel",
+	"TestLabReportInstancesIsolated",
+}
+
+// layoutLabTemplateFiles 是本用例逐个记账指纹的模板材料。
+// 其余文件同样只读，但不必逐个记账。
+var layoutLabTemplateFiles = []string{
+	"model/lab.go.txt",
+	"view/form/form.gxml",
+	"view/report/report.gxml",
+	"view/form/sem_test.go.txt",
+	"view/report/sem_test.go.txt",
+	"view/form/doc.go.txt",
+	"view/report/doc.go.txt",
+	"cmd/lab/main.go.txt",
+	"go.mod.txt",
+	"README.md",
+}
+
+// layoutLabModelCreations 数入口里创建了几份共享模型。
+//
+// 静态判据：切掉「各建一份」这个最常见退化写法。只数**代码行**：
+// 注释里就写着 model.NewLab() 只调用一次，按字节 Count 会把注释也数进去。
+func layoutLabModelCreations(src []byte) int {
+	n := 0
+	for _, line := range strings.Split(string(src), "\n") {
+		code := strings.TrimSpace(line)
+		if code == "" || strings.HasPrefix(code, "//") {
+			continue
+		}
+		n += strings.Count(code, "model.NewLab()")
+	}
+	return n
+}
+
+// TestComponentLayoutProject 用与教程相同的源材料
+// （examples/gxml/testprojects/component-layout-lab）跑完整工程流程：
+// 复制 → 填占位符 → **一次目录 generate --check**（覆盖两个 View）→ 缓存命中 →
+// 只改组件实参失效 → 五类非法写法保旧 → 恢复 → 构建入口 → 离屏验收 → 可编译变异。
+//
+// 与 preferences / taskboard 的差别在**要验收什么**：这两页的价值不是「能生成」，
+// 而是 `<Def>`（typed props + 默认值）/ `<Slot>`（替换与空槽）/ `<Grid>`（固定+弹性列）
+// 三者与绑定、事件组合之后语义仍然正确。所以产物侧的结构断言与离屏几何断言同等重要：
+// 前者钉住「props 是生成期替换、静态文本不占槽位」，后者钉住「默认值覆盖在运行时可观测」。
+func TestComponentLayoutProject(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 临时目录**故意**带空格与中文：Windows 上很多路径拼接缺陷只在这种路径下暴露。
+	root := filepath.Join(t.TempDir(), "组件 布局")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	material := filepath.Join(repo, "examples", "gxml", "testprojects", "component-layout-lab")
+	before := map[string]string{}
+	for _, rel := range layoutLabTemplateFiles {
+		before[rel] = sha256Hex(readFile(t, filepath.Join(material, filepath.FromSlash(rel))))
+	}
+	mustCopyTemplate(t, material, root, layoutLabModule, repo)
+
+	if b, err := os.ReadFile(filepath.Join(root, "go.sum")); err != nil || len(b) == 0 {
+		t.Fatalf("go.sum 缺失，离线构建会失败: %v", err)
+	}
+
+	// 一次目录 generate 覆盖两个 View：发现根 = 输出根 = <dir>/view。
+	// 这正是 scripts/verify-projects.py 的批次形状（argv: generate view --out-dir view）。
+	generateIn := func(dir string, extra ...string) (string, string, int) {
+		t.Helper()
+		var out, errs bytes.Buffer
+		viewRoot := filepath.Join(dir, "view")
+		argv := append([]string{"generate", viewRoot, "--out-dir", viewRoot}, extra...)
+		rc := cli.Run(argv, &out, &errs)
+		return out.String(), errs.String(), rc
+	}
+	batch := func(extra ...string) (string, string, int) { return generateIn(root, extra...) }
+
+	// G1 真实批次生成（带 --check）：两个包一起过提交前检查，一起落盘。
+	stdout1, stderr1, rc1 := batch("--check")
+	if rc1 != cli.ExitOK {
+		t.Fatalf("批次 generate --check rc=%d want=%d\nstdout=%s\nstderr=%s",
+			rc1, cli.ExitOK, stdout1, stderr1)
+	}
+	if !strings.Contains(stdout1, "提交前检查通过：2 个目标包") {
+		t.Fatalf("--check 没覆盖两个目标包：%s", stdout1)
+	}
+	if n := strings.Count(stdout1, "已生成"); n != 2 {
+		t.Fatalf("一批应生成 2 个文件，实得 %d：%s", n, stdout1)
+	}
+	for _, v := range layoutLabViews {
+		if !strings.Contains(stdout1, filepath.Base(v.out)) {
+			t.Fatalf("批次输出未提及 %s：%s", v.out, stdout1)
+		}
+	}
+
+	first := map[string][]byte{}
+	for _, v := range layoutLabViews {
+		gen := readFile(t, filepath.Join(root, v.out))
+		if len(gen) == 0 {
+			t.Fatalf("%s 产物为空", v.out)
+		}
+		if !bytes.HasPrefix(gen, []byte("// Code generated by goxml. DO NOT EDIT.")) {
+			t.Fatalf("%s 缺少生成头", v.out)
+		}
+		if bytes.Contains(gen, []byte(repo)) {
+			t.Fatalf("%s 泄漏了 checkout 绝对路径", v.out)
+		}
+		if !bytes.Contains(gen, []byte(`"`+layoutLabModule+`/model"`)) {
+			t.Fatalf("%s 未跨包 import model 包：\n%s", v.out, headOf(gen, 20))
+		}
+		if !bytes.Contains(gen, []byte("type "+v.symbol+" struct")) {
+			t.Fatalf("%s 未声明类型 %s", v.out, v.symbol)
+		}
+		dirPkg := packageClauseOf(t, filepath.Join(root, filepath.Dir(v.out), "doc.go"))
+		if !bytes.Contains(gen, []byte("package "+dirPkg+"\n")) {
+			t.Fatalf("%s 的 package 子句应为 %q:\n%s", v.out, dirPkg, headOf(gen, 6))
+		}
+		if dirPkg == "model" {
+			t.Fatalf("%s 的包名不该是 model（那就不叫跨包了）", v.out)
+		}
+		// 本工程明确不用新语义：这两条要在产物里彻底没有。
+		for _, banned := range []string{"Expanded", "IsThemeRef", "ThemeRef"} {
+			if bytes.Contains(gen, []byte(banned)) {
+				t.Fatalf("%s 出现了本工程声明不用的语义 %q", v.out, banned)
+			}
+		}
+		first[v.name] = gen
+		t.Logf("OBS %s %d 字节 sha256=%s", v.out, len(gen), sha256Hex(gen))
+	}
+
+	// G1b 产物侧的**组件语义**判据：这几条把「props 生成期替换」「一节点一槽位」
+	// 「空插槽消失」从文档陈述变成可复核的字节事实。
+	formGen := string(first["form"])
+	for _, want := range []struct{ frag, note string }{
+		{`if len(v.slots) != 2 {`, "form 只有 SavedA/SavedB 两个绑定槽位（其余是 props 替换后的静态文本）"},
+		{`material.Body1(th, "默认")`, "默认徽标应作为静态文本烙进产物"},
+		{`material.Body1(th, "覆盖徽标文本")`, "覆盖值应作为静态文本烙进产物"},
+		{`v.bindText(gtx, th, 0, v.vm.SavedA)`, "槽位 0 绑定 SavedA"},
+		{`v.bindText(gtx, th, 1, v.vm.SavedB)`, "槽位 1 绑定 SavedB"},
+		{`v.vm.ApplyA()`, "「应用甲」接到 ApplyA"},
+		{`v.vm.ApplyB()`, "「应用乙」接到 ApplyB"},
+		{`v.vm.SlotA()`, "面板甲插槽里的按钮接到 SlotA"},
+	} {
+		if n := strings.Count(formGen, want.frag); n != 1 {
+			t.Fatalf("form 产物应恰好 1 处 %q（%s），实际 %d 处", want.frag, want.note, n)
+		}
+	}
+	// 探针按钮在**两个** LabCell 实例里各克隆一份：同一接线出现两次。
+	if n := strings.Count(formGen, `v.vm.Probe()`); n != 2 {
+		t.Fatalf("两个 LabCell 实例应各自克隆出探针按钮（Probe 调用 2 处），实际 %d 处", n)
+	}
+
+	reportGen := string(first["report"])
+	if !strings.Contains(reportGen, "if len(v.slots) != 7 {") {
+		t.Fatalf("report 应有 7 个绑定槽位，产物未见 `len(v.slots) != 7`")
+	}
+	// 槽位 0 与槽位 6 绑的是**同一个**字段：证明槽位按节点分，不按值合并。
+	for slot, want := range map[string]string{
+		"0": "v.vm.SavedA", "1": "v.vm.SavedB",
+		"2": "v.vm.CountAText", "3": "v.vm.CountBText",
+		"4": "v.vm.SlotText", "5": "v.vm.SummaryText",
+		"6": "v.vm.SavedA",
+	} {
+		frag := "v.bindText(gtx, th, " + slot + ", " + want + ")"
+		if n := strings.Count(reportGen, frag); n != 1 {
+			t.Fatalf("report 槽位 %s 应绑定 %s（%q 出现 1 次），实际 %d 次", slot, want, frag, n)
+		}
+	}
+	t.Logf("OBS 组件语义：form 槽位=2（含两处静态徽标），report 槽位=7（0 与 6 同为 SavedA）")
+
+	// G2 真缓存命中：字节相同、mtime 不动、Manifest 不动、缓存记录不动。
+	manifestPath := filepath.Join(root, ".goxml", "generate-manifest.json")
+	manifest := readFile(t, manifestPath)
+	for _, v := range layoutLabViews {
+		if !bytes.Contains(manifest, []byte(filepath.ToSlash(v.out))) {
+			t.Fatalf("Manifest 缺少 %s 这一条：\n%s", v.out, manifest)
+		}
+	}
+	sentinel := time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)
+	statMtime := func(rel string) time.Time {
+		t.Helper()
+		st, err := os.Stat(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.ModTime()
+	}
+	// cacheSnapshot 把「记录名 + 字节 sha256 + mtime」拼成一串：
+	// 命中要求整串不变（改名、改字节、改 mtime 都算变）。
+	cacheSnapshot := func(dir string) string {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(dir, ".goxml", "cache"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, e.Name()+" "+sha256Hex(readFile(t, filepath.Join(dir, ".goxml", "cache", e.Name())))+
+				" "+info.ModTime().UTC().Format(time.RFC3339Nano))
+		}
+		sort.Strings(lines)
+		return strings.Join(lines, "\n")
+	}
+	cacheBefore := cacheSnapshot(root)
+	if n := len(strings.Split(cacheBefore, "\n")); n != len(layoutLabViews) {
+		t.Fatalf("首次生成应为两个视图分别登记缓存，实得 %d 条：\n%s", n, cacheBefore)
+	}
+	write := func(rel string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, rel), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, v := range layoutLabViews {
+		if err := os.Chtimes(filepath.Join(root, v.out), sentinel, sentinel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout2, _, rc2 := batch()
+	if rc2 != cli.ExitOK {
+		t.Fatalf("第二次批次生成 rc=%d", rc2)
+	}
+	if strings.Count(stdout2, "缓存命中") != 2 {
+		t.Fatalf("第二次生成应两个视图都命中缓存：%s", stdout2)
+	}
+	for _, v := range layoutLabViews {
+		if !bytes.Equal(first[v.name], readFile(t, filepath.Join(root, v.out))) {
+			t.Fatalf("%s 缓存命中却改了字节", v.out)
+		}
+		if !statMtime(v.out).Equal(sentinel) {
+			t.Fatalf("%s 缓存命中却重写了产物（mtime=%v）", v.out, statMtime(v.out))
+		}
+	}
+	if !bytes.Equal(manifest, readFile(t, manifestPath)) {
+		t.Fatal("缓存命中却改写了 Manifest")
+	}
+	if got := cacheSnapshot(root); got != cacheBefore {
+		t.Fatal("缓存命中改写了缓存记录")
+	}
+	t.Logf("OBS 真缓存命中：两个视图字节与 mtime 未变，Manifest %d 字节未变", len(manifest))
+
+	// G3 **只改组件实参**必须让缓存失效并改变产物字节。
+	//
+	// 这是本工程独有的失效面：改的不是 model 包、不是页面结构，而是**一个 Def 调用点的
+	// 实参**（第二个 LabCell 的 Badge）。它必须走完整条链：源变更 → 缓存 miss →
+	// 重新展开 → 新静态串落进产物。如果生成器把 props 当成运行时变量，这里就会「失效了
+	// 但字节不变」——那正是本判据要挡的退化。
+	origFormSrc := readFile(t, filepath.Join(root, "view/form/form.gxml"))
+	const oldBadge = `Badge="覆盖徽标文本"`
+	const newBadge = `Badge="覆盖徽标文本改"`
+	editedForm := bytes.Replace(origFormSrc, []byte(oldBadge), []byte(newBadge), 1)
+	if bytes.Equal(editedForm, origFormSrc) {
+		t.Fatal("测试自身的组件实参修改没有生效")
+	}
+	write("view/form/form.gxml", editedForm)
+	stdout3, stderr3, rc3 := batch("--check")
+	if rc3 != cli.ExitOK {
+		t.Fatalf("改实参后批次生成 rc=%d\nstdout=%s\nstderr=%s", rc3, stdout3, stderr3)
+	}
+	// 只有 form 该重写：report 的源与依赖都没变，仍应命中缓存。
+	if !strings.Contains(stdout3, "已生成 view/form/form_gen.go") {
+		t.Fatalf("改组件实参后 form 未重新生成：%s", stdout3)
+	}
+	if strings.Contains(stdout3, "已生成 view/report/report_gen.go") {
+		t.Fatalf("只有 form 该重写，report 不该：%s", stdout3)
+	}
+	mutatedForm := readFile(t, filepath.Join(root, "view/form/form_gen.go"))
+	if bytes.Equal(mutatedForm, first["form"]) {
+		t.Fatal("只改了组件实参，产物字节却没变：props 被当成了运行时变量")
+	}
+	if !bytes.Contains(mutatedForm, []byte(`material.Body1(th, "覆盖徽标文本改")`)) {
+		t.Fatalf("新实参没有烙进产物：\n%s", headOf(mutatedForm, 8))
+	}
+	if bytes.Contains(mutatedForm, []byte(`material.Body1(th, "覆盖徽标文本")`)) {
+		t.Fatal("旧实参仍留在产物里")
+	}
+	t.Logf("OBS 只改组件实参：form 重写并烙进新徽标，report 仍命中")
+
+	// 恢复源：重新命中缓存，产物回到首次的字节。
+	write("view/form/form.gxml", origFormSrc)
+	if _, _, rc := batch(); rc != cli.ExitOK {
+		t.Fatalf("恢复源后批次生成 rc=%d", rc)
+	}
+	if !bytes.Equal(first["form"], readFile(t, filepath.Join(root, "view/form/form_gen.go"))) {
+		t.Fatal("恢复源后 form 产物与首次不一致")
+	}
+
+	// 负例的基线：把产物重新钉到哨兵，后续每条负例都要证明「一字未动」。
+	baseBytes := map[string][]byte{}
+	for _, v := range layoutLabViews {
+		if err := os.Chtimes(filepath.Join(root, v.out), sentinel, sentinel); err != nil {
+			t.Fatal(err)
+		}
+		baseBytes[v.name] = readFile(t, filepath.Join(root, v.out))
+	}
+	baseManifest := readFile(t, manifestPath)
+	baseCache := cacheSnapshot(root)
+
+	// G4 五类非法写法：诊断码是**实测**的，不是「任意错误都算拒绝」。
+	//
+	// 每条都同时钉三件事：退出码 2、具体诊断码、磁盘零变更（产物字节/mtime、
+	// Manifest、缓存记录）。只钉退出码会让「写了一半再报错」也变绿。
+	type negative struct {
+		id     string
+		file   string
+		anchor string
+		repl   string
+		code   string
+		note   string
+	}
+	negatives := []negative{
+		{
+			id: "N1-undeclared-prop", file: "view/form/form.gxml",
+			anchor: `<LabPanel Title="面板乙（空插槽）"/>`,
+			repl:   `<LabPanel Title="面板乙（空插槽）" Extra="x"/>`,
+			code:   "GXML-DEF-007", note: "给 Def 传未声明的属性",
+		},
+		{
+			id: "N2-slot-two-children", file: "view/form/form.gxml",
+			anchor: `<Button Text="插槽按钮甲" Click="SlotA" Background="#FFF3E0" Padding="3"/>`,
+			repl: `<Button Text="插槽按钮甲" Click="SlotA" Background="#FFF3E0" Padding="3"/>` +
+				`<Button Text="第二个子节点" Click="SlotA" Background="#FFF3E0" Padding="3"/>`,
+			code: "GXML-DEF-009", note: "一个 Slot 被两个子节点替换",
+		},
+		{
+			id: "N3-missing-field", file: "view/report/report.gxml",
+			anchor: `<LabStat Label="插槽点击" Value="{SlotText}"/>`,
+			repl:   `<LabStat Label="插槽点击" Value="{MissingField}"/>`,
+			code:   "GXML-BIND-001", note: "绑定到模型里不存在的字段",
+		},
+		{
+			id: "N4-padding-binding", file: "view/form/form.gxml",
+			anchor: `<Column Padding="12" Gap="6" Background="{Tone}">`,
+			repl:   `<Column Padding="{Title}" Gap="6" Background="{Tone}">`,
+			code:   "GXML-ATTR-003", note: "尺寸属性写成绑定",
+		},
+		{
+			id: "N5-duplicate-def", file: "view/form/form.gxml",
+			anchor: `<Def Name="LabPanel" Props="Title:string; Tone:color=#F3F3F3">`,
+			repl: `<Def Name="LabCell" Props="Label:string">` + "\n" +
+				`      <Text Value="{Label}"/>` + "\n" +
+				`    </Def>` + "\n" +
+				`    <Def Name="LabPanel" Props="Title:string; Tone:color=#F3F3F3">`,
+			code: "GXML-DEF-004", note: "同一个文件里重复声明同名 Def",
+		},
+	}
+	for _, ng := range negatives {
+		orig := readFile(t, filepath.Join(root, filepath.FromSlash(ng.file)))
+		broken := bytes.Replace(orig, []byte(ng.anchor), []byte(ng.repl), 1)
+		if bytes.Equal(broken, orig) {
+			t.Fatalf("%s：测试自身的改坏没有生效（锚点未命中）", ng.id)
+		}
+		write(ng.file, broken)
+		_, stderr, rc := batch("--check")
+		if rc != cli.ExitFailure {
+			t.Fatalf("%s（%s）应 rc=%d，实得 %d\nstderr=%s", ng.id, ng.note, cli.ExitFailure, rc, stderr)
+		}
+		if !strings.Contains(stderr, ng.code) {
+			t.Fatalf("%s 应报 %s，实际 stderr=%s", ng.id, ng.code, stderr)
+		}
+		for _, v := range layoutLabViews {
+			if !bytes.Equal(baseBytes[v.name], readFile(t, filepath.Join(root, v.out))) {
+				t.Fatalf("%s 覆盖了已生成代码 %s", ng.id, v.out)
+			}
+			if !statMtime(v.out).Equal(sentinel) {
+				t.Fatalf("%s 重写了 %s（mtime=%v）", ng.id, v.out, statMtime(v.out))
+			}
+		}
+		if !bytes.Equal(baseManifest, readFile(t, manifestPath)) {
+			t.Fatalf("%s 改写了 Manifest", ng.id)
+		}
+		if got := cacheSnapshot(root); got != baseCache {
+			t.Fatalf("%s 改变了缓存记录", ng.id)
+		}
+		t.Logf("OBS 负例 %s（%s）：rc=2 %s，磁盘零变更", ng.id, ng.note, ng.code)
+		write(ng.file, orig)
+	}
+
+	// G5 修好恢复：源回到原样后重新命中缓存，产物与首次逐字一致。
+	stdout5, _, rc5 := batch()
+	if rc5 != cli.ExitOK || strings.Count(stdout5, "缓存命中") != 2 {
+		t.Fatalf("恢复后应两个视图重新命中缓存 rc=%d：%s", rc5, stdout5)
+	}
+	for _, v := range layoutLabViews {
+		if !bytes.Equal(first[v.name], readFile(t, filepath.Join(root, v.out))) {
+			t.Fatalf("恢复后 %s 的产物与首次不一致", v.out)
+		}
+	}
+	t.Logf("OBS 恢复后重新命中：两个视图产物与首次逐字一致（form 源 %d 字节）", len(origFormSrc))
+
+	// G6 入口结构判据：一份模型，两个视图。
+	entrySrc := readFile(t, filepath.Join(root, "cmd/lab/main.go"))
+	if n := layoutLabModelCreations(entrySrc); n != 1 {
+		t.Fatalf("入口应只创建一份 ViewModel（NewLab 调用 %d 次）", n)
+	}
+	for _, want := range []string{"form.NewGoxmlFormView(m)", "report.NewGoxmlReportView(m)"} {
+		if strings.Count(string(entrySrc), want) != 1 {
+			t.Fatalf("入口没有把同一个 m 交给两个视图：缺少 %q", want)
+		}
+	}
+
+	// G7 构建需要 PATH 上的 Go；下面所有子进程都关网、只读模块。
+	goExe, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal("编译需要 PATH 上的 Go:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+	env := append(os.Environ(),
+		"CGO_ENABLED=0", "GOMAXPROCS=2", "GOPROXY=off", "GOSUMDB=off",
+		"GOTOOLCHAIN=local", "GOFLAGS=-mod=readonly")
+	runGo := func(dir string, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, goExe, args...)
+		cmd.Dir = dir
+		cmd.Env = env
+		return cmd.CombinedOutput()
+	}
+
+	// G8 窗口入口：只构建，不执行。
+	entry := filepath.Join(root, "lab.exe")
+	buildOut, buildErr := runGo(root, "build", "-mod=readonly", "-o", entry, "./cmd/lab")
+	if buildErr != nil {
+		t.Fatalf("窗口入口构建失败: %v\n%s", buildErr, buildOut)
+	}
+	st, err := os.Stat(entry)
+	if err != nil || st.Size() == 0 {
+		t.Fatalf("窗口入口产物缺失: stat=%v", err)
+	}
+	t.Logf("OBS 窗口入口 %d 字节（只构建，未运行）", st.Size())
+
+	// G9 离屏语义验收：真实 Router 事件，跑模板自带的 12 个用例。
+	semOut, semErr := runGo(root, "test", "-mod=readonly", "-p", "2", "-count=1", "-v",
+		"-run", "^TestLab", "./view/...")
+	if semErr != nil {
+		t.Fatalf("组件布局离屏语义测试失败: %v\n%s", semErr, semOut)
+	}
+	if issues := completionMarkerIssues(semOut, layoutLabSemTests, layoutLabMarker); len(issues) != 0 {
+		t.Fatalf("离屏语义执行未完成: %v\n%s", issues, semOut)
+	}
+	t.Logf("OBS 离屏语义输出（判据与坐标观测）:\n%s", testCmdOutTail(semOut))
+
+	// G10 可编译变异：两条用例判据必须能真的变红。
+	//
+	// 要求**可编译**：编译失败只能说明改崩了，说明不了判据有判别力。
+	// 一条改模型（不需要重新生成），一条改组件源（必须先重新生成）。
+	mutRoot := filepath.Join(t.TempDir(), "变异副本")
+	type mutation struct {
+		id     string
+		file   string
+		anchor string
+		repl   string
+		regen  bool
+		probe  string
+		pkg    string
+		note   string
+	}
+	mutations := []mutation{
+		{
+			id: "M1-apply-writes-other-instance",
+			// 「甲的按钮写进了乙的字段」：两个 LabCell 实例的参数一旦串了，就是这种形状。
+			file:   "model/lab.go",
+			anchor: "\tm.SavedA = m.DraftA\n\tm.CountA++\n",
+			repl: "\tm.SavedB = m.DraftA // M1：甲的保存写进乙的字段（副本变异）\n" +
+				"\tm.CountB++\n",
+			probe: "TestLabFormEventAttributionSeparatesInstances",
+			pkg:   "./view/form/",
+			note:  "组件实例之间参数串位",
+		},
+		{
+			id: "M2-slot-wired-to-wrong-handler",
+			// 「Slot 错接」：插槽内容还在，但接到了另一条接线。
+			file:   "view/form/form.gxml",
+			anchor: `<Button Text="插槽按钮甲" Click="SlotA" Background="#FFF3E0" Padding="3"/>`,
+			repl:   `<Button Text="插槽按钮甲" Click="Probe" Background="#FFF3E0" Padding="3"/>`,
+			regen:  true,
+			probe:  "TestLabFormSlotReplacedAndEmptySlotVanishes",
+			pkg:    "./view/form/",
+			note:   "插槽内容接到错的接线",
+		},
+	}
+	for _, mu := range mutations {
+		mdir := filepath.Join(mutRoot, mu.id)
+		copyTree(t, root, mdir)
+		src := readFile(t, filepath.Join(mdir, mu.file))
+		if n := strings.Count(string(src), mu.anchor); n != 1 {
+			t.Fatalf("变异 %s 的锚点命中 %d 次（应恰好 1 次）：%q", mu.id, n, mu.anchor)
+		}
+		mutated := strings.Replace(string(src), mu.anchor, mu.repl, 1)
+		if mutated == string(src) {
+			t.Fatalf("变异 %s 没有生效", mu.id)
+		}
+		if err := os.WriteFile(filepath.Join(mdir, mu.file), []byte(mutated), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if mu.regen {
+			if out, errs, rc := generateIn(mdir, "--check"); rc != cli.ExitOK {
+				t.Fatalf("变异 %s 重新生成失败 rc=%d（变异必须可编译、可再生）\nstdout=%s\nstderr=%s",
+					mu.id, rc, out, errs)
+			}
+		}
+		out, err := runGo(mdir, "test", "-mod=readonly", "-count=1", "-run", "^"+mu.probe+"$", mu.pkg)
+		if err == nil {
+			t.Fatalf("变异 %s（%s）应用后用例仍为绿：判据没有判别力\n%s", mu.id, mu.note, out)
+		}
+		if bytes.Contains(out, []byte("[build failed]")) {
+			t.Fatalf("变异 %s 不是「可编译变异」——编译就失败了，不能算业务判据变红：\n%s", mu.id, out)
+		}
+		if !bytes.Contains(out, []byte("--- FAIL: "+mu.probe)) {
+			t.Fatalf("变异 %s 的失败不是目标用例变红（缺 --- FAIL: %s）：\n%s", mu.id, mu.probe, out)
+		}
+		t.Logf("OBS 变异 %s（%s）：%s 变红", mu.id, mu.note, mu.probe)
+	}
+
+	// G11 源材料必须一字未动：本用例只读模板、只写临时目录。
+	for _, rel := range layoutLabTemplateFiles {
+		if now := sha256Hex(readFile(t, filepath.Join(material, filepath.FromSlash(rel)))); now != before[rel] {
+			t.Fatalf("模板材料 %s 被改动：%s -> %s", rel, before[rel], now)
+		}
+	}
+	t.Logf("OBS 模板材料 %d 个文件指纹未变", len(layoutLabTemplateFiles))
+}
+
+// TestLayoutLabModelCreationsGuard 证明「数几份模型」这条判据自己能翻红：
+// 注释里出现不算、真实第二份才算。
+func TestLayoutLabModelCreationsGuard(t *testing.T) {
+	one := "func main() {\n\t// 关键点：model.NewLab() 只调用一次\n\tm := model.NewLab()\n}\n"
+	if n := layoutLabModelCreations([]byte(one)); n != 1 {
+		t.Fatalf("注释里的调用被算进判据：%d", n)
+	}
+	two := "func main() {\n\tm := model.NewLab()\n\tother := model.NewLab() // 第二份\n}\n"
+	if n := layoutLabModelCreations([]byte(two)); n != 2 {
+		t.Fatalf("真实第二份没有被数出来：%d", n)
+	}
+	t.Log("OBS 入口模型计数判据：注释 1 份不误判，真两份能翻红")
+}

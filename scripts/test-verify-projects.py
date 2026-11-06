@@ -1046,6 +1046,72 @@ def case_review_batch_runner_fail_closed(ctx, tool):
 CASES.append(('review-batch-runner-fail-closed', case_review_batch_runner_fail_closed))
 
 
+def case_component_layout_registration(ctx, tool):
+    """component-layout-lab 的登记必须与**模板材料**一致。
+
+    这是这条工程唯一的专属断言，钉的是最容易空过的一处：`expectedTests` 是人工抄进
+    PROJECTS 的白名单，一旦它与 `sem_test.go.txt` 里的真实用例集脱节，
+    `test_verdict` 会拿错误的集合去比对——多了会让真实运行永远不成立，少了会让
+    **没跑的用例也算通过**（wrapper 只数 pass 与标记，不读源码）。
+
+    所以真值取材料侧：扫两个 `sem_test.go.txt` 的 `func TestLabXxx(` 声明，
+    与登记逐项比对；再核完成标记、用例名前缀、以及「一例只在一处声明」。
+    本用例不需要 Go、不需要锁，也不会创建任何文件。
+    """
+    name = 'component-layout-lab'
+    spec = tool.PROJECTS.get(name)
+    if not spec:
+        return ['PROJECTS 缺少 %s 登记' % name]
+    failures = []
+    for key, want in (('entry', 'cmd/lab'),
+                      ('testTargets', ['./view/...']),
+                      ('testRun', '^TestLab'),
+                      ('completionMarker', 'LAB-DONE')):
+        if spec.get(key) != want:
+            failures.append('%s.%s = %r，期望 %r' % (name, key, spec.get(key), want))
+
+    expected = list(spec.get('expectedTests') or [])
+    if len(set(expected)) != len(expected):
+        failures.append('%s.expectedTests 有重复项' % name)
+
+    material = os.path.join(ctx.repo, 'examples', 'gxml', 'testprojects', name)
+    declared = []
+    for rel in ('view/form/sem_test.go.txt', 'view/report/sem_test.go.txt'):
+        path = os.path.join(material, *rel.split('/'))
+        if not os.path.isfile(path):
+            failures.append('模板材料缺失：%s' % rel)
+            continue
+        with open(path, 'rb') as fh:
+            text = fh.read().decode('utf-8')
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('func TestLab') and '(' in line:
+                declared.append(line[len('func '):line.index('(')])
+    if len(set(declared)) != len(declared):
+        failures.append('模板里有用例重名声明：%r' % declared)
+
+    missing = sorted(set(declared) - set(expected))
+    stale = sorted(set(expected) - set(declared))
+    if missing:
+        failures.append('登记漏了材料里的用例：%r' % missing)
+    if stale:
+        failures.append('登记里有材料中不存在的用例：%r' % stale)
+
+    marker = spec.get('completionMarker', '')
+    prefix = spec.get('testRun', '')
+    if prefix.startswith('^'):
+        for case in expected:
+            if not case.startswith(prefix[1:]):
+                failures.append('用例 %r 不匹配 testRun %r' % (case, prefix))
+            if not marker:
+                failures.append('完成标记为空')
+                break
+    return failures
+
+
+CASES.append(('component-layout-lab-registration', case_component_layout_registration))
+
+
 
 def main(argv):
     parser = argparse.ArgumentParser(prog='test-verify-projects.py',
