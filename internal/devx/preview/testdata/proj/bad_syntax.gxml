@@ -1,0 +1,9 @@
+<!-- 静态预览·负例夹具：XML 语法错误（标签未闭合）。
+     Parser 诊断应原样透传（PhaseFrontend）。 -->
+<Goxml Version="1">
+  <Page Route="/preview/broken">
+    <Column>
+      <Text Value="未闭合">
+    </Column>
+  </Page>
+</Goxml>

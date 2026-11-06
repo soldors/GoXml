@@ -1,0 +1,10 @@
+<!-- 静态预览·负例夹具：无 ViewModel 却使用动态绑定。
+     标准前端应先以 GXML-BIND-* 拒绝（"no ViewModel is declared"）；
+     预览不重复判（不造第二套校验器），诊断原样透传。 -->
+<Goxml Version="1">
+  <Page Route="/preview/bind">
+    <Column>
+      <Text Value="{Title}"/>
+    </Column>
+  </Page>
+</Goxml>
