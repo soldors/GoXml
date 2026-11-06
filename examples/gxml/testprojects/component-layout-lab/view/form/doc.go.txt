@@ -1,0 +1,10 @@
+// Package form 是表单视图的包。
+//
+// 这个文件必须存在：Goxml 要求产物目录能解析为明确的 Go package
+// （代码生成输出契约 §3.2）。第一次生成之前目录里只有 .gxml，
+// go list 看不到任何非测试 Go 源文件，CLI 会拒绝生成。
+// 生成产物 form_gen.go 落在同一目录、同一 package form；
+// 它的 ViewModel 类型在另一个包（model），产物里有 import "…/model"。
+//
+// 复制模板时把本文件改名为 doc.go。
+package form

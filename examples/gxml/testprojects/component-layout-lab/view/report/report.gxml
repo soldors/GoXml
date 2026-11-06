@@ -1,0 +1,39 @@
+<!-- 组件布局实验台 · 汇总视图（只读）。
+     与 form.gxml 声明**同一个** ViewModel（model.Lab），但本页不接任何事件、
+     不放输入框：只绑定已保存值与派生串。Def 定义本文件自带一份——
+     v1 不支持 Def 跨文件导入，两个文件各自声明（这是现行文法的边界，不是缺陷）。 -->
+<Goxml Version="1" ViewModel="model.Lab">
+  <Defs>
+    <Def Name="LabStat" Props="Label:string; Value:string">
+      <Row Gap="8" Align="Center">
+        <Text Value="{Label}" Background="#E8EEF7" Padding="3" Width="120"/>
+        <Text Value="{Value}" Background="#FFFFFF" Padding="3"/>
+      </Row>
+    </Def>
+    <Def Name="LabPanel" Props="Title:string; Tone:color=#F3F3F3">
+      <Column Padding="12" Gap="6" Background="{Tone}">
+        <Text Value="{Title}" Background="#E6E6E6" Padding="3"/>
+        <Slot/>
+      </Column>
+    </Def>
+  </Defs>
+  <Page Route="/lab/report">
+    <Column Padding="12" Gap="8">
+      <Text Value="组件布局实验台 · 汇总" Background="#EFEFEF" Padding="4"/>
+      <!-- 只读 Grid：固定 120dp + 弹性，展示同一模型的两个已保存值。 -->
+      <Grid Columns="120 *" Gap="6">
+        <Text Value="已保存甲"/>
+        <Text Value="{SavedA}"/>
+        <Text Value="已保存乙"/>
+        <Text Value="{SavedB}"/>
+      </Grid>
+      <LabStat Label="应用甲次数" Value="{CountAText}"/>
+      <LabStat Label="应用乙次数" Value="{CountBText}"/>
+      <LabStat Label="插槽点击" Value="{SlotText}"/>
+      <LabStat Label="汇总" Value="{SummaryText}"/>
+      <LabPanel Title="只读面板">
+        <Text Value="{SavedA}"/>
+      </LabPanel>
+    </Column>
+  </Page>
+</Goxml>
