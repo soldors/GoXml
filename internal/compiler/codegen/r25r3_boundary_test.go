@@ -6,9 +6,8 @@ package codegen
 //     [0,120]；x=100 命中、x=250 脱靶（区域内/外真实事件判据）。
 //   - 子节点 Exact：Expanded[Button Width=60] → cell 内约束注入 →
 //     按钮区域 [0,60]；x=30 命中、x=100 脱靶。
-//   - 无界主轴：Column 无高度上限（Max.Y=100000）下 Expanded 不无限
-//     撑开——实际布局高度=子内容自然高度（<100），且 Expanded cell 内
-//     按钮在自然区域可命中。
+//   - 大有限主轴：Max.Y=100000，低于 sizelayout 无界阈值，按 Flexed 分配。
+//     真正实现阈值边界见 TestR25R3UnboundedThresholdGeometry。
 //
 // 全部为离屏真实事件/几何断言；无 Dp 子串或 Generate 成功顶替。
 
@@ -106,11 +105,11 @@ func TestProbeR25R3ChildExactBoundary(t *testing.T) {
 	assertProbeHealth(t, "r25r3-child-exact-boundary", out)
 }
 
-func TestR25R3UnboundedColumnGeometry(t *testing.T) {
+func TestR25R3LargeFiniteColumnGeometry(t *testing.T) {
 	out := rtProbeVM(t, r25r2SharedVM, `<Column>
   <Expanded><Button Text="B" Click="TapB"/></Expanded>
 </Column>`, `
-func TestProbeR25R3UnboundedColumn(t *testing.T) {
+func TestProbeR25R3LargeFiniteColumn(t *testing.T) {
 	th := material.NewTheme()
 	obj := &gvm.VM{}
 	v, err := NewGoxmlDashboardView(obj)
@@ -133,7 +132,7 @@ func TestProbeR25R3UnboundedColumn(t *testing.T) {
 	h := lay()
 	// Gio Flex 语义（实测锁定，非规范发明）：主轴 Max 有限时，Flexed 子项
 	// 获得全部剩余空间——Expanded 随之填满可用高度（h==Max.Y）。真正的
-	// 「无限」主轴在 Gio 中不可表达；此处以大有限 Max 代表无界约束，
+	// 数学无限不是 int 值；本例是大有限 Max，不代替 sizelayout 无界阈值，
 	// 实际行为登记为边界记录，不伪造「自然高度」目标值。
 	if h != 100000 {
 		t.Fatalf("Flexed 语义下 Expanded 应填满可用主轴（h=Max.Y=100000），实际 h=%d", h)

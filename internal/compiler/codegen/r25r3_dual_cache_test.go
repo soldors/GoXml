@@ -92,6 +92,12 @@ func TestProbeR25R3DualCache(t *testing.T) {
 	if objA.Title != "A" {
 		t.Fatalf("A 的绑定值被串写：%q", objA.Title)
 	}
+	if vA.slots[0].text != "A" || vB.slots[0].text != "B 改" {
+		t.Fatalf("rendered binding cache crossed instances: A=%q B=%q", vA.slots[0].text, vB.slots[0].text)
+	}
+	if vA.staticDims0.Size != dA || vB.staticDims0.Size != dB {
+		t.Fatal("static geometry changed after independent binding update")
+	}
 	// 静态缓存仍不重录（绑定变化不触碰静态子树）。
 	if vA.probeRecs0 != 1 || vB.probeRecs0 != 1 {
 		t.Fatalf("绑定变化不得引发静态子树重录：A=%d B=%d", vA.probeRecs0, vB.probeRecs0)
