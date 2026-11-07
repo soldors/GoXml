@@ -10,7 +10,7 @@
 
 ## 验证和边界
 
-Widgets 全套 33 个顶层用例通过、0 SKIP；MinGW race 与 vet 通过。以 Go overlay 恢复作者原 `modal.go`，同一新增守卫真实 FAIL（编译成功）；去 overlay 后 PASS。
+Widgets 全套 32 个顶层用例通过、0 SKIP；MinGW race 与 vet 通过。以 Go overlay 恢复作者原 `modal.go`，同一新增守卫真实 FAIL（编译成功）；去 overlay 后 PASS。
 
 独立证据位于 `D:/Codes/Goxml-agent-rounds/2026-11-06/product-r26/coordinator/review-repair-r1/`，其中 `b-boundary-probes` 为修复前反例，`b-fix-*` 为绿、变异红和恢复绿。两者时序分开保留。
 
