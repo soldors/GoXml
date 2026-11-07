@@ -1,101 +1,132 @@
 package watch
 
-// R26-A repair-r3：导出「自有进程树」的可取消子进程执行器，供 adapter 复用（避免 cli 依赖环）。
-//
-// 语义：
-//   - 启动 exe（自有工具身份），纳入平台进程树所有权（Windows Job KILL_ON_JOB_CLOSE）。
-//   - ctx 取消/超时 => **终止整棵树**（先在有界 ctx 内 taskkill /T，再 TerminateJobObject + 有界等待
-//     ActiveProcesses 归零），返回前有界确认全部自有后代已退出。**不是** 只杀直接子进程。
-//   - 正常退出 => rc 为真实退出码；取消 => rc=-1 且 Cancelled=true。
-//   - 任何失败（启动/Job 纳入/终止/等待）如实反映，不伪装成功。
-// 非 Windows：进程树所有权 unsupported，返回明确错误（不声称已支持）。
-
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
-	"strings"
+	"sync"
 	"time"
 )
 
-// ExecResult 是 RunCommandTree 的结果。
+// ExecResult separates the observed command exit from cancellation/cleanup errors.
 type ExecResult struct {
 	RC        int
 	Output    string
 	Cancelled bool
-	Err       error // 启动/收口失败（非普通非零退出）
+	Err       error
 }
 
-// RunCommandTree 在自有进程树下运行 exe，可取消并回收整棵树。
+const commandReapGrace = 3 * time.Second
+
+// commandOutput remains safe even when an OS cleanup failure prevents joining a copier.
+type commandOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *commandOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *commandOutput) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
+
+// RunCommandTree runs an owned tool tree. timeout limits execution (0 inherits
+// ctx). Cancellation has a separate bounded cleanup grace; cleanup errors remain
+// visible and never imply that all descendants exited.
 func RunCommandTree(ctx context.Context, exe string, args []string, dir string, extraEnv []string, timeout time.Duration) ExecResult {
+	if ctx == nil {
+		return ExecResult{RC: -1, Err: errors.New("nil command context")}
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return ExecResult{RC: -1, Cancelled: true, Err: err}
+	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), extraEnv...)
-	var buf strings.Builder
+	var buf commandOutput
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-
-	job, jerr := newJobOwnership()
-	if jerr != nil {
-		return ExecResult{RC: -1, Err: jerr}
+	// A descendant retaining an inherited pipe must not block root-exit detection.
+	cmd.WaitDelay = 250 * time.Millisecond
+	job, err := newJobOwnership()
+	if err != nil {
+		return ExecResult{RC: -1, Err: err}
 	}
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		closeJobOwnership(job)
 		return ExecResult{RC: -1, Err: err}
 	}
-	pid := cmd.Process.Pid
-	if aerr := assignJobOwnership(job, pid); aerr != nil {
-		closeJobOwnership(job)
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return ExecResult{RC: -1, Err: aerr}
-	}
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
-
-	var deadline time.Time
-	if timeout > 0 {
-		deadline = time.Now().Add(timeout)
+	if err = assignJobOwnership(job, cmd.Process.Pid); err != nil {
+		closeJobOwnership(job)
+		kerr := cmd.Process.Kill()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), commandReapGrace)
+		defer cancel()
+		_, joined := joinCommand(cleanupCtx, waitCh)
+		if !joined {
+			err = errors.Join(err, errors.New("failed to reap unassigned command"))
+		}
+		return ExecResult{RC: -1, Output: buf.String(), Err: errors.Join(err, kerr)}
 	}
-
 	select {
 	case werr := <-waitCh:
-		// 正常结束：仍终止/清理 Job（子孙可能仍在），有界等待，再返回真实 rc。
-		if jerr := terminateAndWaitJob(job, time.Now().Add(3*time.Second)); jerr != nil {
-			return ExecResult{RC: exitCodeOf(cmd, werr), Output: buf.String(), Err: jerr}
-		}
+		jerr := terminateAndWaitJob(job, time.Now().Add(commandReapGrace))
+		var infra error
 		if werr != nil {
-			return ExecResult{RC: exitCodeOf(cmd, werr), Output: buf.String()}
+			var ee *exec.ExitError
+			if !errors.As(werr, &ee) {
+				infra = werr
+			}
 		}
-		return ExecResult{RC: 0, Output: buf.String()}
+		return ExecResult{RC: exitCodeOf(cmd, werr), Output: buf.String(), Err: errors.Join(infra, jerr)}
 	case <-ctx.Done():
-		return cancelTree(ctx, job, pid, cmd, waitCh, &buf, deadline)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), commandReapGrace)
+		defer cancel()
+		// Use a live cleanup context, not the already-cancelled execution context.
+		terr := killProcessTree(cleanupCtx, cmd.Process.Pid)
+		deadline, _ := cleanupCtx.Deadline()
+		jerr := terminateAndWaitJob(job, deadline)
+		_, joined := joinCommand(cleanupCtx, waitCh)
+		if !joined {
+			kerr := cmd.Process.Kill()
+			finalCtx, finalCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			_, joined = joinCommand(finalCtx, waitCh)
+			finalCancel()
+			if !joined {
+				jerr = errors.Join(jerr, kerr, fmt.Errorf("command root not reaped within cleanup grace"))
+			}
+		}
+		return ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: errors.Join(ctx.Err(), terr, jerr)}
 	}
 }
 
-func cancelTree(ctx context.Context, job jobHandle, pid int, cmd *exec.Cmd, waitCh chan error, buf *strings.Builder, deadline time.Time) ExecResult {
-	if deadline.IsZero() {
-		deadline = time.Now().Add(5 * time.Second)
-	}
-	killProcessTree(ctx, pid) // 有界 ctx（调用方 deadline 或默认）
-	if jerr := terminateAndWaitJob(job, deadline); jerr != nil {
-		return ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: jerr}
-	}
-	// 有界等根退出。
+func joinCommand(ctx context.Context, ch <-chan error) (error, bool) {
 	select {
-	case <-waitCh:
-	case <-time.After(time.Until(deadline)):
-		return ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: errors.New("tree reap wait timeout")}
+	case err := <-ch:
+		return err, true
+	case <-ctx.Done():
+		return ctx.Err(), false
 	}
-	return ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: ctx.Err()}
 }
-
 func exitCodeOf(cmd *exec.Cmd, werr error) int {
+	if cmd.ProcessState != nil {
+		return cmd.ProcessState.ExitCode()
+	}
 	if werr == nil {
 		return 0
 	}
-	if ee, ok := werr.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(werr, &ee) {
 		return ee.ExitCode()
 	}
 	return -1

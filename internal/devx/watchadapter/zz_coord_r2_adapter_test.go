@@ -128,8 +128,8 @@ func main(){
 	if pid != uint32(os.Getpid()) {
 		t.Fatalf("refuse to touch chain not proven owned by this test: %v parent=%d", ids, pid)
 	}
-	if len(ids) < 4 {
-		t.Fatalf("control did not include toolexec -> Go build -> generator -> go run: %v", ids)
+	if len(ids) < 3 {
+		t.Fatalf("control did not include toolexec -> Go build -> generator (optional go run): %v", ids)
 	}
 	for _, pid := range ids {
 		p, e := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_TERMINATE, false, pid)

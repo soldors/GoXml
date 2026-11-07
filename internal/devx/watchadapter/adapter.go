@@ -1,23 +1,19 @@
-// Package watchadapter 是 internal/devx/watch 与 internal/cli 之间的独立适配层（无 cli↔watch 环）。
-//
-// R26-A repair-r3：
-//   - **F-A9 工具身份**：CLIGenerate 不再依赖调用者 cwd 里存在 goxml 源码、也不默认每代 `go run`
-//     工具源。改为**解析被验工具可执行文件身份**一次（缓存复用），再从任意用户 cwd 运行它。
-//     工具身份解析顺序：显式注入的 ToolExe（SetToolExe / NewRealBuilder 的 tool 参数）> 包缓存（首次
-//     由 `runtime.Caller` 定位仓库并 `go build ./cmd/goxml` 一次）> 失败即如实报错。**不硬编码作者
-//     工作树/主库路径**：仓库根由 runtime.Caller 从本文件位置推导，不依赖 cwd。
-//   - **F-A3-R2 取消收整棵树**：用 watch.RunCommandTree（自有 Job/进程树所有权）运行工具，取消/超时
-//     终止**整棵**生成树并有界等待收口后返回；不再用 CommandContext/WaitDelay 声称无迟到写盘。
+// Package watchadapter connects the Watch builder to a verified goxml tool.
+// NewRealBuilder captures an explicit executable per instance for production.
+// SetToolExe configures only the standalone CLIGenerate default. Without that
+// default, CLIGenerate offers a source-development go-run fallback; this is not
+// the installed CLI route. Tool processes are owned by watch.RunCommandTree.
 package watchadapter
 
 import (
 	"context"
+	"fmt"
 	"github.com/goxml/goxml/internal/devx/watch"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 )
 
 var (
@@ -33,7 +29,7 @@ func SetToolExe(path string) {
 	toolExe = path
 }
 
-// ToolIdentity 返回当前解析到的工具身份（路径）与仓库根（诊断用）。
+// ToolIdentity returns the standalone CLIGenerate default, not a builder override.
 func ToolIdentity() (exe, root string) {
 	toolMu.Lock()
 	defer toolMu.Unlock()
@@ -61,7 +57,8 @@ func repoRootViaCaller() (string, bool) {
 	}
 }
 
-// resolveToolExe 返回被验工具可执行文件路径（缓存）。首次从源码构建一次（不依赖 cwd）。
+// resolveToolExe is a private development build helper. It is not called by
+// the production builder route, and never reuses an unverified cross-process file.
 func resolveToolExe() (string, string, error) {
 	toolMu.Lock()
 	defer toolMu.Unlock()
@@ -76,15 +73,22 @@ func resolveToolExe() (string, string, error) {
 	if runtime.GOOS == "windows" {
 		exeName += ".exe"
 	}
-	bin := filepath.Join(os.TempDir(), "goxml-tool-"+buildStamp()+exeName)
-	if _, err := os.Stat(bin); err != nil {
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/goxml")
-		cmd.Dir = root
-		cmd.Env = os.Environ()
-		if out, berr := cmd.CombinedOutput(); berr != nil {
-			return "", root, &buildError{msg: string(out), err: berr}
-		}
+	file, createErr := os.CreateTemp("", "goxml-watch-*-"+exeName)
+	if createErr != nil {
+		return "", root, createErr
 	}
+	bin := file.Name()
+	file.Close()
+	result := watch.RunCommandTree(context.Background(), "go", []string{"build", "-o", bin, "./cmd/goxml"}, root, nil, 2*time.Minute)
+	if result.Err != nil || result.RC != 0 {
+		_ = os.Remove(bin)
+		err := result.Err
+		if err == nil {
+			err = fmt.Errorf("tool build exit %d", result.RC)
+		}
+		return "", root, &buildError{msg: result.Output, err: err}
+	}
+
 	toolExe, toolRoot = bin, root
 	return toolExe, root, nil
 }
@@ -98,26 +102,45 @@ func (e *buildError) Error() string {
 	return "构建被验工具失败: " + e.msg + ": " + e.err.Error()
 }
 
-// buildStamp 提供一个进程级稳定后缀（同一进程复用缓存二进制；跨进程可重建）。
-func buildStamp() string { return "r3" }
-
-// CLIGenerate 以**自有进程树**运行被验工具 `generate <projectDir> --check`，可取消并回收整棵树。
-// 工具以 `go run ./cmd/goxml`（cwd=仓库根，runtime.Caller 推导，**不依赖调用者 cwd**）形式运行，
-// 保留 toolexec→go build→generator→go run 完整真实生成父链；整棵树由 RunCommandTree 的 Job 拥有，
-// 取消即终止全链并有界收口（F-A3-R2）。工具源码根由 runtime.Caller 推导，非作者工作树/主库硬编码。
+// CLIGenerate 执行默认工具身份。显式 SetToolExe 优先；未设置时只提供
+// 源码开发态 fallback。发布命令应把自身 exe 传给 NewRealBuilder，不依赖源码。
 func CLIGenerate(ctx context.Context, projectDir string) (int, string) {
+	absolute, err := filepath.Abs(projectDir)
+	if err != nil {
+		return -1, err.Error()
+	}
+	projectDir = absolute
+	exe, _ := ToolIdentity()
+	if exe != "" {
+		return generateWithTool(ctx, exe, projectDir)
+	}
 	root, ok := repoRootViaCaller()
 	if !ok {
-		return -1, "watchadapter: 无法从源码位置推导被验工具仓库根"
+		return -1, "watchadapter: no tool executable supplied (source fallback unavailable)"
 	}
-	goBin := "go"
-	res := watch.RunCommandTree(ctx, goBin, []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}, root, nil, 0)
-	if res.Err != nil && !res.Cancelled {
-		// 启动/收口失败（非业务非零退出）如实上报。
-		return -1, "watchadapter: " + res.Err.Error() + "\n" + tail(res.Output)
+	return generationResult(watch.RunCommandTree(ctx, "go", []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}, root, nil, 0))
+}
+
+func generateWithTool(ctx context.Context, exe, projectDir string) (int, string) {
+	absolute, err := filepath.Abs(projectDir)
+	if err != nil {
+		return -1, err.Error()
 	}
+	projectDir = absolute
+	return generationResult(watch.RunCommandTree(ctx, exe, []string{"generate", projectDir, "--check"}, projectDir, nil, 0))
+}
+
+// 保留执行失败与取消后的清理原因；不能把清理失败压成一个泛化的取消字符串。
+func generationResult(res watch.ExecResult) (int, string) {
 	if res.Cancelled {
-		return -1, "canceled/timeout: " + tail(res.Output)
+		detail := "canceled/timeout"
+		if res.Err != nil {
+			detail += ": " + res.Err.Error()
+		}
+		return -1, detail + "\n" + tail(res.Output)
+	}
+	if res.Err != nil {
+		return -1, "watchadapter: " + res.Err.Error() + "\n" + tail(res.Output)
 	}
 	return res.RC, tail(res.Output)
 }
@@ -142,13 +165,15 @@ func tail(s string) string {
 // NewRealBuilder 构造已接线（CLIGenerate）的 RealBuilder。entryPkg 相对 ProjectDir。
 // toolExe 非空时显式指定被验工具身份（推荐协调者接线时传入）；空则自动解析（runtime.Caller 推导）。
 func NewRealBuilder(projectDir, entryPkg, outBinary, toolExe string) *watch.RealBuilder {
+	if absolute, err := filepath.Abs(projectDir); err == nil {
+		projectDir = absolute
+	}
+	generate := CLIGenerate
 	if toolExe != "" {
-		SetToolExe(toolExe)
+		// Capture this builder's tool, independent of later builders/default changes.
+		generate = func(ctx context.Context, project string) (int, string) {
+			return generateWithTool(ctx, toolExe, project)
+		}
 	}
-	return &watch.RealBuilder{
-		ProjectDir: projectDir,
-		EntryPkg:   entryPkg,
-		OutBinary:  outBinary,
-		Generate:   CLIGenerate,
-	}
+	return &watch.RealBuilder{ProjectDir: projectDir, EntryPkg: entryPkg, OutBinary: outBinary, Generate: generate}
 }

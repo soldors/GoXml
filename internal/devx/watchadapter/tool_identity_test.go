@@ -32,6 +32,7 @@ func TestResolveToolExeBuildsFromCallerRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveToolExe: %v", err)
 	}
+	t.Cleanup(func() { SetToolExe(""); _ = os.Remove(exe) })
 	if root == "" || exe == "" {
 		t.Fatalf("root/exe empty: root=%q exe=%q", root, exe)
 	}

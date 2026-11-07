@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -60,23 +60,27 @@ func (b *RealBuilder) buildFn() BuildFunc {
 // realGoBuild 在 **workDir（=ProjectDir）** 下执行 `go build -o <out> <entry>`，使相对入口与
 // 有效构建上下文与真实工程一致（F-A2：此前未设 cwd，误编译 watch 库包）。尊重 ctx 取消/超时。
 func realGoBuild(ctx context.Context, workDir string, args []string) (int, string) {
-	if workDir == "" {
-		return -1, "empty workDir"
+	if workDir == "" || len(args) == 0 {
+		return -1, "empty workDir or build command"
 	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Dir = workDir
-	cmd.Env = os.Environ()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctx.Err() != nil {
-			return -1, string(out) + "\ncanceled: " + ctx.Err().Error()
-		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), string(out)
-		}
-		return -1, string(out) + "\n" + err.Error()
+	result := RunCommandTree(ctx, args[0], args[1:], workDir, nil, 0)
+	if result.Err != nil {
+		return -1, result.Output + "\n" + result.Err.Error()
 	}
-	return 0, string(out)
+	return result.RC, result.Output
+}
+
+// BinaryPath is the one source of truth for build and process handoff paths.
+// Explicit output paths are preserved; default Windows outputs carry .exe.
+func (b *RealBuilder) BinaryPath(gen int) string {
+	if b.OutBinary != "" {
+		return b.OutBinary
+	}
+	name := fmt.Sprintf("watch-bin-gen%d", gen)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(b.ProjectDir, ".goxml", name)
 }
 
 // Build 实现 Builder。generate 失败归类 "generate"；go build 失败归类 "build"；ctx 取消/超时按
@@ -108,9 +112,8 @@ func (b *RealBuilder) Build(ctx context.Context, gen int, changed []string) Gene
 		return GenerationResult{OK: false, Stage: "generate", Detail: summarize(serr), Gen: gen}
 	}
 	// 2) go build 入口到本代唯一二进制（cwd=ProjectDir）
-	outBin := b.OutBinary
-	if outBin == "" {
-		outBin = filepath.Join(b.ProjectDir, ".goxml", fmt.Sprintf("watch-bin-gen%d", gen))
+	outBin := b.BinaryPath(gen)
+	if b.OutBinary == "" {
 		if err := os.MkdirAll(filepath.Dir(outBin), 0o755); err != nil {
 			return GenerationResult{OK: false, Stage: "build", Detail: err.Error(), Gen: gen}
 		}
