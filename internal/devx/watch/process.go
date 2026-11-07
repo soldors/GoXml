@@ -1,7 +1,7 @@
 package watch
 
-// R26-A repair-r2：ProcessManager 平台无关部分。Windows 的 Job Object 实现隔离在 proc_windows.go；
-// 其它平台在 proc_other.go 明确返回 unsupported（保持公共包可编译，不声称已支持）。
+// ProcessManager 的平台无关部分。Job Object 实现经 proc.go 委托给
+// internal/devx/process；其它平台明确返回 unsupported（可编译不代表可运行）。
 //
 // 交接顺序（任务 A2）：stop-old → start-new（构建已完成，构建期间旧继续服务）。
 // 停止链有界（F-A4-R1）：整个 stop（tree command + job 终止 + 等待）由一个 StopTimeout deadline 覆盖，
@@ -11,6 +11,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -44,10 +45,12 @@ func (c *Child) Running() bool {
 
 // ProcessManager 实现 Swapper：stop-old → start-new 串行交接；停止链整体有界。
 type ProcessManager struct {
-	BinaryForGen func(gen int) string
-	Args         []string
-	StopTimeout  time.Duration
-	Spawn        func(gen int, bin string, args []string) (*exec.Cmd, error)
+	BinaryForGen   func(gen int) string
+	Args           []string
+	WorkDir        string
+	Stdout, Stderr io.Writer
+	StopTimeout    time.Duration
+	Spawn          func(gen int, bin string, args []string) (*exec.Cmd, error)
 
 	mu      sync.Mutex
 	current *Child
@@ -95,8 +98,15 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 		cmd, err = m.Spawn(gen, bin, m.Args)
 	} else {
 		cmd = exec.Command(bin, m.Args...)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
+		cmd.Dir = m.WorkDir
+		cmd.Stdout = m.Stdout
+		if cmd.Stdout == nil {
+			cmd.Stdout = os.Stderr
+		}
+		cmd.Stderr = m.Stderr
+		if cmd.Stderr == nil {
+			cmd.Stderr = os.Stderr
+		}
 		if r, w, perr := os.Pipe(); perr == nil {
 			stdinR, stdinW = r, w
 			cmd.Stdin = r
@@ -214,6 +224,9 @@ func (m *ProcessManager) Swap(ctx context.Context, gen int) error {
 			m.current = nil
 		}
 		m.mu.Unlock()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	newc, err := m.start(gen, bin)
 	if err != nil {

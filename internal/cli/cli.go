@@ -16,8 +16,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -34,6 +36,8 @@ const usage = `goxml — Goxml 的生成命令行
 用法:
 
   goxml generate <path> [flags]    生成 .gxml 对应的 Go 代码
+  goxml watch <module-dir> --entry <package> [flags]  监听、检查、重建并重启应用
+  goxml preview <file.gxml> [flags]  预览纯静态页
   goxml help                       显示本帮助
 
 generate 参数:
@@ -42,6 +46,11 @@ generate 参数:
   --check            提交前执行 package/build 检查
   --clean            按 Manifest 清理已登记的孤儿产物
   --no-cache         忽略增量缓存（仍更新 Manifest）
+
+watch / preview 参数:
+
+  goxml watch --help
+  goxml preview --help
 
 退出码:
 
@@ -54,6 +63,21 @@ generate 参数:
 //
 // argv 不含程序名；stdout 收帮助与正常输出，stderr 收诊断。
 func Run(argv []string, stdout, stderr io.Writer) int {
+	return RunContext(context.Background(), argv, stdout, stderr)
+}
+
+// RunContext preserves generate behavior and adds cancellation for development commands.
+func RunContext(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	tool, _ := os.Executable()
+	return runContextWithTool(ctx, argv, stdout, stderr, tool)
+}
+
+func runContextWithTool(ctx context.Context, argv []string, stdout, stderr io.Writer, tool string) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stdout, stderr = synchronizeCommandWriters(stdout, stderr)
+
 	if len(argv) == 0 {
 		fmt.Fprintln(stderr, "goxml: 缺少子命令")
 		fmt.Fprint(stderr, usage)
@@ -63,6 +87,10 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return ExitOK
+	case "watch":
+		return runWatch(ctx, argv[1:], stdout, stderr, tool)
+	case "preview":
+		return runPreview(ctx, argv[1:], stdout, stderr)
 	case "generate":
 		return runGenerate(argv[1:], stdout, stderr)
 	default:

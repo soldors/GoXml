@@ -1,10 +1,9 @@
 package preview
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
+	"github.com/goxml/goxml/internal/devx/process"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -33,27 +32,21 @@ func buildHost(h *hostLayout, opts Options) (string, string, error) {
 		timeout = 300 * time.Second
 	}
 	exe := filepath.Join(h.Dir, "preview-host.exe")
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	parent := opts.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	args := []string{"build", "-mod=readonly", "-o", exe, "."}
-	cmd := exec.CommandContext(ctx, goExe, args...)
-	cmd.Dir = h.Dir
-	cmd.Env = append(os.Environ(),
-		"CGO_ENABLED=0",
-		"GOMAXPROCS=2",
-		"GOPROXY=off",
-		"GOSUMDB=off",
-		"GOTOOLCHAIN=local",
-		"GOFLAGS=-mod=readonly",
-	)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return exe, out.String(), fmt.Errorf("preview: 宿主构建超时（>%s）: %w", timeout, err)
-		}
-		return exe, out.String(), fmt.Errorf("preview: go build 退出错误: %w", err)
+	env := []string{"CGO_ENABLED=0", "GOMAXPROCS=2", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=readonly"}
+	result := process.RunCommandTree(ctx, goExe, args, h.Dir, env, 0)
+	if result.Err != nil {
+		return exe, result.Output, fmt.Errorf("preview: host build: %w", result.Err)
 	}
-	return exe, out.String(), nil
+	if result.RC != 0 {
+		return exe, result.Output, fmt.Errorf("preview: go build exit %d", result.RC)
+	}
+
+	return exe, result.Output, nil
 }

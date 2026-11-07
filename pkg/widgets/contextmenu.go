@@ -64,6 +64,9 @@ type ContextMenu struct {
 	// 时归零）。
 	lastRect  image.Rectangle
 	itemRects []image.Rectangle
+	// Scratch operations are reused across labels and frames. Measuring must not
+	// allocate a new operations arena for every item on the stable frame path.
+	measureOps op.Ops
 }
 
 // NewContextMenu 以固定条目集合构造菜单（允许零条目：空面板仍可打开，
@@ -247,7 +250,7 @@ func (c *ContextMenu) measurePanel(gtx layout.Context, th *material.Theme) image
 	padding := 2 * gtx.Dp(unit.Dp(16)) // 行内左右各 16dp
 	width := 0
 	for i := range c.items {
-		w := labelWidth(gtx, th.Shaper, c.items[i].Title) + padding
+		w := labelWidth(gtx, &c.measureOps, th.Shaper, c.items[i].Title) + padding
 		if w > width {
 			width = w
 		}
@@ -261,12 +264,12 @@ func (c *ContextMenu) measurePanel(gtx layout.Context, th *material.Theme) image
 	return image.Pt(width, len(c.items)*c.rowHeightPx(gtx))
 }
 
-// labelWidth 离线测量单行文本宽度（写进一次性 ops，不污染真实 ops）。
-func labelWidth(gtx layout.Context, shaper *text.Shaper, s string) int {
+// labelWidth 用复用的 scratch ops 测量单行文本，不污染真实帧的 ops。
+func labelWidth(gtx layout.Context, ops *op.Ops, shaper *text.Shaper, s string) int {
 	const maxInt = int(^uint(0) >> 1)
-	var ops op.Ops
+	ops.Reset()
 	wgtx := gtx
-	wgtx.Ops = &ops
+	wgtx.Ops = ops
 	wgtx.Constraints = layout.Constraints{Max: image.Pt(maxInt, maxInt)}
 	l := widget.Label{}
 	macro := op.Record(wgtx.Ops)

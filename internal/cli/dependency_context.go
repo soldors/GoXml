@@ -24,9 +24,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/goxml/goxml/internal/devx/process"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 )
 
@@ -66,27 +69,44 @@ type measuredContextValues struct {
 // 相同的有效配置。返回 error 即「上下文不可测」，调用方必须 fail-closed
 // 或保守 miss，不得拿空值继续。
 func measureContextValues(goExe string, moduleRoot string, envOverrides ...string) (measuredContextValues, error) {
+	return measureContextValuesContext(context.Background(), goExe, moduleRoot, envOverrides...)
+}
+
+func measureContextValuesContext(parent context.Context, goExe string, moduleRoot string, envOverrides ...string) (measuredContextValues, error) {
 	if goExe == "" {
 		goExe = "go"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cacheContextTimeout)
+	ctx, cancel := context.WithTimeout(parent, cacheContextTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, goExe, "env", "-json",
-		"GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOWORK", "GOVERSION", "GOROOT", "GOEXPERIMENT",
-		"GOAMD64", "GOARM", "GOARM64", "GO386", "GOMIPS", "GOMIPS64", "GOPPC64", "GORISCV64", "GOWASM")
-	if moduleRoot != "" {
-		cmd.Dir = moduleRoot
-	}
-	// 显式禁用网络类工具链拉动：只读本地 env，不触发下载。
-	cmd.Env = append(cmdEnvBase(), "GOTOOLCHAIN=local")
-	cmd.Env = append(cmd.Env, envOverrides...)
-	out, err := cmd.Output()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return measuredContextValues{}, fmt.Errorf("go env 超时（%s）", cacheContextTimeout)
+	args := []string{"env", "-json", "GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOWORK", "GOVERSION", "GOROOT", "GOEXPERIMENT", "GOAMD64", "GOARM", "GOARM64", "GO386", "GOMIPS", "GOMIPS64", "GOPPC64", "GORISCV64", "GOWASM"}
+	env := append([]string{"GOTOOLCHAIN=local"}, envOverrides...)
+	var out []byte
+	if runtime.GOOS == "windows" {
+		result := process.RunCommandTree(ctx, goExe, args, moduleRoot, env, 0)
+		if result.Err != nil {
+			if errors.Is(result.Err, context.DeadlineExceeded) {
+				return measuredContextValues{}, fmt.Errorf("go env 超时（上限%s）: %w", cacheContextTimeout, result.Err)
+			}
+			return measuredContextValues{}, fmt.Errorf("go env 失败: %w", result.Err)
 		}
-		return measuredContextValues{}, fmt.Errorf("go env 失败: %w", err)
+		if result.RC != 0 {
+			return measuredContextValues{}, fmt.Errorf("go env 失败: exit %d: %s", result.RC, result.Stderr)
+		}
+		out = []byte(result.Stdout)
+	} else {
+		// Preserve existing generate support on platforms where the new Watch
+		// process-tree backend explicitly remains unsupported.
+		cmd := exec.CommandContext(ctx, goExe, args...)
+		cmd.Dir = moduleRoot
+		cmd.Env = append(cmdEnvBase(), env...)
+		cmd.WaitDelay = 250 * time.Millisecond
+		var err error
+		out, err = cmd.Output()
+		if err != nil {
+			return measuredContextValues{}, fmt.Errorf("go env 失败: %w", err)
+		}
 	}
+
 	var values map[string]string
 	if err := json.Unmarshal(out, &values); err != nil {
 		return measuredContextValues{}, fmt.Errorf("解析 go env JSON: %w", err)

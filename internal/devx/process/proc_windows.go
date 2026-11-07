@@ -1,6 +1,6 @@
 //go:build windows
 
-package watch
+package process
 
 // Windows 平台实现：Job Object 进程树所有权 + 有界 tree 命令。仅此文件 import x/sys/windows，
 // 使公共包在非 Windows 下可编译（F-A8）。
@@ -15,11 +15,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// jobHandle 是 Windows Job 对象句柄。
-type jobHandle = windows.Handle
+// JobHandle 是 Windows Job 对象句柄。
+type JobHandle = windows.Handle
 
-// newJobOwnership 创建带 KILL_ON_JOB_CLOSE 的 Job。
-func newJobOwnership() (jobHandle, error) {
+// NewJobOwnership 创建带 KILL_ON_JOB_CLOSE 的 Job。
+func NewJobOwnership() (JobHandle, error) {
 	h, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return 0, err
@@ -34,8 +34,8 @@ func newJobOwnership() (jobHandle, error) {
 	return h, nil
 }
 
-// assignJobOwnership 把 PID 纳入 Job（错误必须上报，不忽略）。
-func assignJobOwnership(job jobHandle, pid int) error {
+// AssignJobOwnership 把 PID 纳入 Job（错误必须上报，不忽略）。
+func AssignJobOwnership(job JobHandle, pid int) error {
 	if job == 0 {
 		return nil
 	}
@@ -47,8 +47,8 @@ func assignJobOwnership(job jobHandle, pid int) error {
 	return windows.AssignProcessToJobObject(job, ph)
 }
 
-// closeJobOwnership 关闭句柄（KILL_ON_JOB_CLOSE 触发终止整棵树）。
-func closeJobOwnership(job jobHandle) {
+// CloseJobOwnership 关闭句柄（KILL_ON_JOB_CLOSE 触发终止整棵树）。
+func CloseJobOwnership(job JobHandle) {
 	if job != 0 {
 		windows.CloseHandle(job)
 	}
@@ -66,9 +66,9 @@ type jobAccounting struct {
 	TotalTerminatedProcesses  uint32
 }
 
-// terminateAndWaitJob 显式终止 Job 内全部进程并**有界等待 ActiveProcesses 归零**后关闭句柄。
+// TerminateAndWaitJob 显式终止 Job 内全部进程并**有界等待 ActiveProcesses 归零**后关闭句柄。
 // 任何失败（Terminate/Query 错误、超时未归零）都如实返回 error，不伪装成功。
-func terminateAndWaitJob(job jobHandle, deadline time.Time) error {
+func TerminateAndWaitJob(job JobHandle, deadline time.Time) error {
 	if job == 0 {
 		return nil
 	}
@@ -98,8 +98,8 @@ func terminateAndWaitJob(job jobHandle, deadline time.Time) error {
 	return fmt.Errorf("job 未在 StopTimeout 内清空（ActiveProcesses 未归零）")
 }
 
-// killProcessTree 在**有界 ctx**内执行 taskkill /T /F（受 StopTimeout 约束，不无限卡）。
-func killProcessTree(ctx context.Context, pid int) error {
+// KillProcessTree 在**有界 ctx**内执行 taskkill /T /F（受 StopTimeout 约束，不无限卡）。
+func KillProcessTree(ctx context.Context, pid int) error {
 	cmd := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", pid))
 	return cmd.Run()
 }

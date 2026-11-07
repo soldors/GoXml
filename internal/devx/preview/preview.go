@@ -29,6 +29,7 @@
 package preview
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/token"
@@ -71,6 +72,8 @@ const (
 
 // Options 是预览运行的外部输入。
 type Options struct {
+	// Context cancels CLI preparation/build; nil retains the original background behavior.
+	Context context.Context
 	// File 是待预览的 .gxml 路径（相对 WorkDir 或绝对）。
 	File string
 	// WorkDir 是解析 File 的基准目录；空表示当前工作目录。
@@ -157,6 +160,11 @@ func (r *Result) Built() bool { return r != nil && r.Phase == PhaseBuilt }
 //   - err == nil 且 res.OK()：res.Source 是生成 View 源码。
 func Run(opts Options) (*Result, error) {
 	r := &Result{Phase: PhaseResolve}
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return r, err
+		}
+	}
 
 	// ---- 阶段 1：resolve ----
 	file, src, moduleRoot, err := resolveInput(opts)
@@ -236,6 +244,12 @@ func Run(opts Options) (*Result, error) {
 	r.OutputName = gen.Artifact.OutputName
 	r.PkgName = gen.Artifact.PackageName
 	r.assets = codegen.AssetRefs(prep.Doc)
+
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return r, err
+		}
+	}
 
 	// ---- 阶段 5：隔离宿主布置（可选，SkipHost 时停在生成）----
 	if opts.SkipHost {
