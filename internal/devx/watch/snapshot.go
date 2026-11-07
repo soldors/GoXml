@@ -63,7 +63,7 @@ func readOwnedIndex(projectDir string) (*ownedIndex, error) {
 func toSlash(p string) string { return strings.ReplaceAll(p, string(filepath.Separator), "/") }
 
 // classify 依据“Manifest 登记 ∧ 产物保护头 Source 与登记一致”判定 owned；否则用户文件。
-// 只有两条同时成立才算 owned（与 --clean 所有权口径一致）。
+// 三条同时成立才 owned：Manifest 登记 ∧ 真实保护头 ∧ 第2行 Source 与登记源精确一致（与 cli 口径一致）。
 func (idx *ownedIndex) classify(projectDir, rel string, content []byte) FileClass {
 	wantBase, registered := idx.byOutput[rel]
 	if !registered {
@@ -76,11 +76,25 @@ func (idx *ownedIndex) classify(projectDir, rel string, content []byte) FileClas
 	return ClassUser
 }
 
-// guardHeaderOwned 检查产物内容是否带**本工具真实保护头**（复用 codegen.HasProtectedHeader 的
-// 三行规范，不复制头格式）。所有权口径与 codegen/--clean 一致：Manifest 登记 ∧ 真实保护头；
-// Source 路径内容不参与判定（HasProtectedHeader 只校验第 2 行前缀，与 codegen 同规范）。
-func guardHeaderOwned(content []byte, _ string) bool {
-	return codegen.HasProtectedHeader(content)
+// guardHeaderOwned 检查产物内容是否带**本工具真实保护头**（复用 codegen.HasProtectedHeader 三行规范），
+// 且第 2 行 `// Source: <X>` 与 Manifest 登记的源相对路径**精确一致**（与 cli 的 headerSourceMatches
+// 及 --clean/target/cache 所有权口径相同：登记 Source 是项目相对路径，逐字比对，不比对 basename 的宽松前缀）。
+// 这样「另一页产物（Source 不符）」不会被误当本页 owned，用户对其改动能被监听。
+func guardHeaderOwned(content []byte, wantSourceRel string) bool {
+	if !codegen.HasProtectedHeader(content) {
+		return false
+	}
+	lines := strings.SplitN(string(content), "\n", 3)
+	if len(lines) < 2 {
+		return false
+	}
+	// 保护头 `// Source:` 是**相对目标包目录**的路径（= 源文件 basename）；与 Manifest 登记的
+	// 源相对路径的 basename 精确比对（coordinator：basename 精确一致）。
+	wantBase := wantSourceRel
+	if i := strings.LastIndex(wantSourceRel, "/"); i >= 0 {
+		wantBase = wantSourceRel[i+1:]
+	}
+	return strings.TrimRight(lines[1], "\r") == "// Source: "+wantBase
 }
 
 // Scan 对 ProjectDir 做一次确定性快照，返回 Snapshot 与 owned 索引。

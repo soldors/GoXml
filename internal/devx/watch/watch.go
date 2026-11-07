@@ -3,6 +3,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // GenerationResult 报告一次 generate+build 的结果分类（区分资产/生成失败与入口 build 失败）。
@@ -59,6 +60,7 @@ type Watch struct {
 	// genFailStreak 记录连续失败次数（诊断；不改变失败不重启旧进程的语义）。
 	genFailStreak int
 	stopped       bool
+	runStart      time.Time // 注入时钟基准（供 staleness 登记 atMS 用；确定性测试可覆盖）
 }
 
 // New 构造 Watch。builder/swapper 必须非 nil（测试可注入 fake）。
@@ -73,7 +75,7 @@ func New(cfg Config, builder Builder, swapper Swapper, obs Observer) (*Watch, er
 	if err != nil {
 		return nil, fmt.Errorf("初始快照失败: %w", err)
 	}
-	return &Watch{cfg: cfg, db: NewDebouncer(cfg.debounce()), p: ports{builder, swapper, obs}, prev: prev}, nil
+	return &Watch{cfg: cfg, db: NewDebouncer(cfg.debounce()), p: ports{builder, swapper, obs}, prev: prev, runStart: time.Now()}, nil
 }
 
 // Debouncer 暴露内部状态机（测试/诊断）。
@@ -123,38 +125,76 @@ func (w *Watch) Tick(ctx context.Context, nowMS int) (bool, error) {
 // F-A3：在**构建前**与**发布/交接前**检查 ctx 取消——已取消则不构建、不发布（不丢弃成功结果来假装
 // 取消，而是根本不发布交接）。F-A5：Builder 收到的是本代**冻结**的触发路径快照（GenPaths）。
 func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
-	// F-A5：本代冻结路径快照（Pump 已在清空前冻结）。
 	paths := w.db.GenPaths()
 
-	// F-A3：构建前若已取消，则不构建、不发布。
-	if err := ctx.Err(); err != nil {
+	// F-A3b-R1：本代时限 = min(外部 ctx deadline, now+BuildTimeoutMS)。作用于 generate+build 全链路。
+	buildCtx := ctx
+	if d := time.Duration(w.cfg.buildMS()) * time.Millisecond; d > 0 {
+		var cancel context.CancelFunc
+		buildCtx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
+
+	if err := buildCtx.Err(); err != nil {
 		_, requeue := w.db.BuildFinished(gen, false)
 		w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
 		return true
 	}
 
-	res := w.p.builder.Build(ctx, gen, paths)
+	// F-A7-R1：构建基于的输入快照基线（用于构建后重验证；Run 构建期间无法扫描，故此处比对）。
+	base, baseErr := Scan(w.cfg)
+	if baseErr != nil {
+		_, requeue := w.db.BuildFinished(gen, false)
+		w.report(gen, GenerationResult{OK: false, Stage: "scan", Detail: baseErr.Error(), Gen: gen}, false, requeue)
+		return true
+	}
+
+	res := w.p.builder.Build(buildCtx, gen, paths)
 	if !res.OK {
 		_, requeue := w.db.BuildFinished(gen, false)
 		w.genFailStreak++
 		w.report(gen, res, false, requeue)
 		return true
 	}
-	// F-A3：构建成功但上下文已取消 => 不发布/不交接（不发布过期代次）。
-	if err := ctx.Err(); err != nil {
+	if err := buildCtx.Err(); err != nil {
 		_, requeue := w.db.BuildFinished(gen, false)
 		w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
 		return true
 	}
+
+	// F-A7-R1：构建期间输入发生变化 => 该代已落后，**不发布**，重排（final-wins）。构建后重新扫描比对。
+	post, postErr := Scan(w.cfg)
+	if postErr != nil {
+		_, requeue := w.db.BuildFinished(gen, false)
+		w.report(gen, GenerationResult{OK: false, Stage: "scan", Detail: postErr.Error(), Gen: gen}, false, requeue)
+		return true
+	}
+	changed := Diff(base, post)
+	if len(changed) > 0 {
+		// 只把**用户输入**变化算作“构建期间变更”；本代生成写入的 owned 产物（home_gen.go 等）
+		// 不应触发 stale（否则生成即自我 stale）。用现有所有权分类过滤。
+		cs, cerr := ClassifyChanges(w.cfg.ProjectDir, post, changed)
+		if cerr != nil {
+			_, requeue := w.db.BuildFinished(gen, false)
+			w.report(gen, GenerationResult{OK: false, Stage: "scan", Detail: cerr.Error(), Gen: gen}, false, requeue)
+			return true
+		}
+		if len(cs.Trigger) > 0 {
+			atMS := int(time.Since(w.runStart).Milliseconds())
+			_, _ = w.NotifyChange(ctx, atMS, cs.Trigger)
+			_, requeue := w.db.BuildFinished(gen, false)
+			w.report(gen, GenerationResult{OK: false, Stage: "stale", Detail: "user inputs changed during build", Gen: gen}, false, requeue)
+			return true
+		}
+	}
+
 	publish, requeue := w.db.BuildFinished(gen, true)
 	if publish {
-		// F-A3：交接前再确认未取消。
-		if err := ctx.Err(); err != nil {
+		if err := buildCtx.Err(); err != nil {
 			w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, false)
 			return true
 		}
 		if serr := w.p.swapper.Swap(ctx, gen); serr != nil {
-			// 交接失败：不更新 lastPublished；如实报告未发布（不谎报已更新）。
 			p := res
 			p.OK = false
 			p.Stage = "swap"
