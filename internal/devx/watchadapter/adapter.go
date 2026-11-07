@@ -1,33 +1,52 @@
-// Package watchadapter 是 internal/devx/watch 核心与 internal/cli 之间的**独立适配层**。
+// Package watchadapter 是 internal/devx/watch 与 internal/cli 之间的独立适配层（无 cli↔watch 环）。
 //
-// 依赖方向（避免 cli↔watch 环，F-A6）：watch 不 import cli；cli 不 import watch；本包 import 两者。
-// 主 CLI 分发由协调者保留（可在 cmd/ 同级调度层接线，或在 cli 外组合本 adapter）。
-//
-// R26-A repair-r2：
-//   - **取消（F-A3a-R1）**：CLIGenerate 不再把 cli.Run 放 goroutine 里“join”。cli.Run 无外部取消入口，
-//     故改为**可取消工具子进程**：把 `go run ./cmd/goxml generate <dir> --check` 作为自有子进程运行，
-//     ctx 取消/超时即终止该子进程（有界），杜绝 join 假取消与迟到写盘。
-//   - **每代时限（F-A3b-R1）**：ctx 由 Watch 传入（已含 BuildTimeoutMS 与外部较早 deadline 的较短者）；
-//     本处将其作为子进程 ctx，generate+build 全链路共享同一取消。
+// R26-A repair-r3：
+//   - **F-A9 工具身份**：CLIGenerate 不再依赖调用者 cwd 里存在 goxml 源码、也不默认每代 `go run`
+//     工具源。改为**解析被验工具可执行文件身份**一次（缓存复用），再从任意用户 cwd 运行它。
+//     工具身份解析顺序：显式注入的 ToolExe（SetToolExe / NewRealBuilder 的 tool 参数）> 包缓存（首次
+//     由 `runtime.Caller` 定位仓库并 `go build ./cmd/goxml` 一次）> 失败即如实报错。**不硬编码作者
+//     工作树/主库路径**：仓库根由 runtime.Caller 从本文件位置推导，不依赖 cwd。
+//   - **F-A3-R2 取消收整棵树**：用 watch.RunCommandTree（自有 Job/进程树所有权）运行工具，取消/超时
+//     终止**整棵**生成树并有界等待收口后返回；不再用 CommandContext/WaitDelay 声称无迟到写盘。
 package watchadapter
 
 import (
 	"context"
+	"github.com/goxml/goxml/internal/devx/watch"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
-	"time"
-
-	"github.com/goxml/goxml/internal/devx/watch"
+	"runtime"
+	"sync"
 )
 
-// findRepoRoot 从 start 向上查找含 `cmd/goxml/main.go` 的模块根（goxml 工具源）。
-func findRepoRoot(start string) (string, bool) {
-	dir := start
-	if dir == "" {
-		dir, _ = os.Getwd()
+var (
+	toolMu   sync.Mutex
+	toolExe  string // 缓存的可执行工具路径
+	toolRoot string // 推导出的仓库根（诊断）
+)
+
+// SetToolExe 显式设置被验工具可执行文件路径（协调者接线时用；优先于自动解析）。
+func SetToolExe(path string) {
+	toolMu.Lock()
+	defer toolMu.Unlock()
+	toolExe = path
+}
+
+// ToolIdentity 返回当前解析到的工具身份（路径）与仓库根（诊断用）。
+func ToolIdentity() (exe, root string) {
+	toolMu.Lock()
+	defer toolMu.Unlock()
+	return toolExe, toolRoot
+}
+
+// repoRootViaCaller 由本文件源码位置推导仓库根（含 cmd/goxml/main.go 与 go.mod），与 cwd 无关。
+func repoRootViaCaller() (string, bool) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", false
 	}
+	dir := filepath.Dir(file)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "cmd", "goxml", "main.go")); err == nil {
 			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
@@ -42,40 +61,77 @@ func findRepoRoot(start string) (string, bool) {
 	}
 }
 
-// CLIGenerate 以**可取消子进程**执行 `goxml generate <projectDir> --check`。
-// 返回 observed rc 与 stderr 摘要。ctx 取消/超时 => 立即终止子进程并非阻塞返回（rc=-1）。
-//
-// 复用工具自身 CLI（`go run ./cmd/goxml …`），不重造生成器；子进程受 ctx 控制（CommandContext +
-// WaitDelay 兜底强杀），因此取消有界、返回后无该子进程迟到写盘。
-func CLIGenerate(ctx context.Context, projectDir string) (int, string) {
-	repo, ok := findRepoRoot("")
+// resolveToolExe 返回被验工具可执行文件路径（缓存）。首次从源码构建一次（不依赖 cwd）。
+func resolveToolExe() (string, string, error) {
+	toolMu.Lock()
+	defer toolMu.Unlock()
+	if toolExe != "" {
+		return toolExe, toolRoot, nil
+	}
+	root, ok := repoRootViaCaller()
 	if !ok {
-		return -1, "watchadapter: 找不到 goxml 工具源根（cmd/goxml）"
+		return "", "", os.ErrNotExist
+	}
+	exeName := "goxml-tool"
+	if runtime.GOOS == "windows" {
+		exeName += ".exe"
+	}
+	bin := filepath.Join(os.TempDir(), "goxml-tool-"+buildStamp()+exeName)
+	if _, err := os.Stat(bin); err != nil {
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/goxml")
+		cmd.Dir = root
+		cmd.Env = os.Environ()
+		if out, berr := cmd.CombinedOutput(); berr != nil {
+			return "", root, &buildError{msg: string(out), err: berr}
+		}
+	}
+	toolExe, toolRoot = bin, root
+	return toolExe, root, nil
+}
+
+type buildError struct {
+	msg string
+	err error
+}
+
+func (e *buildError) Error() string {
+	return "构建被验工具失败: " + e.msg + ": " + e.err.Error()
+}
+
+// buildStamp 提供一个进程级稳定后缀（同一进程复用缓存二进制；跨进程可重建）。
+func buildStamp() string { return "r3" }
+
+// CLIGenerate 以**自有进程树**运行被验工具 `generate <projectDir> --check`，可取消并回收整棵树。
+// 工具以 `go run ./cmd/goxml`（cwd=仓库根，runtime.Caller 推导，**不依赖调用者 cwd**）形式运行，
+// 保留 toolexec→go build→generator→go run 完整真实生成父链；整棵树由 RunCommandTree 的 Job 拥有，
+// 取消即终止全链并有界收口（F-A3-R2）。工具源码根由 runtime.Caller 推导，非作者工作树/主库硬编码。
+func CLIGenerate(ctx context.Context, projectDir string) (int, string) {
+	root, ok := repoRootViaCaller()
+	if !ok {
+		return -1, "watchadapter: 无法从源码位置推导被验工具仓库根"
 	}
 	goBin := "go"
-	args := []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}
-	cmd := exec.CommandContext(ctx, goBin, args...)
-	cmd.Dir = repo
-	// WaitDelay：ctx 取消后若子进程仍未退出，再等一小段后强杀，确保有界返回。
-	cmd.WaitDelay = 2 * time.Second
-	var out strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		return -1, "canceled/timeout: " + ctx.Err().Error() + "\n" + tail(out.String())
+	res := watch.RunCommandTree(ctx, goBin, []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}, root, nil, 0)
+	if res.Err != nil && !res.Cancelled {
+		// 启动/收口失败（非业务非零退出）如实上报。
+		return -1, "watchadapter: " + res.Err.Error() + "\n" + tail(res.Output)
 	}
+	if res.Cancelled {
+		return -1, "canceled/timeout: " + tail(res.Output)
+	}
+	return res.RC, tail(res.Output)
+}
+
+// toolIdentityOrErr 返回可执行路径（空表示失败）。
+func toolIdentityOrErr() (string, error) {
+	exe, _, err := resolveToolExe()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return ee.ExitCode(), tail(out.String())
-		}
-		return -1, tail(out.String()) + "\n" + err.Error()
+		return "", err
 	}
-	return 0, tail(out.String())
+	return exe, nil
 }
 
 func tail(s string) string {
-	s = strings.TrimSpace(s)
 	const max = 2000
 	if len(s) <= max {
 		return s
@@ -84,7 +140,11 @@ func tail(s string) string {
 }
 
 // NewRealBuilder 构造已接线（CLIGenerate）的 RealBuilder。entryPkg 相对 ProjectDir。
-func NewRealBuilder(projectDir, entryPkg, outBinary string) *watch.RealBuilder {
+// toolExe 非空时显式指定被验工具身份（推荐协调者接线时传入）；空则自动解析（runtime.Caller 推导）。
+func NewRealBuilder(projectDir, entryPkg, outBinary, toolExe string) *watch.RealBuilder {
+	if toolExe != "" {
+		SetToolExe(toolExe)
+	}
 	return &watch.RealBuilder{
 		ProjectDir: projectDir,
 		EntryPkg:   entryPkg,

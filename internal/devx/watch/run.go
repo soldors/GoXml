@@ -17,13 +17,14 @@ func (w *Watch) Run(ctx context.Context) error {
 	interval := time.Duration(w.cfg.poll()) * time.Millisecond
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	start := time.Now()
+	// F-A7b-R2：以 w.runStart 为统一时钟原点（与 Note/Pump/stale 同一坐标）。
+	start := w.runStart
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case now := <-ticker.C:
-			if w.stopped {
+			if w.stopped.Load() {
 				return nil
 			}
 			// 每 tick：扫描并 diff，把**用户**变更登记进防抖（owned/ignored 不触发）。

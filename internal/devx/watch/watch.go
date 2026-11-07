@@ -3,6 +3,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,7 +60,7 @@ type Watch struct {
 	lastPublished int
 	// genFailStreak 记录连续失败次数（诊断；不改变失败不重启旧进程的语义）。
 	genFailStreak int
-	stopped       bool
+	stopped       atomic.Bool
 	runStart      time.Time // 注入时钟基准（供 staleness 登记 atMS 用；确定性测试可覆盖）
 }
 
@@ -216,7 +217,7 @@ func (w *Watch) report(gen int, res GenerationResult, published, requeue bool) {
 }
 
 // Stop 标记停止（Run 循环退出条件）。
-func (w *Watch) Stop() { w.stopped = true }
+func (w *Watch) Stop() { w.stopped.Store(true) }
 
 // Stopped 报告是否已停止。
-func (w *Watch) Stopped() bool { return w.stopped }
+func (w *Watch) Stopped() bool { return w.stopped.Load() }

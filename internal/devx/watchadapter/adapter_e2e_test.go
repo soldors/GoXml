@@ -94,7 +94,7 @@ func TestRealEndToEndGenerateBuildSwap(t *testing.T) {
 	consoleBin := buildConsole(t, proj)
 
 	// 真实 Generate：cli.Run generate --check（对 ProjectDir）。
-	rb := watchadapter.NewRealBuilder(proj, "./cmd/app", "")
+	rb := watchadapter.NewRealBuilder(proj, "./cmd/app", "", "")
 	// 覆盖 OutBinary 到真实 console（真实 go build 会重建，但为观察进程用真实构建产物）。
 	rb.OutBinary = consoleBin
 	pm := watch.NewProcessManager(func(gen int) string { return consoleBin })
