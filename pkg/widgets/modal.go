@@ -20,8 +20,10 @@ var colScrimTint = color.NRGBA{A: 0x55}
 //
 // 候选默认行为（单列待裁决，见包注释）：
 //   - 遮罩点击不关闭：ScrimClicked() 单次读取，处置权留给调用方；
-//   - Escape 关闭：EscapeRequested() 单次读取；
-//   - 打开即请求键盘焦点；关闭（Close 或 Escape）后于下一帧把焦点交还
+//   - Escape 关闭：EscapeRequested() 单次读取；Escape 经约定路径（无
+//     Focus 约束的过滤器）可达，内容持有的焦点不被逐帧强抢；
+//   - 打开转换时请求一次键盘焦点（内容随后取得的焦点保持不动）；
+//   - 关闭（Close 或 Escape）后于下一帧 Layout 把焦点交还
 //     ReturnFocusTo（若设置）。焦点回交在 Layout 内执行——Close() 之后
 //     仍需调用至少一帧 Layout 才会生效。
 type Modal struct {
@@ -30,8 +32,10 @@ type Modal struct {
 	// ReturnFocusTo 是关闭后接收键盘焦点的标签（候选能力，可为 nil）。
 	ReturnFocusTo event.Tag
 
-	open bool
-	tag  overlayTag
+	open    bool
+	tag     overlayTag
+	scrimSt scrimState // 遮罩跨帧按压状态（F-B1）
+	focusSt focusState // 打开转换焦点请求（F-B2）
 
 	scrimClickedPending bool
 	escapePending       bool
@@ -45,8 +49,11 @@ func NewModal(content func(gtx layout.Context, th *material.Theme) layout.Dimens
 	return m
 }
 
-// Open 打开 Modal；已打开时为 no-op。
-func (m *Modal) Open() { m.open = true }
+// Open 打开 Modal；已打开时为 no-op。每次打开是新的焦点请求转换。
+func (m *Modal) Open() {
+	m.open = true
+	m.focusSt.requested = false
+}
 
 // Close 关闭 Modal；焦点回交延迟到下一次 Layout（见类型注释）。
 func (m *Modal) Close() {
@@ -83,11 +90,12 @@ func (m *Modal) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 	}
 
 	// 1. 遮罩：全屏先声明区，阻断背景事件；点击不关闭（候选默认）。
-	if scrimLayout(gtx, &m.tag) {
+	if m.scrimSt.layout(gtx, &m.tag) {
 		m.scrimClickedPending = true
 	}
-	// 2. Escape 关闭（打开帧请求焦点，下一帧收到 Escape）。
-	if escapeLayout(gtx, &m.tag) {
+	// 2. Escape 关闭：仅打开转换请求一次焦点；Escape 经约定路径可达
+	// （焦点可在内容上）。
+	if m.focusSt.layout(gtx, &m.tag, !m.focusSt.requested) {
 		m.escapePending = true
 		m.open = false
 		m.returnFocusPending = true
@@ -102,7 +110,8 @@ func (m *Modal) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 	paint.FillShape(gtx.Ops, colScrimTint, clip.Rect(image.Rectangle{Max: gtx.Constraints.Max}).Op())
 
 	// 4. 居中内容：宏录制一次、按内容尺寸居中回放（内容内的命中区随
-	// 回放偏移一次性注册）。
+	// 回放偏移一次性注册）。偏移必须 Push/Pop 作用域配对——裸 Add 会把
+	// 变换泄漏给后续同级布局（R1 修复 F-B3）。
 	if m.Content == nil {
 		return layout.Dimensions{Size: gtx.Constraints.Max}
 	}
@@ -113,8 +122,9 @@ func (m *Modal) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 	call := macro.Stop()
 
 	pos := centerPos(gtx.Constraints.Max, dims.Size)
-	op.Offset(pos).Add(gtx.Ops)
+	trans := op.Offset(pos).Push(gtx.Ops)
 	call.Add(gtx.Ops)
+	trans.Pop()
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }
 

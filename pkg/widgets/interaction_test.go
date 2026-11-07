@@ -26,6 +26,10 @@ import (
 type keyConsumer struct {
 	tag overlayTag
 	got []key.Name
+	// names 非空时按名注册过滤器（不收 catch-all 按键）；空时收全部。
+	names []key.Name
+	// requestFocus 为 true 时每帧请求焦点（测试焦点竞争用）。
+	requestFocus bool
 }
 
 func (k *keyConsumer) layout(gtx layout.Context) {
@@ -34,13 +38,30 @@ func (k *keyConsumer) layout(gtx layout.Context) {
 	defer clip.Rect(image.Rectangle{Max: image.Pt(10, 10)}).Push(gtx.Ops).Pop()
 	event.Op(gtx.Ops, &k.tag)
 	gtx.Source.Event(key.FocusFilter{Target: &k.tag})
-	for {
-		ev, ok := gtx.Source.Event(key.Filter{Focus: &k.tag})
-		if !ok {
-			break
+	if k.requestFocus {
+		gtx.Execute(key.FocusCmd{Tag: &k.tag})
+	}
+	if len(k.names) == 0 {
+		for {
+			ev, ok := gtx.Source.Event(key.Filter{Focus: &k.tag})
+			if !ok {
+				break
+			}
+			if e, isKey := ev.(key.Event); isKey {
+				k.got = append(k.got, e.Name)
+			}
 		}
-		if e, isKey := ev.(key.Event); isKey {
-			k.got = append(k.got, e.Name)
+		return
+	}
+	for _, n := range k.names {
+		for {
+			ev, ok := gtx.Source.Event(key.Filter{Focus: &k.tag, Name: n})
+			if !ok {
+				break
+			}
+			if e, isKey := ev.(key.Event); isKey {
+				k.got = append(k.got, e.Name)
+			}
 		}
 	}
 }
@@ -123,6 +144,35 @@ func (h *overlayHarness) escape() {
 }
 
 func (h *overlayHarness) resize(w, hh int) { h.size = image.Pt(w, hh) }
+
+// press/release/cancel 拆帧事件（R1：真实输入中 Press 与 Release 分属两帧，
+// 且 Release 的 Buttons 是释放后的剩余按钮——主键释放后为 0）。
+func (h *overlayHarness) press(x, y int) {
+	h.frame(pointer.Event{
+		Kind:     pointer.Press,
+		Position: f32Pt(x, y),
+		Source:   pointer.Mouse,
+		Buttons:  pointer.ButtonPrimary,
+	})
+}
+
+func (h *overlayHarness) release(x, y int) {
+	h.frame(pointer.Event{
+		Kind:     pointer.Release,
+		Position: f32Pt(x, y),
+		Source:   pointer.Mouse,
+	})
+}
+
+func (h *overlayHarness) drag(x, y int) {
+	// 按住移动入队为 Move（Router 对按压中的指针生成 Drag）。
+	h.frame(pointer.Event{
+		Kind:     pointer.Move,
+		Position: f32Pt(x, y),
+		Source:   pointer.Mouse,
+		Buttons:  pointer.ButtonPrimary,
+	})
+}
 
 func f32Pt(x, y int) f32.Point { return f32.Point{X: float32(x), Y: float32(y)} }
 
