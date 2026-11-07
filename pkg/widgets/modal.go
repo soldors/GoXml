@@ -51,6 +51,9 @@ func NewModal(content func(gtx layout.Context, th *material.Theme) layout.Dimens
 
 // Open 打开 Modal；已打开时为 no-op。每次打开是新的焦点请求转换。
 func (m *Modal) Open() {
+	if m.open {
+		return
+	}
 	m.open = true
 	m.focusSt.requested = false
 }
