@@ -1,0 +1,12 @@
+<!-- 静态预览·负例夹具：含交互控件（Button）但无 ViewModel。
+     现行 Codegen 把交互控件无条件判为动态页（isInteractiveTag），
+     无 VM 无法生成；预览在 scope 阶段显式拒绝（PREVIEW-005），
+     不捏造空 ViewModel、不删控件后假装预览成功。 -->
+<Goxml Version="1">
+  <Page Route="/preview/button">
+    <Column Padding="8">
+      <Text Value="标题"/>
+      <Button Text="无事件按钮"/>
+    </Column>
+  </Page>
+</Goxml>

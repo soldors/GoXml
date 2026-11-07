@@ -1,0 +1,35 @@
+<!-- 静态预览·正例夹具：覆盖首版批准范围的全部静态能力
+     （布局 Column/Row/Grid、Def typed props + 默认值、Slot 替换与空插槽、
+     Image 静态资产、Expanded 弹性拉伸）。全部为静态字面量：
+     无 ViewModel、无绑定、无事件、无 $Theme 引用、无交互控件
+     （Button/Input 被 Codegen 判为动态页，见 scope-matrix）。
+     assets/logo.png 由测试在临时副本里合成——夹具目录保持无二进制。 -->
+<Goxml Version="1">
+  <Defs>
+    <Def Name="Card" Props="Title:string; Tone:color=#F3F3F3">
+      <Column Padding="8" Gap="4">
+        <Text Value="{Title}" Background="{Tone}" Padding="3"/>
+        <Slot/>
+      </Column>
+    </Def>
+  </Defs>
+  <Page Route="/preview/basic">
+    <Column Padding="12" Gap="8">
+      <Text Value="静态预览实验台" Background="#EFEFEF" Padding="4"/>
+      <Row Gap="8">
+        <Text Value="左" Background="#E8F5E9" Padding="4"/>
+        <Expanded><Text Value="占满剩余宽度" Background="#EDE7F6" Padding="4"/></Expanded>
+      </Row>
+      <Grid Columns="120 *" Gap="8" Align="Center">
+        <Text Value="标签"/>
+        <Image Src="assets/logo.png"/>
+        <Text Value="照片"/>
+        <Image Src="assets/photo.jpg"/>
+      </Grid>
+      <Card Title="带插槽">
+        <Text Value="插槽内容" Background="#FFF8E1" Padding="2"/>
+      </Card>
+      <Card Title="空插槽"/>
+    </Column>
+  </Page>
+</Goxml>

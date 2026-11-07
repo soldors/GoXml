@@ -1,0 +1,10 @@
+<!-- 静态预览·负例夹具：声明 ViewModel。
+     预览核心应在 pre-parse 阶段拒绝（PREVIEW-001），
+     不加载用户 VM 包、不进入 Analyzer。 -->
+<Goxml Version="1" ViewModel="vm.Model">
+  <Page Route="/preview/vm">
+    <Column>
+      <Text Value="带 ViewModel 的页面"/>
+    </Column>
+  </Page>
+</Goxml>

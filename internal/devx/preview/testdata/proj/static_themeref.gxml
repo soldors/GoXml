@@ -1,0 +1,10 @@
+<!-- 静态预览·负例夹具：Background 使用 $Theme 主题引用。
+     现行生成链路对主题引用背景是「静默不绘制」（decoration.go），
+     静态预览必须显式拒绝（PREVIEW-004），不得静默降级。 -->
+<Goxml Version="1">
+  <Page Route="/preview/theme">
+    <Column Padding="8">
+      <Text Value="主题引用背景" Background="$Theme.Primary" Padding="4"/>
+    </Column>
+  </Page>
+</Goxml>
