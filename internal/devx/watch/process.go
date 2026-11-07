@@ -177,33 +177,26 @@ func (m *ProcessManager) stop(c *Child) (stopped bool, waitErr error) {
 	if c == nil {
 		return true, nil
 	}
-	select {
-	case <-c.done:
-		m.closeJob(c)
+	if !c.Running() {
+		// 根已退出：仍用 Job 终止其后代（Job 句柄在根退出后仍有效）。
+		m.terminateAndWaitJob(c)
 		return true, c.waitErr
-	default:
 	}
-	// 先关闭 Job：KILL_ON_JOB_CLOSE 结束整棵树（含后代），不依赖根存活。
-	m.closeJob(c)
-	// 关闭 stdin（防御非 Windows / 无 Job 路径）。
+	// 根仍存活：先 taskkill /T 结束整棵树（含后代）——必须在根退出前执行，否则后代脱管。
+	m.killTree(c)
+	// 关闭 stdin（非 Windows/无 Job 优雅路径）并终止 Job 兜底。
 	if c.stdinWrite != nil {
 		_ = c.stdinWrite.Close()
 		c.stdinWrite = nil
 	}
+	m.terminateAndWaitJob(c)
 	timer := time.NewTimer(m.timeout())
 	defer timer.Stop()
 	select {
 	case <-c.done:
 		return true, c.waitErr
 	case <-timer.C:
-		// Job close 后仍未退出（异常）：强杀进程树兜底。
-		m.killTree(c)
-		select {
-		case <-c.done:
-			return true, c.waitErr
-		case <-time.After(2 * time.Second):
-			return false, fmt.Errorf("old child gen=%d pid=%d did not exit after job close", c.Gen, c.PID)
-		}
+		return false, fmt.Errorf("old child gen=%d pid=%d did not exit after tree kill", c.Gen, c.PID)
 	}
 }
 
@@ -278,6 +271,41 @@ func (m *ProcessManager) Swap(ctx context.Context, gen int) error {
 		return err
 	}
 	return nil
+}
+
+// jobAccounting 对应 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION（ActiveProcesses 在偏移 40）。
+type jobAccounting struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
+}
+
+// terminateAndWaitJob 显式终止 Job 内全部进程并**有界等待 ActiveProcesses 归零**，再关闭句柄。
+// 这样 Shutdown/stop 返回时整棵树确已收口（KILL_ON_JOB_CLOSE 的终止是异步的，不能靠根退出即认为后代清）。
+func (m *ProcessManager) terminateAndWaitJob(c *Child) {
+	if c == nil || c.job == 0 || runtime.GOOS != "windows" {
+		return
+	}
+	_ = windows.TerminateJobObject(c.job, 1)
+	deadline := time.Now().Add(m.timeout())
+	for time.Now().Before(deadline) {
+		var info jobAccounting
+		err := windows.QueryInformationJobObject(c.job, windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
+		if err == nil && info.ActiveProcesses == 0 {
+			break
+		}
+		if err != nil {
+			break // 查询失败（已关闭等）也视为不可再查，交给 CloseHandle 后 OS 终止
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	m.closeJob(c)
 }
 
 // Shutdown 有界停止当前子进程及其整棵树。
