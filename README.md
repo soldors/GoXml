@@ -41,7 +41,7 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - **Router 基础与关闭接线已合入发布**：`pkg/runtime/router` + `app.WithOnDestroy(r.View(), r.Shutdown)`；[routed-gallery 教程](examples/gxml/testprojects/routed-gallery/README.md) 与 [随仓验收入口](scripts/verify-gallery-accept.py) 可复跑。MacroOp 转场动画、独立 OSWindow 逃生接口仍未实现；有界调度预算语义未批准。
 - **Expanded 基础范围已批准并发布**：流式单子节点、默认等权、显式尺寸优先；Grid、显式权重、自身新装饰继续拒绝，见 [输出契约 §4.9](docs/03-架构/代码生成输出契约.md)。
 - **工程与验收入口**：[preferences](examples/gxml/testprojects/crosspackage-preferences/README.md)、[taskboard](examples/gxml/testprojects/crosspackage-taskboard/README.md)、[routed-gallery](examples/gxml/testprojects/routed-gallery/README.md)、[component-layout-lab](examples/gxml/testprojects/component-layout-lab/README.md) 均已进入发布基线。
-- Watch、Preview、通用 Lifecycle/Hydration 尚未交付；强类型 ThemeRef 接线仍待批准，不属于现有字体 Theme 便利层。
+- **R26 隔离接线候选**：Windows `goxml watch`、纯静态 `goxml preview` 与 `pkg/widgets` ContextMenu/Modal 的基础范围已批准并实现接线，见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。原生、完整帧性能及覆盖率门槛仍未全部通过，未发布。通用 Lifecycle/Hydration、DataGrid 未交付；ThemeRef 仍待批准。
 - 当前功能发布基线为 `96a7067`；需求/WBS/任务卡的现行状态见 [R25 项目状态总览](docs/04-WBS/2026-11-06-R25-项目状态总览.md)。已实现、限定验收、已合入和已推送分别登记，不以旧审计分组计算完成率；历史证据与原始快照保留。
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。历史并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。

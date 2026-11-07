@@ -1,5 +1,7 @@
 # WBS 总表
 
+> **2026-11-08 R26 增量**：Windows Watch、静态 Preview、ContextMenu/Modal 基础范围已批准，隔离分支公共接线验收中；原生、完整帧性能、覆盖率门禁未齐，尚未合入发布。Hydration/DataGrid 未实现。详见 [接线与验收](../05-开发/2026-11-08-R26-Windows接线与验收.md)。下文 R25/历史统计按原日期理解，不重新计算完成率。
+
 > **现行进度（2026-11-06）**：代码与发布基线 `96a7067`，R25 A/B/C 批准范围已合入推送。
 > [R25 项目状态总览](2026-11-06-R25-项目状态总览.md) 逐项覆盖本表 52 条；父任务 3、叶子 49，
 > 不重算无依据的完成百分比。下面各日期声明保留为历史；旧计数与未推送说法按当时理解。
@@ -76,8 +78,8 @@ Input/For语义及缓存格式不变，Image/Router等未批准候选仍保持�
 | TASK-ROUTER-001 | runtime | 实现单窗口路由、MacroOp 转场动画与 OSWindow。**2026-11-05 分段状态**：路由基础（注册/导航/当前路径/分发/失效/Context/关闭清空）已实现，R20 B1 人工桌面视觉与原生 race、B2 受控销毁接线独立复核通过并合入发布（`4e413f0`）；`app.WithOnDestroy(r.View(), r.Shutdown)` 关闭接线已落地。**MacroOp 转场动画与独立 OSWindow 逃生接口仍未实现**，整卡未闭环；有界调度预算语义未批准，主库沿用同帧排空 | TASK-STATE-001 | go test -v ./pkg/runtime/router/...；关闭接线与图库见 [教程](../../examples/gxml/testprojects/routed-gallery/README.md) |
 | TASK-IMAGE-001 | compiler/image | `<Image>` 静态资产与编译期嵌入。**2026-11-05 登记**：ADR-0015 已批准，R18 隔离技术验收 pass（pipeline 86.3%），R20 合入并发布；R21-C 图库教程、R22-C 随仓验收入口覆盖真命中/换图/坏图/变异。限 Windows/headless/可信本地构建目录，真实窗口目视与跨平台未验 | TASK-CODEGEN-001、TASK-SEC-001 | 见 [任务卡](任务卡/TASK-IMAGE-001.md) 与 `scripts/verify-gallery-accept.py` |
 | TASK-LIFE-001 | runtime | 实现 Context 生命周期与 //go:embed 资产管线 | TASK-ROUTER-001 | go test -v -race ./pkg/runtime/lifecycle/... |
-| TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v -race ./cmd/goxml/watch/... ./pkg/runtime/hydration/... |
-| TASK-DEVX-002 | cli/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | go test -v ./cmd/goxml/preview/... |
+| TASK-DEVX-001 | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | go test -v ./internal/devx/watch ./internal/devx/watchadapter |
+| TASK-DEVX-002 | cli/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | go test -v ./internal/devx/preview |
 | TASK-OS-001 | platform | 实现 Windows Zero-CGO 剪贴板与异步原生文件弹窗 | TASK-LIFE-001 | Windows: CGO_ENABLED=0 go test -v ./pkg/platform/clipboard/... ./pkg/platform/dialog/... |
 | TASK-OS-002 | platform | 实现系统托盘与系统菜单栏（Windows 纯 Go，Linux/macOS 允许 CGO） | TASK-OS-001 | make build-windows && make build-linux |
 | TASK-WIDGET-001 | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | go test -v ./pkg/widgets/... |

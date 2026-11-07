@@ -1,5 +1,7 @@
 # TASK 总账（审计骨架）
 
+> **2026-11-08 R26 增量**：Windows Watch、静态 Preview、ContextMenu/Modal 基础范围已批准，隔离分支公共接线验收中；原生、完整帧性能、覆盖率门禁未齐，尚未合入发布。Hydration/DataGrid 未实现。详见 [接线与验收](../05-开发/2026-11-08-R26-Windows接线与验收.md)。下文 R25/历史统计按原日期理解，不重新计算完成率。
+
 > **2026-11-06 现行入口**：[R25 项目状态总览](2026-11-06-R25-项目状态总览.md)。下文 50 行及 3/47
 > 是 2026-10-23 审计骨架，保留原件，不当作今天的任务数或完成率。现行 WBS 52 条/
 > 3 父项/49 叶子，以及各条目的实现、限定验收与未闭环项，均在新总览登记。
@@ -28,8 +30,8 @@
 | 2 | `TASK-BENCH-001` | bench | 性能基准测试与旗舰 Demo 验收 | 全部前置任务 | `go test -bench . -benchmem ./benchmarks/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 3 | `TASK-GENERATE-CACHE-001` | cli/cache | 增量生成与缓存（契约 §11：缓存键、命中条件、失效、原子性、可观测性；… | TASK-GENERATE-CLI-001 | `go test -run TestCache ./internal/cli/` | **B1–B5 全部完成（2026-10-21）**；证据：`internal/cli/cache_{key,store,wire,outp… | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 4 | `TASK-GENERATE-CLI-001` | cli/generate | 实现 Generate CLI、Manifest 与输出清理边界 | TASK-CODEGEN-001、TASK-ORCH-001… | `go test -v ./cmd/goxml/...` | **已完成（2026-10-20 收口）**——子任务 1-1 至 1-7 全部完成，AC-002-01~04 全部通过， | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 5 | `TASK-DEVX-002` | cli/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | `go test -v ./cmd/goxml/preview/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
-| 6 | `TASK-DEVX-001` | cli/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | `go test -v -race ./cmd/goxml/watch/... ./pkg/r…` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 5 | `TASK-DEVX-002` | internal/devx/preview | 实现独立毫秒级静态 UI 预览器 | TASK-STYLE-001 | `go test -v ./internal/devx/preview` | Todo | 基础候选已实现 | 无窗口通过，门禁未齐 | 本轮E3留痕 | 已同步 | Windows限定 | R26 静态候选；真实显示/关窗待验；未合/未推 |
+| 6 | `TASK-DEVX-001` | internal/devx/watch | 实现双进程防抖热重启与状态 Hydration | TASK-LIFE-001 | `go test -v ./internal/devx/watch ./internal/devx/watchadapter` | Todo | 基础候选已实现 | 无窗口通过，门禁未齐 | 本轮E3留痕 | 已同步 | Windows限定 | R26 基础接线候选；Hydration 未实现；未合/未推 |
 | 7 | `TASK-BINDING-CONTRACT-001` | codegen | 核查绑定现状并冻结绑定语义契约 | TASK-ANALYZER-001、TASK-CODEGEN… | `文档审查；`go test -count=1 ./internal/docgate`` | **契约已冻结（语义层）** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 8 | `TASK-BINDING-IMPLEMENT-001` | codegen | 接通 Analyzer Facts 到绑定生成与运行时读取 | TASK-CODEGEN-001、TASK-BINDING-… | `直接 Codegen 和运行时读取已验；Pipeline `ModulePath` 集成仍开…` | **步骤 1 直接 Codegen 与步骤 2 已完成；Pipeline 集成未完成；步骤 3 显示缓存实现已交付，完整验收见子任务卡** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 9 | `TASK-BINDING-IMPLEMENT-002` | codegen | 绑定运行时读取与显式重新布局验收 | TASK-BINDING-IMPLEMENT-001 | `go test -count=1 -run '^TestBindingRuntime' ./…` | **完成** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
@@ -72,7 +74,7 @@
 | 46 | `TASK-FONT-001-D-IMPL-2` | theme/font | 帧内切换与布局一致性：`NewLazyApp` 接线、只在 `Frame… | TASK-FONT-001-D-IMPL-1 | `go test -run TestFontLazyLoad ./pkg/runtime/ap…` | **接口与切换时机已冻结（第 3 版，按评审意见收回 `NotifyLateBound` 写入责任），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 47 | `TASK-FONT-001-D-IMPL-3` | theme/font | 诊断、失败终态与严格语义：`Report` 完整字段、`Config.S… | TASK-FONT-001-D-IMPL-1、TASK-FO… | `go test -run TestFontLazyLoad ./pkg/runtime/th…` | **接口与失败语义已冻结（第 3 版，按评审意见同步 `CompletedAt` 失败路径口径），实现未开始** | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 | 48 | `TASK-FONT-001-D-PROBE` | theme/font | 真实窗口异步唤醒验证（D 卡 §10 第 2b 步的唯一执行载体）：首帧… | TASK-FONT-001-D | `go run ./pkg/runtime/app/testdata/windowprobe` | **已执行（2026-10-21），PROBE-1..6 全部 PASS，4/4 次运行稳定** | 已实现 | 通过 | 完整 | 待审计 | Windows |  |
-| 49 | `TASK-WIDGET-001` | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | `go test -v ./pkg/widgets/...` | Todo | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
+| 49 | `TASK-WIDGET-001` | widgets | 构建标准自绘组件库 (ContextMenu/DataGrid) | TASK-STYLE-001 | `go test -v ./pkg/widgets` | Todo | 基础候选已实现 | 无窗口通过，门禁未齐 | 本轮E3留痕 | 已同步 | Windows限定 | R26 菜单/Modal 候选；DataGrid 未实现；未合/未推 |
 | 50 | `TASK-SEC-001` | 安全 | 威胁建模与安全边界审查（**须在 Codegen 接入前完成**） | TASK-CODEGEN-001 | `见任务卡` | **有条件通过**（2026-10-19） | 待审计 | 待审计 | 待审计 | 待审计 | 未测 |  |
 
 ## 3. 本轮已取证项

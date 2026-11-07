@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-08 R26 隔离候选（未发布）
+
+Windows Watch/纯静态 Preview 公共命令完成接线，组件 ContextMenu/Modal 基础范围已批准；有界工具树执行复用、真实 CLI 失败保旧与取消验证、菜单测量 Ops 复用。原生、完整帧零分配与覆盖率仍有欠项，详见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。本条不是合入或远端发布记录。
+
 - 全库文档同步：规范/手册/测试计划对齐已发布范围，归并原 9 项文档输入；历史证据与未批准 ThemeRef 明确分层，未扩大功能/安全/正式验收承诺。
 
 All notable changes to this project will be documented in this file.

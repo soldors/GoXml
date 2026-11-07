@@ -90,6 +90,24 @@ func TestDevPreviewManifestDamageFailsBeforeHost(t *testing.T) {
 	}
 }
 
+func TestDevCommandsRejectMissingInputAndNonMainEntry(t *testing.T) {
+	root, dir := devFixture(t)
+	for _, tc := range []struct {
+		args  []string
+		rc    int
+		cause string
+	}{
+		{[]string{"preview", filepath.Join(dir, "ui", "missing.gxml"), "--build-only", "--tool-root", root}, ExitFailure, "输入"},
+		{[]string{"watch", filepath.Join(dir, "not-a-module"), "--entry", "."}, ExitFailure, "go.mod"},
+		{[]string{"watch", dir, "--entry", "./ui"}, ExitUsage, "package main"},
+	} {
+		var out, errout bytes.Buffer
+		if rc := runContextWithTool(context.Background(), tc.args, &out, &errout, "must-not-run.exe"); rc != tc.rc || !strings.Contains(errout.String(), tc.cause) {
+			t.Fatalf("args=%v rc=%d wanted=%d cause=%s err=%s", tc.args, rc, tc.rc, tc.cause, errout.String())
+		}
+	}
+}
+
 func TestDevPreviewActualBinaryCopiesEffectiveAssetAndKeepsUserIsolated(t *testing.T) {
 	root, dir := devFixture(t)
 	tool := devTool(t, root)
