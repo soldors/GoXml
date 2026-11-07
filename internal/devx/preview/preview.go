@@ -196,15 +196,19 @@ func Run(opts Options) (*Result, error) {
 	// ---- 阶段 2b：标准编译前端 + 资产门禁 ----
 	//
 	// TargetDir = SourceDir：与「生成到 .gxml 同目录」的现行默认一致，
-	// <Image Src> 按源目录解析；overlay 字节口径由 AssetOverlay 传入。
+	// <Image Src> 按源目录解析；overlay 与 owned 输出优先集合都按现行
+	// generate 管线的口径原样传入 pipeline.Config（不另造资产/所有权语义）。
+	// AssetOutputPaths 让门禁在写宿主之前就对本批/已登记 owned 产物
+	// fail-closed：用户 overlay 把这些路径替换成合法 PNG 也不能放行。
 	cfg := pipeline.Config{
-		ModuleRoot:   moduleRoot,
-		SourceDir:    sourceDir,
-		TargetDir:    sourceDir,
-		OutputDir:    sourceDir,
-		PackageName:  pkgName,
-		SourcePath:   base,
-		AssetOverlay: opts.AssetOverlay,
+		ModuleRoot:       moduleRoot,
+		SourceDir:        sourceDir,
+		TargetDir:        sourceDir,
+		OutputDir:        sourceDir,
+		PackageName:      pkgName,
+		SourcePath:       base,
+		AssetOverlay:     opts.AssetOverlay,
+		AssetOutputPaths: opts.AssetOutputPaths,
 	}
 	prep := pipeline.Prepare(opts.File, src, cfg, pipeline.Hooks{})
 	if prep.Doc == nil {
@@ -245,6 +249,12 @@ func Run(opts Options) (*Result, error) {
 	host, err := arrangeHost(r, toolRoot, opts)
 	if err != nil {
 		r.Phase = PhaseHost
+		if r.HostDir != "" {
+			// arrangeHost 在目录取得所有权标记的第一时间就把
+			// HostDir/token 带回 Result：失败也必须保留证据与清理依据。
+			r.KeptForEvidence = true
+			return r, fmt.Errorf("preview: 宿主布置失败（证据保留在 %s）: %w", r.HostDir, err)
+		}
 		return r, err
 	}
 	r.HostDir = host.Dir

@@ -72,18 +72,34 @@ func arrangeHost(res *Result, toolRoot string, opts Options) (*hostLayout, error
 	if err != nil {
 		return nil, fmt.Errorf("preview: 创建宿主临时目录: %w", err)
 	}
+	token := newToken()
+	// 所有权标记先行：标记写入成功之前，目录还没有可核验的所有者身份。
+	// 这一步失败时目录是本次调用刚创建的空目录——安全清理，不留孤儿；
+	// 不能用 cleanupHost（它会因标记缺失拒绝删除）。
+	if err := os.WriteFile(filepath.Join(dir, ownershipMarker), []byte(token+"\n"), 0o644); err != nil {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			return nil, fmt.Errorf("preview: 写入所有权标记: %w（且清理本次刚创建的目录 %s 失败: %v）", err, dir, rmErr)
+		}
+		return nil, fmt.Errorf("preview: 写入所有权标记: %w（已安全清理本次刚创建的目录 %s）", err, dir)
+	}
+
 	h := &hostLayout{
 		Dir:     dir,
 		ViewDir: filepath.Join(dir, "view"),
-		Token:   newToken(),
+		Token:   token,
 		PkgName: res.PkgName,
 	}
-	if err := os.MkdirAll(h.ViewDir, 0o755); err != nil {
-		return nil, fmt.Errorf("preview: 创建 view 目录: %w", err)
+	// 目录一旦取得所有权标记，后续**任何阶段**失败都必须把 HostDir/token
+	// 带回 Result：调用方才有可核验的证据路径与清理依据。
+	// 失败时不自动删除——证据优先；清理只由 Result.Cleanup 按 token 执行。
+	res.HostDir = dir
+	res.hostToken = token
+	fail := func(cause error) (*hostLayout, error) {
+		return nil, fmt.Errorf("%w（宿主证据目录 %s；token %s）", cause, dir, token)
 	}
-	// 所有权标记先行：从这一刻起目录就是可认领的「自有」目录。
-	if err := os.WriteFile(filepath.Join(dir, ownershipMarker), []byte(h.Token+"\n"), 0o644); err != nil {
-		return nil, fmt.Errorf("preview: 写入所有权标记: %w", err)
+
+	if err := os.MkdirAll(h.ViewDir, 0o755); err != nil {
+		return fail(fmt.Errorf("preview: 创建 view 目录: %w", err))
 	}
 
 	// go.mod：复制 goxml 源码树的 go.mod（依赖版本零漂移），改 module 行，
@@ -91,23 +107,23 @@ func arrangeHost(res *Result, toolRoot string, opts Options) (*hostLayout, error
 	// 与生成 View 同源）。
 	modSrc, err := os.ReadFile(filepath.Join(toolRoot, "go.mod"))
 	if err != nil {
-		return nil, fmt.Errorf("preview: 读取 goxml go.mod: %w", err)
+		return fail(fmt.Errorf("preview: 读取 goxml go.mod: %w", err))
 	}
 	mod := rewriteModuleLine(string(modSrc), hostModuleName)
 	mod += fmt.Sprintf("\nrequire github.com/goxml/goxml v0.0.0\n\nreplace github.com/goxml/goxml => %q\n",
 		filepath.ToSlash(toolRoot))
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0o644); err != nil {
-		return nil, fmt.Errorf("preview: 写入宿主 go.mod: %w", err)
+		return fail(fmt.Errorf("preview: 写入宿主 go.mod: %w", err))
 	}
 
 	// go.sum：复制 goxml 仓库根的校验和（模板工程同款做法：依赖升级时
 	// 只有一处需要更新）。replace 到本地目录的 goxml 不需要 sum。
 	sum, err := os.ReadFile(filepath.Join(toolRoot, "go.sum"))
 	if err != nil {
-		return nil, fmt.Errorf("preview: 读取 goxml go.sum: %w", err)
+		return fail(fmt.Errorf("preview: 读取 goxml go.sum: %w", err))
 	}
 	if err := os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644); err != nil {
-		return nil, fmt.Errorf("preview: 写入宿主 go.sum: %w", err)
+		return fail(fmt.Errorf("preview: 写入宿主 go.sum: %w", err))
 	}
 
 	// 宿主入口：只 build、由接线上层决定是否运行（本线不运行原生窗口）。
@@ -136,13 +152,13 @@ func main() {
 }
 `, h.PkgName, hostModuleName+"/view", ctor, "goxml preview: "+filepath.Base(res.File))
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainSrc), 0o644); err != nil {
-		return nil, fmt.Errorf("preview: 写入宿主 main.go: %w", err)
+		return fail(fmt.Errorf("preview: 写入宿主 main.go: %w", err))
 	}
 	h.MainGo = mainSrc
 
 	// 生成 View 落位。
 	if err := os.WriteFile(filepath.Join(h.ViewDir, res.OutputName), res.Source, 0o644); err != nil {
-		return nil, fmt.Errorf("preview: 写入生成 View: %w", err)
+		return fail(fmt.Errorf("preview: 写入生成 View: %w", err))
 	}
 
 	// 资产：把**门禁校验过的有效字节**复制进宿主 view 目录，
@@ -154,14 +170,14 @@ func main() {
 		data, ok := pipeline.ReadAssetForFingerprint(sourceDir, ref.Path, opts.AssetOverlay)
 		if !ok {
 			// 正常到不了这里：门禁已校验同一读取。fail-closed 而不是跳过。
-			return nil, fmt.Errorf("preview: 读取资产 %s 的有效字节失败（门禁已通过，读取却失败——拒绝继续）", ref.Path)
+			return fail(fmt.Errorf("preview: 读取资产 %s 的有效字节失败（门禁已通过，读取却失败——拒绝继续）", ref.Path))
 		}
 		dst := filepath.Join(h.ViewDir, filepath.FromSlash(ref.Path))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return nil, fmt.Errorf("preview: 创建资产目录 %s: %w", ref.Path, err)
+			return fail(fmt.Errorf("preview: 创建资产目录 %s: %w", ref.Path, err))
 		}
 		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return nil, fmt.Errorf("preview: 写入资产 %s: %w", ref.Path, err)
+			return fail(fmt.Errorf("preview: 写入资产 %s: %w", ref.Path, err))
 		}
 	}
 	return h, nil
