@@ -3,7 +3,6 @@ package watch
 import (
 	"context"
 	"fmt"
-	"sort"
 )
 
 // GenerationResult 报告一次 generate+build 的结果分类（区分资产/生成失败与入口 build 失败）。
@@ -120,17 +119,40 @@ func (w *Watch) Tick(ctx context.Context, nowMS int) (bool, error) {
 }
 
 // runGeneration 执行一次构建与（条件）交接，驱动状态机的 BuildFinished。
+//
+// F-A3：在**构建前**与**发布/交接前**检查 ctx 取消——已取消则不构建、不发布（不丢弃成功结果来假装
+// 取消，而是根本不发布交接）。F-A5：Builder 收到的是本代**冻结**的触发路径快照（GenPaths）。
 func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
-	// 变更路径：进入构建时已由 Pump 消费；这里从快照 diff 重建“触发集合”用于 builder 诊断。
-	res := w.p.builder.Build(ctx, gen, w.changedForGen(gen))
+	// F-A5：本代冻结路径快照（Pump 已在清空前冻结）。
+	paths := w.db.GenPaths()
+
+	// F-A3：构建前若已取消，则不构建、不发布。
+	if err := ctx.Err(); err != nil {
+		_, requeue := w.db.BuildFinished(gen, false)
+		w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
+		return true
+	}
+
+	res := w.p.builder.Build(ctx, gen, paths)
 	if !res.OK {
 		_, requeue := w.db.BuildFinished(gen, false)
 		w.genFailStreak++
 		w.report(gen, res, false, requeue)
 		return true
 	}
+	// F-A3：构建成功但上下文已取消 => 不发布/不交接（不发布过期代次）。
+	if err := ctx.Err(); err != nil {
+		_, requeue := w.db.BuildFinished(gen, false)
+		w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
+		return true
+	}
 	publish, requeue := w.db.BuildFinished(gen, true)
 	if publish {
+		// F-A3：交接前再确认未取消。
+		if err := ctx.Err(); err != nil {
+			w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, false)
+			return true
+		}
 		if serr := w.p.swapper.Swap(ctx, gen); serr != nil {
 			// 交接失败：不更新 lastPublished；如实报告未发布（不谎报已更新）。
 			p := res
@@ -151,17 +173,6 @@ func (w *Watch) report(gen int, res GenerationResult, published, requeue bool) {
 	if w.p.obs != nil {
 		w.p.obs.OnGeneration(gen, res, published)
 	}
-}
-
-// changedForGen 提供一个稳定排序的“本代触发路径”视图（诊断用）。由于防抖已合并突发，
-// 这里返回最近一次用户变更集合（稳定排序）——不用于次数证明，仅用于 builder 选择输入。
-func (w *Watch) changedForGen(gen int) []string {
-	paths := w.db.PendingPaths()
-	if paths == nil {
-		paths = []string{}
-	}
-	sort.Strings(paths)
-	return paths
 }
 
 // Stop 标记停止（Run 循环退出条件）。

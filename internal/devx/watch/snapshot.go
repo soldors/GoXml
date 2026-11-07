@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goxml/goxml/internal/compiler/codegen"
 )
 
 // on-disk Manifest 与产物保护头的**文档化格式**（复用 internal/cli 口径，不重造身份）。
 const (
 	manifestDirName  = ".goxml"
 	manifestFileName = "generate-manifest.json"
-	// guardHeaderVersion 是产物第一行保护头版本（`// Goxml-Version: 1`）。
-	guardHeaderVersion = "1"
-	// guardSourcePrefix 是产物第二行前缀；后接源文件基名。
-	guardSourcePrefix = "// Source: "
 )
 
 // manifestDoc 是 Manifest JSON 的最小读取结构（只取本包需要的字段）。
@@ -57,7 +55,7 @@ func readOwnedIndex(projectDir string) (*ownedIndex, error) {
 		if out == "" {
 			continue
 		}
-		idx.byOutput[out] = filepath.Base(toSlash(e.Source))
+		idx.byOutput[out] = toSlash(e.Source)
 	}
 	return idx, nil
 }
@@ -78,31 +76,11 @@ func (idx *ownedIndex) classify(projectDir, rel string, content []byte) FileClas
 	return ClassUser
 }
 
-// guardHeaderOwned 检查产物内容的前两行是否为本工具保护头且 Source 基名匹配。
-// 第 1 行 `// Goxml-Version: 1`；第 2 行 `// Source: <base>`。
-func guardHeaderOwned(content []byte, wantBase string) bool {
-	lines := splitFirstLines(content, 3)
-	if len(lines) < 2 {
-		return false
-	}
-	if strings.TrimRight(lines[0], "\r") != "// Goxml-Version: "+guardHeaderVersion {
-		return false
-	}
-	return strings.TrimRight(lines[1], "\r") == guardSourcePrefix+wantBase
-}
-
-func splitFirstLines(b []byte, n int) []string {
-	out := make([]string, 0, n)
-	start := 0
-	for start < len(b) && len(out) < n {
-		i := start
-		for i < len(b) && b[i] != '\n' {
-			i++
-		}
-		out = append(out, string(b[start:i]))
-		start = i + 1
-	}
-	return out
+// guardHeaderOwned 检查产物内容是否带**本工具真实保护头**（复用 codegen.HasProtectedHeader 的
+// 三行规范，不复制头格式）。所有权口径与 codegen/--clean 一致：Manifest 登记 ∧ 真实保护头；
+// Source 路径内容不参与判定（HasProtectedHeader 只校验第 2 行前缀，与 codegen 同规范）。
+func guardHeaderOwned(content []byte, _ string) bool {
+	return codegen.HasProtectedHeader(content)
 }
 
 // Scan 对 ProjectDir 做一次确定性快照，返回 Snapshot 与 owned 索引。

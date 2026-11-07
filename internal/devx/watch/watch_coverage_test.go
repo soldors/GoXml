@@ -1,7 +1,8 @@
 package watch
 
-// R26-A 补充真实路径测试（非镜像实现）：直接行使 realGoBuild / realGenerate 的真实实现、
-// 配置默认值/访问器、SetLogger、Debounce/BuildGen、NewDebouncer 默认、stop 的优雅-EOF 分支。
+// R26-A 补充真实路径测试（非镜像实现）：真实 realGoBuild（cwd=ProjectDir）、配置默认值/访问器、
+// SetLogger、Debounce/BuildGen、NewDebouncer 默认、stop 的优雅-EOF 分支。
+// 真实 CLI 生成（cli.Run）的测试在 watchadapter 适配层（F-A6/A7：watch 不 import cli）。
 
 import (
 	"context"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-// 真实 realGoBuild：在模块根用真实 go 构建 consoleapp，rc0 且产物存在（证明真实 build 端口可用）。
+// 真实 realGoBuild：在 workDir=模块根 用真实 go 构建 consoleapp，rc0 且产物存在。
 func TestRealGoBuildExecutes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip real go build in -short")
@@ -27,21 +28,6 @@ func TestRealGoBuildExecutes(t *testing.T) {
 	}
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("产物应存在: %v", err)
-	}
-}
-
-// realGenerate：对不存在/. 目录调用真实 cli.Run generate --check，真实返回 rc（不 panic），
-// 覆盖 realGenerate 的 goroutine+select 路径。
-func TestRealGenerateRuns(t *testing.T) {
-	dir := t.TempDir()
-	// 最小 go.mod，无 .gxml：generate --check 会以真实 rc 返回（非 0 或 0 皆真实路径）。
-	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/x\n\ngo 1.26\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	rc, _ := realGenerate(ctx, dir)
-	// 只断言真实返回（rc 可为非 0）；不把具体值当产品结论。
-	if rc == -100000 { // 哨兵：不可能
-		t.Fatal("unreachable")
 	}
 }
 
@@ -112,5 +98,3 @@ func TestStopGracefulEOF(t *testing.T) {
 		t.Fatal("关闭 stdin 后应自然退出")
 	}
 }
-
-// buildConsoleAppForA3 复用 buildConsoleApp（已在 a2 定义）。

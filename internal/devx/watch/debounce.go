@@ -28,7 +28,8 @@ type Debouncer struct {
 	buildGen   int  // 正在构建的代次（0=无）
 	cancelled  bool // 当前构建/待发布是否被取消
 	paths      map[string]bool
-	dirtySince int // 最近一次变更时间（诊断）
+	dirtySince int      // 最近一次变更时间（诊断）
+	genPaths   []string // 进入当前构建时冻结的触发路径快照（F-A5：Pump 消费前冻结，避免被清空）
 }
 
 // NewDebouncer 构造防抖状态机；debounceMS<=0 取 DefaultDebounceMS。
@@ -65,14 +66,35 @@ func (d *Debouncer) PendingPaths() []string {
 	return out
 }
 
+// sortedPaths 返回 paths 的稳定排序副本（/ 分隔，字符串序）。
+func (d *Debouncer) sortedPaths() []string {
+	out := make([]string, 0, len(d.paths))
+	for p := range d.paths {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// GenPaths 返回**当前构建代次冻结的触发路径快照**（F-A5）。空闲时返回 nil。
+func (d *Debouncer) GenPaths() []string {
+	if !d.building {
+		return nil
+	}
+	out := make([]string, len(d.genPaths))
+	copy(out, d.genPaths)
+	return out
+}
+
 // LatestGen 返回最新目标代次。
 func (d *Debouncer) LatestGen() int { return d.latestGen }
 
 // BuildGen 返回正在构建的代次（0 表示空闲）。
 func (d *Debouncer) BuildGen() int { return d.buildGen }
 
-// Pump 推进注入时钟到 nowMS，窗口到期且没有进行中的构建时返回要构建的目标代次（否则 0）。
-// 返回时把 pending 变更消费入该代次（清空 paths），并标记进入构建。
+// Pump 推进注入时钟到 nowMS。窗口到期且空闲时返回 (目标代次, 本代冻结路径快照)；否则 (0, nil)。
+// **冻结**：进入构建前把当前 pending 路径排序后冻结到 genPaths（F-A5），再清空 pending，
+// 使 Builder 始终拿到本代触发路径，不被后续清空/新代变化覆盖。
 func (d *Debouncer) Pump(nowMS int) int {
 	if nowMS > d.now {
 		d.now = nowMS
@@ -84,6 +106,7 @@ func (d *Debouncer) Pump(nowMS int) int {
 		return 0
 	}
 	// 窗口静默期满且空闲：开始构建最新目标代次。
+	d.genPaths = d.sortedPaths() // F-A5：先冻结本代触发路径快照
 	d.building = true
 	d.buildGen = d.latestGen
 	d.pending = false

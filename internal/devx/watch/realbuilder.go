@@ -7,32 +7,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/goxml/goxml/internal/cli"
+	"time"
 )
 
-// GenerateFunc 是 generate --check 的注入端口。生产实现复用 internal/cli.Run。
-// 返回 observed rc 与 stderr 摘要（不吞错）。
+// GenerateFunc 是 generate --check 的注入端口。**本包不 import internal/cli**（避免 cli↔watch
+// 导入环，见 F-A6）。真实 CLI 生成由独立 adapter 包（internal/devx/watchadapter）提供实现，
+// 其内部复用 internal/cli.Run。测试可注入 fake 统计次数。
 type GenerateFunc func(ctx context.Context, projectDir string) (rc int, stderr string)
 
-// BuildFunc 是 go build 入口的注入端口。生产实现用 go 命令；测试可替换为 fake 以统计次数。
-type BuildFunc func(ctx context.Context, args []string) (rc int, output string)
+// BuildFunc 是 go build 入口的注入端口。生产实现用 go 命令（cwd=ProjectDir）；测试可替换。
+type BuildFunc func(ctx context.Context, workDir string, args []string) (rc int, output string)
 
 // RealBuilder 是 Builder 的真实实现：一次目录 `gxml generate --check` 生成+检查，再 `go build` 入口。
 // 不另造生成器/缓存；区分 generate 失败（资产/生成）与 build 失败（入口编译）。
+//
+// 取消/超时：Build 以调用方 ctx 与 BuildTimeoutMS 的较短者驱动；ctx 取消即返回失败（Stage 分类），
+// 不发布、不留后台生成（真实 generate 由其实现尊重 ctx；默认要求注入的 GenerateFunc 尊重 ctx）。
 type RealBuilder struct {
-	// ProjectDir 是模块根。
 	ProjectDir string
-	// EntryPkg 是被构建的入口包（如 "./app"）。空则默认 "."。
-	EntryPkg string
-	// OutBinary 是新代二进制输出路径（每代唯一，由调用方按 gen 生成）。空则用 ProjectDir/.goxml/watch-bin。
-	OutBinary string
-	// Generate/Build 可注入；nil 用真实实现。
+	EntryPkg   string // 相对入口包，如 "./app"；空则 "."
+	OutBinary  string
+	// Generate 必填（由 adapter 或测试注入，本包不内建 cli 依赖）。
 	Generate GenerateFunc
-	BuildFn  BuildFunc
-
-	// goExe 是 go 可执行名（默认 "go"）。
-	GoExe string
+	// BuildFn 可注入；nil 用真实 go build（cwd=ProjectDir）。
+	BuildFn BuildFunc
+	GoExe   string
+	// BuildTimeout 是本代构建墙钟上限（0 取 Config 默认语义；由 Watch 传入更精确的 ctx 也可）。
+	BuildTimeout time.Duration
 }
 
 func (b *RealBuilder) goBin() string {
@@ -49,42 +50,27 @@ func (b *RealBuilder) entry() string {
 	return "."
 }
 
-func (b *RealBuilder) generate() GenerateFunc {
-	if b.Generate != nil {
-		return b.Generate
-	}
-	return realGenerate
-}
-
-func (b *RealBuilder) build() BuildFunc {
+func (b *RealBuilder) buildFn() BuildFunc {
 	if b.BuildFn != nil {
 		return b.BuildFn
 	}
 	return realGoBuild
 }
 
-// realGenerate 复用 internal/cli.Run 执行目录 generate --check（真实 CLI，不重造）。
-// 在**自身 goroutine 内**运行，配合 ctx 超时；stdout/stderr 捕获到缓冲。
-func realGenerate(ctx context.Context, projectDir string) (int, string) {
-	var stdout, stderr strings.Builder
-	done := make(chan int, 1)
-	go func() {
-		rc := cli.Run([]string{"generate", projectDir, "--check"}, &stdout, &stderr)
-		done <- rc
-	}()
-	select {
-	case rc := <-done:
-		return rc, stderr.String()
-	case <-ctx.Done():
-		return -1, "generate canceled/timeout: " + ctx.Err().Error()
+// realGoBuild 在 **workDir（=ProjectDir）** 下执行 `go build -o <out> <entry>`，使相对入口与
+// 有效构建上下文与真实工程一致（F-A2：此前未设 cwd，误编译 watch 库包）。尊重 ctx 取消/超时。
+func realGoBuild(ctx context.Context, workDir string, args []string) (int, string) {
+	if workDir == "" {
+		return -1, "empty workDir"
 	}
-}
-
-// realGoBuild 执行 `go build -o <out> <entry>`，从 env 读取 PWD 由调用方通过 args 给出。
-func realGoBuild(ctx context.Context, args []string) (int, string) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = workDir
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return -1, string(out) + "\ncanceled: " + ctx.Err().Error()
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode(), string(out)
 		}
@@ -93,20 +79,35 @@ func realGoBuild(ctx context.Context, args []string) (int, string) {
 	return 0, string(out)
 }
 
-// Build 实现 Builder：generate 失败归类 "generate"；go build 失败归类 "build"。成功返回 OK。
+// Build 实现 Builder。generate 失败归类 "generate"；go build 失败归类 "build"；ctx 取消/超时按
+// 所处分阶段分类并返回失败（不发布）。
 func (b *RealBuilder) Build(ctx context.Context, gen int, changed []string) GenerationResult {
 	if b.ProjectDir == "" {
 		return GenerationResult{OK: false, Stage: "generate", Detail: "ProjectDir 必填", Gen: gen}
 	}
+	if b.Generate == nil {
+		return GenerationResult{OK: false, Stage: "generate", Detail: "未注入 GenerateFunc（本包不内建 cli 依赖；请用 watchadapter 提供真实实现）", Gen: gen}
+	}
+	// 应用 BuildTimeout（若无则继承调用方 ctx）。
+	buildCtx := ctx
+	if b.BuildTimeout > 0 {
+		var cancel context.CancelFunc
+		buildCtx, cancel = context.WithTimeout(ctx, b.BuildTimeout)
+		defer cancel()
+	}
+	if err := buildCtx.Err(); err != nil {
+		return GenerationResult{OK: false, Stage: "generate", Detail: "canceled before build: " + err.Error(), Gen: gen}
+	}
+
 	// 1) generate --check
-	rc, serr := b.generate()(ctx, b.ProjectDir)
-	if ctx.Err() != nil {
+	rc, serr := b.Generate(buildCtx, b.ProjectDir)
+	if buildCtx.Err() != nil {
 		return GenerationResult{OK: false, Stage: "generate", Detail: "canceled/timeout: " + summarize(serr), Gen: gen}
 	}
 	if rc != 0 {
 		return GenerationResult{OK: false, Stage: "generate", Detail: summarize(serr), Gen: gen}
 	}
-	// 2) go build 入口到本代唯一二进制
+	// 2) go build 入口到本代唯一二进制（cwd=ProjectDir）
 	outBin := b.OutBinary
 	if outBin == "" {
 		outBin = filepath.Join(b.ProjectDir, ".goxml", fmt.Sprintf("watch-bin-gen%d", gen))
@@ -115,8 +116,8 @@ func (b *RealBuilder) Build(ctx context.Context, gen int, changed []string) Gene
 		}
 	}
 	args := []string{b.goBin(), "build", "-o", outBin, b.entry()}
-	brc, bout := b.build()(ctx, args)
-	if ctx.Err() != nil {
+	brc, bout := b.buildFn()(buildCtx, b.ProjectDir, args)
+	if buildCtx.Err() != nil {
 		return GenerationResult{OK: false, Stage: "build", Detail: "canceled/timeout: " + summarize(bout), Gen: gen}
 	}
 	if brc != 0 {

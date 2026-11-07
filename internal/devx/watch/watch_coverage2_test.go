@@ -22,7 +22,7 @@ func TestRealGoBuildDirect(t *testing.T) {
 		t.Skip("consoleapp main.go missing")
 	}
 	out := filepath.Join(t.TempDir(), "cb2.exe")
-	rc, outp := realGoBuild(context.Background(), []string{"go", "build", "-o", out, src})
+	rc, outp := realGoBuild(context.Background(), root, []string{"go", "build", "-o", out, src})
 	if rc != 0 {
 		t.Fatalf("realGoBuild 构建单文件应 rc0，实际 rc=%d outp=%s", rc, outp)
 	}
@@ -33,7 +33,7 @@ func TestRealGoBuildDirect(t *testing.T) {
 
 // realGoBuild 失败路径：不存在的文件 -> 真实非零 rc（证明真实 rc 分类，而非哨兵）。
 func TestRealGoBuildFails(t *testing.T) {
-	rc, _ := realGoBuild(context.Background(), []string{"go", "build", filepath.Join(t.TempDir(), "nope.go")})
+	rc, _ := realGoBuild(context.Background(), t.TempDir(), []string{"go", "build", filepath.Join(t.TempDir(), "nope.go")})
 	if rc == 0 {
 		t.Fatal("构建不存在文件应非零 rc")
 	}

@@ -101,8 +101,9 @@ func TestProcessManagerRealHandoff(t *testing.T) {
 	}
 }
 
-// 2) 新代启动失败：旧代继续服务（不停止旧代），返回错误。
-func TestProcessManagerSpawnFailKeepsOld(t *testing.T) {
+//  2. 串行交接 stop-old→start-new：先停旧代；若新代启动失败，则当前无进程服务（返回错误，
+//     不承诺旧 PID 仍在——见 F-A4/A2 任务要求）。旧代进程树必须已收口（无幸存）。
+func TestProcessManagerSpawnFailAfterStop(t *testing.T) {
 	bin := buildConsoleApp(t)
 	pm := NewProcessManager(func(gen int) string { return bin })
 	ctx := context.Background()
@@ -110,7 +111,10 @@ func TestProcessManagerSpawnFailKeepsOld(t *testing.T) {
 		t.Fatalf("swap gen1: %v", err)
 	}
 	old := pm.Current()
-	// 让 gen2 指向不存在的二进制
+	if old == nil || !old.Running() {
+		t.Fatal("gen1 应运行")
+	}
+	// 让 gen2 指向不存在的二进制（停止旧代后启动新代将失败）
 	pm.BinaryForGen = func(gen int) string {
 		if gen == 2 {
 			return filepath.Join(t.TempDir(), "does-not-exist")
@@ -120,8 +124,16 @@ func TestProcessManagerSpawnFailKeepsOld(t *testing.T) {
 	if err := pm.Swap(ctx, 2); err == nil {
 		t.Fatal("gen2 启动失败应返回错误")
 	}
-	if pm.Current() != old || !old.Running() {
-		t.Fatal("新代启动失败时旧代必须继续服务")
+	// 串行交接已先停旧代：当前无进程在服务。
+	if pm.Current() != nil {
+		t.Fatal("stop-old→start-new 失败后不应有当前进程")
+	}
+	// 旧代根进程已收口（Job 关闭杀树）。
+	if old.Running() {
+		t.Fatal("旧代根进程必须已收口")
+	}
+	if n := pm.ActiveAfter(); n != 0 {
+		t.Fatalf("失败交接后不得有幸存进程树，实际 %d", n)
 	}
 	_ = pm.Shutdown()
 }
@@ -139,7 +151,7 @@ func TestRealBuilderClassifyAndCount(t *testing.T) {
 			atomic.AddInt32(&genCalls, 1)
 			return 0, ""
 		},
-		BuildFn: func(ctx context.Context, args []string) (int, string) {
+		BuildFn: func(ctx context.Context, workDir string, args []string) (int, string) {
 			atomic.AddInt32(&buildCalls, 1)
 			gotBuildArgs = args
 			return 0, ""
@@ -172,7 +184,7 @@ func TestRealBuilderClassifyAndCount(t *testing.T) {
 
 	// build 失败
 	rb.Generate = func(ctx context.Context, dir string) (int, string) { return 0, "" }
-	rb.BuildFn = func(ctx context.Context, args []string) (int, string) { return 1, "compile error" }
+	rb.BuildFn = func(ctx context.Context, workDir string, args []string) (int, string) { return 1, "compile error" }
 	res = rb.Build(context.Background(), 3, nil)
 	if res.OK || res.Stage != "build" {
 		t.Fatalf("build 失败应 Stage=build，实际 %+v", res)
