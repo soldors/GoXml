@@ -34,3 +34,5 @@
 
 ## 五态
 实现 done(`f27afc5`+dev-log) / 自测 pass / 独立复核 PENDING（协调者）/ 主仓未合 / 远端未推送。
+
+追加提交：`d03973a`（F-A4 进程树收口硬化：根存活时先 taskkill /T 再 TerminateJobObject+有界等待；根已退出仍用 Job 句柄终止后代；CoordProcessManagerCountsDescendants 稳定 3/3）。
