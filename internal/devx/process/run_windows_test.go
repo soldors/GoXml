@@ -195,3 +195,51 @@ func TestCommandRefusalsStartNothing(t *testing.T) {
 		t.Fatalf("start failure: %+v", r)
 	}
 }
+
+func TestIncompleteReapAndMissingExitStatusAreNeverSuccess(t *testing.T) {
+	// A cleanup deadline does not prove that an unavailable waiter completed.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err, joined := joinCommand(ctx, make(chan error)); joined || !errors.Is(err, context.Canceled) {
+		t.Fatalf("unavailable waiter reported reaped: joined=%v err=%v", joined, err)
+	}
+	// A start/wait failure without a ProcessState must retain an unknown/nonzero
+	// status, rather than being mistaken for a successful command.
+	cmd := exec.Command(filepath.Join(t.TempDir(), "never-started.exe"))
+	if rc := exitCodeOf(cmd, os.ErrNotExist); rc != -1 {
+		t.Fatalf("unknown failed command reported successful status %d", rc)
+	}
+}
+
+func TestExitWitnessWaitRejectsTimeoutAndInvalidHandle(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), "GOXML_OWNED_STREAM_HELPER=held")
+	job, err := StartOwnedCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Wait()
+	defer TerminateAndWaitJob(job, time.Now().Add(3*time.Second))
+	handles, err := jobProcessHandles(job)
+	if err != nil || len(handles) != 1 {
+		t.Fatalf("owned root not captured: handles=%d err=%v", len(handles), err)
+	}
+	defer func() {
+		for _, h := range handles {
+			windows.CloseHandle(h)
+		}
+	}()
+	if err := waitProcessHandles(handles, time.Now().Add(time.Millisecond)); err == nil {
+		t.Fatal("live process reported exited")
+	}
+	if err := waitProcessHandles(handles, time.Time{}); err == nil {
+		t.Fatal("expired witness deadline reported proof")
+	}
+	if err := waitProcessHandles([]windows.Handle{windows.InvalidHandle}, time.Now().Add(time.Second)); err == nil {
+		t.Fatal("invalid process witness reported proof")
+	}
+}

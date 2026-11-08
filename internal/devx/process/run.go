@@ -87,9 +87,8 @@ func RunCommandTree(ctx context.Context, exe string, args []string, dir string, 
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), commandReapGrace)
 		defer cancel()
 		// Use a live cleanup context, not the already-cancelled execution context.
-		terr := KillProcessTree(cleanupCtx, cmd.Process.Pid)
 		deadline, _ := cleanupCtx.Deadline()
-		jerr := TerminateAndWaitJob(job, deadline)
+		jerr := StopJobTree(job, cmd.Process.Pid, deadline)
 		_, joined := joinCommand(cleanupCtx, waitCh)
 		if !joined {
 			kerr := cmd.Process.Kill()
@@ -100,7 +99,7 @@ func RunCommandTree(ctx context.Context, exe string, args []string, dir string, 
 				jerr = errors.Join(jerr, kerr, fmt.Errorf("command root not reaped within cleanup grace"))
 			}
 		}
-		return capture(ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: errors.Join(ctx.Err(), terr, jerr)})
+		return capture(ExecResult{RC: -1, Output: buf.String(), Cancelled: true, Err: errors.Join(ctx.Err(), jerr)})
 	}
 }
 

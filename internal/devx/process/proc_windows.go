@@ -7,6 +7,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"syscall"
@@ -101,12 +102,79 @@ type jobAccounting struct {
 	TotalTerminatedProcesses  uint32
 }
 
-// TerminateAndWaitJob 显式终止 Job 内全部进程并**有界等待 ActiveProcesses 归零**后关闭句柄。
-// 任何失败（Terminate/Query 错误、超时未归零）都如实返回 error，不伪装成功。
+// TerminateAndWaitJob retains process handles before requesting termination.
+// Job accounting can reach zero before those handles are signaled.
 func TerminateAndWaitJob(job JobHandle, deadline time.Time) error {
+	return stopJob(job, 0, deadline)
+}
+
+// StopJobTree captures exit witnesses before taskkill can remove job members.
+func StopJobTree(job JobHandle, pid int, deadline time.Time) error {
+	return stopJob(job, pid, deadline)
+}
+
+func stopJob(job JobHandle, pid int, deadline time.Time) error {
 	if job == 0 {
 		return nil
 	}
+	handles, captureErr := jobProcessHandles(job)
+	defer func() {
+		for _, h := range handles {
+			windows.CloseHandle(h)
+		}
+	}()
+	if pid > 0 {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		// Job termination remains the fallback if taskkill fails or times out.
+		_ = KillProcessTree(ctx, pid)
+		cancel()
+	}
+	return errors.Join(captureErr, terminateJob(job, deadline), waitProcessHandles(handles, deadline))
+}
+
+func jobProcessHandles(job JobHandle) ([]windows.Handle, error) {
+	// A bounded snapshot; oversized trees fail closed instead of silently losing
+	// exit witnesses. Only PIDs returned by this exact owned job are opened.
+	var list struct {
+		assigned, listed uint32
+		ids              [4096]uintptr
+	}
+	if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList,
+		uintptr(unsafe.Pointer(&list)), uint32(unsafe.Sizeof(list)), nil); err != nil {
+		return nil, fmt.Errorf("capture job processes: %w", err)
+	}
+	if list.listed > uint32(len(list.ids)) || list.assigned > list.listed {
+		return nil, errors.New("job process snapshot incomplete")
+	}
+	var handles []windows.Handle
+	for _, pid := range list.ids[:list.listed] {
+		h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			continue // The process exited and its PID disappeared before OpenProcess.
+		}
+		if err != nil {
+			return handles, fmt.Errorf("capture job process %d: %w", pid, err)
+		}
+		handles = append(handles, h)
+	}
+	return handles, nil
+}
+
+func waitProcessHandles(handles []windows.Handle, deadline time.Time) error {
+	for _, h := range handles {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("process exit proof deadline expired")
+		}
+		state, err := windows.WaitForSingleObject(h, uint32((remaining+time.Millisecond-1)/time.Millisecond))
+		if err != nil || state != windows.WAIT_OBJECT_0 {
+			return fmt.Errorf("process exit not proven: state=%d err=%v", state, err)
+		}
+	}
+	return nil
+}
+
+func terminateJob(job JobHandle, deadline time.Time) error {
 	if err := windows.TerminateJobObject(job, 1); err != nil {
 		// Terminate 失败仍尝试等待/关闭，但错误必须上报。
 		windows.CloseHandle(job)

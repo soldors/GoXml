@@ -26,4 +26,7 @@ func CloseJobOwnership(job JobHandle)                 {}
 func TerminateAndWaitJob(job JobHandle, deadline time.Time) error {
 	return errTreeOwnershipUnsupported
 }
+func StopJobTree(job JobHandle, pid int, deadline time.Time) error {
+	return errTreeOwnershipUnsupported
+}
 func KillProcessTree(ctx context.Context, pid int) error { return errTreeOwnershipUnsupported }

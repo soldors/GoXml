@@ -144,9 +144,6 @@ func (m *ProcessManager) stop(c *Child) (stopped bool, waitErr error) {
 		return true, nil
 	}
 	deadline := time.Now().Add(m.timeout())
-	stopCtx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-
 	if !c.Running() {
 		// 根已退出：仍用 job 句柄终止其后代（句柄在根退出后仍有效），有界等待。
 		if jerr := terminateAndWaitJob(c.job, deadline); jerr != nil {
@@ -154,15 +151,12 @@ func (m *ProcessManager) stop(c *Child) (stopped bool, waitErr error) {
 		}
 		return true, c.waitErr
 	}
-	// 根存活：先在有界 ctx 下执行 tree 命令（taskkill /T），再 job 终止+等待。
-	if terr := killProcessTree(stopCtx, c.PID); terr != nil {
-		m.logf("watch: tree command gen=%d pid=%d err=%v", c.Gen, c.PID, terr)
-	}
+	// Capture owned process handles before taskkill removes members from the job.
 	if c.stdinWrite != nil {
 		_ = c.stdinWrite.Close()
 		c.stdinWrite = nil
 	}
-	if jerr := terminateAndWaitJob(c.job, deadline); jerr != nil {
+	if jerr := stopJobTree(c.job, c.PID, deadline); jerr != nil {
 		// job 终止失败：不做成功伪装；返回 false。
 		return false, fmt.Errorf("gen=%d job 终止失败: %w", c.Gen, jerr)
 	}

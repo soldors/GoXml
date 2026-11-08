@@ -13,4 +13,7 @@ func startOwnedCommand(cmd *exec.Cmd) (jobHandle, error) { return process.StartO
 func terminateAndWaitJob(job jobHandle, deadline time.Time) error {
 	return process.TerminateAndWaitJob(job, deadline)
 }
+func stopJobTree(job jobHandle, pid int, deadline time.Time) error {
+	return process.StopJobTree(job, pid, deadline)
+}
 func killProcessTree(ctx context.Context, pid int) error { return process.KillProcessTree(ctx, pid) }
