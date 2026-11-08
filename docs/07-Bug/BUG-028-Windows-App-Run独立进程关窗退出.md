@@ -1,0 +1,32 @@
+# BUG-028：Windows App.Run 独立进程关窗后的退出策略
+
+- 发现：2026-11-08，R26 原生 Preview 验收。
+- 状态：底座路径待定；Preview 专用宿主已修复，不代表 App.Run 全局修复。
+- 平台：本机 Windows/amd64、Go 1.26、Gio 0.10.3；不外推其它平台。
+
+## 实证与边界
+
+旧预览宿主直接 `app.Run(v, cfg)`，窗口显示、最大化重绘正常，标题栏关闭后
+退出码 2。直接执行同一宿主并保留 stderr，得到 Go `all goroutines are asleep`
+诊断，栈停在 Gio `osMain` 的无限阻塞与 Goxml `App.Run`。公共 Preview 启动器当时
+未转发宿主 stderr，导致只看到非零退出码；现已补转发。
+
+该证据只证明旧独立宿主的退出形态有问题，不能推断所有 App.Run 调用方均失败。
+有显式进程退出策略的应用、集成入口、尚有其它 goroutine 的进程条件不同。
+未改字体冻结文件、App 公共签名、生产事件循环或多窗口策略。
+
+## 本轮处置
+
+Preview 是自有单窗子进程，采用标准 Gio 生命周期：主线程执行 Gio Main，窗口事件
+goroutine 在 DestroyEvent 后退出该宿主；正常退出 0，原生错误保留并退出 1。
+仍使用同源 runtime View/字体策略与已校验生成视图，不运行用户业务代码。
+真实公共 CLI 复验：显示、最大化、标题栏关闭、rc0、activeAfter0、目录清理均成立。
+生成宿主本体另有假事件源测试，验证 Frame/Layout 一次及 DestroyEvent.Err 透传。
+
+Widgets/Watch 自有场景在销毁回调中明确结束单窗进程；这属于测试场景退出策略，
+不能冒充底座 App.Run 返回行为已被验证或修复。
+
+## 后续
+
+需要按 App.Run 的跨平台/单窗/多窗契约单独决定进程退出与返回语义，不应在通用库
+偷偷加入 os.Exit。保留旧路径/旧 stderr/原始 rc，不能把 Preview 的局部修复关闭此项。
