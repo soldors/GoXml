@@ -115,7 +115,7 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 	if err != nil {
 		return nil, err
 	}
-	job, jerr := newJobOwnership()
+	job, jerr := startOwnedCommand(cmd)
 	if jerr != nil {
 		if stdinR != nil {
 			_ = stdinR.Close()
@@ -125,28 +125,8 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 		}
 		return nil, fmt.Errorf("创建进程树所有权失败: %w", jerr)
 	}
-	if err := cmd.Start(); err != nil {
-		closeJobOwnership(job)
-		if stdinR != nil {
-			_ = stdinR.Close()
-		}
-		if stdinW != nil {
-			_ = stdinW.Close()
-		}
-		return nil, err
-	}
 	if stdinR != nil {
 		_ = stdinR.Close()
-	}
-	if aerr := assignJobOwnership(job, cmd.Process.Pid); aerr != nil {
-		// 纳入 Job 失败：不能忽略（否则后代脱管）；终止并如实报错。
-		closeJobOwnership(job)
-		_ = cmd.Process.Kill()
-		<-waitDoneAsync(cmd)
-		if stdinW != nil {
-			_ = stdinW.Close()
-		}
-		return nil, fmt.Errorf("将子进程纳入树所有权失败: %w", aerr)
 	}
 	c := &Child{Gen: gen, PID: cmd.Process.Pid, cmd: cmd, started: time.Now(), done: make(chan struct{}), stdinWrite: stdinW, job: job}
 	go func() {
@@ -155,13 +135,6 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 	}()
 	m.logf("watch: started gen=%d pid=%d bin=%s", gen, c.PID, bin)
 	return c, nil
-}
-
-// waitDoneAsync 以 goroutine 等待进程退出并返回一个通道（用于失败清理的有界等待）。
-func waitDoneAsync(cmd *exec.Cmd) chan struct{} {
-	ch := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(ch) }()
-	return ch
 }
 
 // stop 有界停止子进程及其整棵树。**整个停止链**受一个 StopTimeout deadline 约束：

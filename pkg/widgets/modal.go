@@ -91,6 +91,15 @@ func (m *Modal) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions
 		m.returnFocusIfPending(gtx)
 		return layout.Dimensions{}
 	}
+	frame := op.Record(gtx.Ops)
+	defer func() {
+		call := frame.Stop()
+		if m.open {
+			call.Add(gtx.Ops)
+		} else {
+			m.returnFocusIfPending(gtx)
+		}
+	}()
 
 	// 1. 遮罩：全屏先声明区，阻断背景事件；点击不关闭（候选默认）。
 	if m.scrimSt.layout(gtx, &m.tag) {

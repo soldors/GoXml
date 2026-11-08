@@ -135,12 +135,14 @@ func TestRunBuildsRealHost(t *testing.T) {
 			t.Fatalf("宿主 go.mod 缺少 %q:\n%s", want, mod)
 		}
 	}
-	// 宿主 main：接 runtime app.Run 与生成构造函数。
+	// 宿主 main：同源 View/字体策略 + Gio Main 与独立窗口关闭语义。
 	mainSrc := string(readFile(t, filepath.Join(res.HostDir, "main.go")))
 	for _, want := range []string{
 		"github.com/goxml/goxml/pkg/runtime/app",
 		hostModuleName + "/view",
-		"app.Run(v, app.Config{",
+		"gioapp.Main()",
+		"runPreviewWindow(v, th, w.Event)",
+		"return e.Err",
 		"NewGoxmlStatic_BasicView()",
 	} {
 		if !strings.Contains(mainSrc, want) {

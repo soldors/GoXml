@@ -92,7 +92,20 @@ func (w *Watch) NotifyChange(ctx context.Context, atMS int, changed []string) (C
 	if err != nil {
 		return ChangeSet{}, err
 	}
-	cs, err := ClassifyChanges(w.cfg.ProjectDir, next, changed)
+	// The caller's notification may come from an earlier scan. Include every
+	// difference in the snapshot we actually adopt, so a save between scans is
+	// never silently absorbed while processing only an owned-output notification.
+	all := append([]string(nil), changed...)
+	seen := make(map[string]bool, len(changed))
+	for _, path := range changed {
+		seen[path] = true
+	}
+	for _, path := range Diff(w.prev, next) {
+		if !seen[path] {
+			all = append(all, path)
+		}
+	}
+	cs, err := ClassifyChanges(w.cfg.ProjectDir, next, all)
 	if err != nil {
 		return ChangeSet{}, err
 	}

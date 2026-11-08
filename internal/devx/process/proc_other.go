@@ -9,12 +9,16 @@ package process
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"time"
 )
 
 type JobHandle = uintptr
 
 var errTreeOwnershipUnsupported = errors.New("watch: 进程树所有权在非 Windows 平台未实现（unsupported）")
+
+func prepareSuspended(*exec.Cmd)         {}
+func resumeOwnedCommand(*exec.Cmd) error { return errTreeOwnershipUnsupported }
 
 func NewJobOwnership() (JobHandle, error)             { return 0, errTreeOwnershipUnsupported }
 func AssignJobOwnership(job JobHandle, pid int) error { return errTreeOwnershipUnsupported }

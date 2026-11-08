@@ -138,6 +138,11 @@ func TestDevWatchActualCLIRebuildFailureRecoveryAndCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	var out, err devTestBuffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("watch stdout:\n%s\nwatch stderr:\n%s", out.String(), err.String())
+		}
+	})
 	done := make(chan int, 1)
 	go func() {
 		done <- runContextWithTool(ctx, []string{"watch", dir, "--entry", "./cmd/app", "--poll-ms", "10", "--", "hello", "space arg"}, &out, &err, tool)

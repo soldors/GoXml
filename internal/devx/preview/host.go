@@ -136,18 +136,53 @@ import (
 	"fmt"
 	"os"
 
+	gioapp "gioui.org/app"
+	"gioui.org/io/event"
+	"gioui.org/op"
+	"gioui.org/unit"
+	"gioui.org/widget/material"
 	"github.com/goxml/goxml/pkg/runtime/app"
+	fonttheme "github.com/goxml/goxml/pkg/runtime/theme"
 
 	%[1]s %[2]q
 )
 
-// main 是预览宿主入口：创建生成 View 并交给 runtime app 运行。
-// 本线只构建、不运行它（原生窗口验收步骤见交付 handoff）。
+// The isolated single-window host follows Gio's process lifecycle: Main stays
+// on the main goroutine, and the event-loop goroutine exits the process after
+// DestroyEvent. Returning from the event loop alone leaves Windows Main blocked.
 func main() {
 	v := %[1]s.%[3]s()
-	if err := app.Run(v, app.Config{Title: %[4]q, Width: 800, Height: 600}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	th, report := fonttheme.NewThemeWithReport()
+	if report == nil || th == nil {
+		fmt.Fprintln(os.Stderr, "preview: missing font theme/report")
 		os.Exit(1)
+	}
+	if report.Err != nil { fmt.Fprintln(os.Stderr, report.Err); os.Exit(1) }
+	w := new(gioapp.Window)
+	w.Option(gioapp.Title(%[4]q), gioapp.Size(unit.Dp(800), unit.Dp(600)))
+	go func() {
+		if err := runPreviewWindow(v, th, w.Event); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}()
+	gioapp.Main()
+}
+
+// It renders the verified generated View, never parses XML or loads user code.
+// Keeping the event source explicit also permits headless lifecycle regression.
+func runPreviewWindow(v app.View, th *material.Theme, next func() event.Event) error {
+	var ops op.Ops
+	for {
+		switch e := next().(type) {
+		case gioapp.DestroyEvent:
+			return e.Err
+		case gioapp.FrameEvent:
+			gtx := gioapp.NewContext(&ops, e)
+			v.Layout(gtx, th)
+			e.Frame(gtx.Ops)
+		}
 	}
 }
 `, h.PkgName, hostModuleName+"/view", ctor, "goxml preview: "+filepath.Base(res.File))

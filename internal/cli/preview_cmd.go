@@ -115,7 +115,7 @@ func runPreview(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if o.buildOnly {
 		return finishPreview(r, o.keep, stdout, stderr)
 	}
-	runner, err := preview.StartHost(r.HostExe, r.HostDir)
+	runner, err := preview.StartHostWithOutput(r.HostExe, r.HostDir, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "goxml preview: %v；证据保留：%s\n", err, r.HostDir)
 		return ExitFailure

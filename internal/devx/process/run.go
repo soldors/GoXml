@@ -66,27 +66,12 @@ func RunCommandTree(ctx context.Context, exe string, args []string, dir string, 
 
 	// A descendant retaining an inherited pipe must not block root-exit detection.
 	cmd.WaitDelay = 250 * time.Millisecond
-	job, err := NewJobOwnership()
+	job, err := StartOwnedCommand(cmd)
 	if err != nil {
-		return capture(ExecResult{RC: -1, Err: err})
-	}
-	if err = cmd.Start(); err != nil {
-		CloseJobOwnership(job)
 		return capture(ExecResult{RC: -1, Err: err})
 	}
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
-	if err = AssignJobOwnership(job, cmd.Process.Pid); err != nil {
-		CloseJobOwnership(job)
-		kerr := cmd.Process.Kill()
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), commandReapGrace)
-		defer cancel()
-		_, joined := joinCommand(cleanupCtx, waitCh)
-		if !joined {
-			err = errors.Join(err, errors.New("failed to reap unassigned command"))
-		}
-		return capture(ExecResult{RC: -1, Output: buf.String(), Err: errors.Join(err, kerr)})
-	}
 	select {
 	case werr := <-waitCh:
 		jerr := TerminateAndWaitJob(job, time.Now().Add(commandReapGrace))

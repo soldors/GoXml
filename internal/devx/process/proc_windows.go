@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -17,6 +18,40 @@ import (
 
 // JobHandle 是 Windows Job 对象句柄。
 type JobHandle = windows.Handle
+
+func prepareSuspended(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+}
+
+func resumeOwnedCommand(cmd *exec.Cmd) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
+		if entry.OwnerProcessID != uint32(cmd.Process.Pid) {
+			continue
+		}
+		thread, e := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+		if e != nil {
+			return e
+		}
+		previous, e := windows.ResumeThread(thread)
+		windows.CloseHandle(thread)
+		if e != nil {
+			return e
+		}
+		if previous > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("no suspended startup thread found for owned PID %d: %w", cmd.Process.Pid, err)
+}
 
 // NewJobOwnership 创建带 KILL_ON_JOB_CLOSE 的 Job。
 func NewJobOwnership() (JobHandle, error) {

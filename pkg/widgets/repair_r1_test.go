@@ -425,8 +425,8 @@ func TestR1MenuScrollReachesHiddenItems(t *testing.T) {
 	menu.OpenAt(image.Pt(10, 10)) // 重开（测试继续用同一菜单）
 	h.frame()
 
-	// 滚轮向下（Scroll.Y<0 约定：查看更靠后条目）→ 最后一项进入视口。
-	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(-500)})
+	// 滚轮向下（Windows 原生 Scroll.Y>0：查看更靠后条目）→ 最后一项进入视口。
+	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(500)})
 	r7 := menu.ItemRect(7)
 	if r7.Empty() {
 		t.Fatal("滚动后最后一项应进入可见窗口")
@@ -443,7 +443,7 @@ func TestR1MenuScrollReachesHiddenItems(t *testing.T) {
 	// 反向滚动回到顶部：第一项恢复可见可点。
 	menu.OpenAt(image.Pt(10, 10))
 	h.frame()
-	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(500)})
+	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(-500)})
 	if menu.ItemRect(0).Empty() {
 		t.Fatal("反向滚动后第一项应回到可见窗口")
 	}
@@ -461,7 +461,7 @@ func TestR1MenuScrollClampedToBounds(t *testing.T) {
 	h.frame()
 
 	// 超量滚动不得把可见窗口推出内容范围：最后一项保持贴底可见。
-	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(-100000)})
+	h.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32Pt(50, 50), Scroll: f32FromPtY(100000)})
 	if menu.ItemRect(7).Empty() {
 		t.Fatal("向下滚动到底后最后一项应可见")
 	}

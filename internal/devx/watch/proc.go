@@ -3,14 +3,13 @@ package watch
 import (
 	"context"
 	"github.com/goxml/goxml/internal/devx/process"
+	"os/exec"
 	"time"
 )
 
 type jobHandle = process.JobHandle
 
-func newJobOwnership() (jobHandle, error)             { return process.NewJobOwnership() }
-func assignJobOwnership(job jobHandle, pid int) error { return process.AssignJobOwnership(job, pid) }
-func closeJobOwnership(job jobHandle)                 { process.CloseJobOwnership(job) }
+func startOwnedCommand(cmd *exec.Cmd) (jobHandle, error) { return process.StartOwnedCommand(cmd) }
 func terminateAndWaitJob(job jobHandle, deadline time.Time) error {
 	return process.TerminateAndWaitJob(job, deadline)
 }

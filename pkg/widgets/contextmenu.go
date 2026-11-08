@@ -121,6 +121,19 @@ func (c *ContextMenu) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 		c.clearItemRects()
 		return layout.Dimensions{}
 	}
+	// Consume events against last frame's registrations, but publish this frame's
+	// overlay operations only while still open. A closing frame must not leave an
+	// invisible scrim that swallows the first subsequent background click.
+	frame := op.Record(gtx.Ops)
+	defer func() {
+		call := frame.Stop()
+		if c.open {
+			call.Add(gtx.Ops)
+		} else {
+			c.lastRect = image.Rectangle{}
+			c.clearItemRects()
+		}
+	}()
 
 	// 1. 遮罩：全屏先声明区，压在更早布局的背景之上；外点关闭。
 	if c.scrimSt.layout(gtx, &c.scrim) {
@@ -198,8 +211,8 @@ func (c *ContextMenu) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 }
 
 // handleScroll 消费本帧落在面板上的滚轮事件并更新/钳制滚动偏移。
-// 约定（候选，原生平台方向未验证）：Scroll.Y 视为「内容随滚轮下移量」，
-// 即 Y>0 查看更靠前条目、Y<0 查看更靠后条目；无滚动条视觉。
+// 正 Scroll.Y 与 Gio 原生向下滚动一致：推进到靠后条目；负值返回靠前条目。
+// Windows 原生方向已验收；无滚动条视觉。
 func (c *ContextMenu) handleScroll(gtx layout.Context, maxOffset int) {
 	if maxOffset <= 0 {
 		c.scrollOff = 0
@@ -215,7 +228,7 @@ func (c *ContextMenu) handleScroll(gtx layout.Context, maxOffset int) {
 			break
 		}
 		if e, isPtr := ev.(pointer.Event); isPtr && e.Kind == pointer.Scroll {
-			c.scrollOff -= int(e.Scroll.Y)
+			c.scrollOff += int(e.Scroll.Y)
 			if c.scrollOff < 0 {
 				c.scrollOff = 0
 			}

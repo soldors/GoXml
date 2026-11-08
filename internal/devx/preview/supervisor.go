@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,11 +97,19 @@ type HostRunner struct {
 
 // StartHost 启动 exe（工作目录 dir），返回执行控制器。
 func StartHost(exe string, dir string, args ...string) (*HostRunner, error) {
+	return StartHostWithOutput(exe, dir, nil, nil, args...)
+}
+
+// StartHostWithOutput preserves host diagnostics for a public CLI caller.
+// The original StartHost behavior remains available for existing callers.
+func StartHostWithOutput(exe, dir string, stdout, stderr io.Writer, args ...string) (*HostRunner, error) {
 	if exe == "" {
 		return nil, errors.New("preview: StartHost 需要 exe 路径")
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = dir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("preview: 启动 %s: %w", exe, err)
 	}
