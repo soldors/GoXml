@@ -10,6 +10,7 @@ package app
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -237,6 +238,11 @@ type App struct {
 	// 只由事件循环 goroutine 写入（唯一写入者），但可能在任意 goroutine 被读
 	// （`FirstFrame()`），因此用 atomic 而非裸 time.Time。
 	firstFrameAt atomic.Int64
+
+	// R27-C：事件循环交出的 DestroyEvent.Err（正常关窗为 nil）。
+	// 见 recordLoopExit / takeLoopExit；不改 Run 的 Main 调用位置。
+	exitMu      sync.Mutex
+	loopExitErr error
 }
 
 // newWindow 按配置创建窗口句柄（不显示）。
@@ -371,7 +377,27 @@ func (a *App) Invalidate() {
 func (a *App) Run() error {
 	go a.loop()
 	mainFunc()
-	return a.fontFailure()
+	// R27-C：真实 Windows Main 永不返回，下面这行在生产形态不可达。
+	// 受控形态（注入 mainFunc）下才可能走到：把事件循环已经交出的
+	// DestroyEvent.Err 与字体严格失败合并，两条都能 errors.Is 判别，
+	// 字体诊断不被吞掉。这不改变「原 Run 返回边界不可达」的事实。
+	return combineExitErrors(a.takeLoopExit(), a.fontFailure())
+}
+
+// recordLoopExit / takeLoopExit 保存事件循环交出的窗口销毁原因。
+//
+// 用互斥锁而不是裸字段：loopEvents 在事件循环 goroutine 写，Run 在调用方
+// goroutine 读；真实 Main 不返回时两者不会并发，但受控注入形态会。
+func (a *App) recordLoopExit(err error) {
+	a.exitMu.Lock()
+	defer a.exitMu.Unlock()
+	a.loopExitErr = err
+}
+
+func (a *App) takeLoopExit() error {
+	a.exitMu.Lock()
+	defer a.exitMu.Unlock()
+	return a.loopExitErr
 }
 
 // RunWith 与 Run 相同，但允许注入主题。
@@ -393,9 +419,19 @@ func RunWith(view View, th *material.Theme, cfg Config) error {
 	return a.Run()
 }
 
+// windowEventSource 是**包内**事件源注入点（非公开 API，与既有 mainFunc /
+// newThemeWithReport 同构）。生产恒为 a.w.Event，即真实 Gio 窗口事件泵。
+//
+// R27-C R1 / F-C3：默认测试集合曾在不知情的情况下通过 a.Run() 进入真实
+// Window.Event / Win32 init / callbacks.SetDriver。默认测试现在由
+// controlled_window_test.go（//go:build !nativewindow）把这里换成受控事件源；
+// 带 nativewindow 标签的集合保持真实窗口，供协调者授权后复验。
+// 这不改变任何生产行为，也不扩大公开 API。
+var windowEventSource = func(a *App) func() event.Event { return a.w.Event }
+
 // loop 驱动事件循环直到窗口关闭。
 func (a *App) loop() {
-	a.loopEvents(a.w.Event)
+	a.loopEvents(windowEventSource(a))
 }
 
 func (a *App) loopEvents(next func() event.Event) {
@@ -405,9 +441,10 @@ func (a *App) loopEvents(next func() event.Event) {
 		e := next()
 		switch e := e.(type) {
 		case app.DestroyEvent:
-			// 窗口被销毁：循环结束。错误由调用方通过其它机制感知，
-			// 此处不打印，避免在库代码里直接写 stderr。
-			_ = e
+			// 窗口被销毁：循环结束。R27-C 起把 DestroyEvent.Err 交给调用方
+			// （正常关窗 Err=nil → 记录 nil）；此处仍不打印、不写 stderr、
+			// 不调用 Main、不终止进程，避免在库代码里直接做进程级动作。
+			a.recordLoopExit(windowExitError(e.Err))
 			notifyViewDestroyed(a.view)
 			return
 		case app.FrameEvent:
@@ -576,18 +613,47 @@ func runWindowEvents(w windowEvents, view View, th *material.Theme, stop <-chan 
 		inv(w)
 	}
 
-	// stop 到达时通知窗口关闭；窗口先退出时结束等待，不再保留 goroutine。
+	// R27-C R1 / F-C2：初始化期 stop 的同步与事件所有权修复。
+	//
+	// Gio v0.10.3 的首次 Window.Event() 内部走 w.init()；Windows 后端在
+	// os_windows.newWindow 的**另一个 goroutine**里调用 callbacks.SetDriver。
+	// 在此之前调用 Window.Perform 会读同一个 w.driver / w.callbacks，与
+	// SetDriver 并发（作者原 race 的 Perform vs SetDriver；协调者受控
+	// Event 初始化屏障反例 TestCoordR27EarlyStopDoesNotPerformDuringDriverInit
+	// 精确复现这一边界）。
+	//
+	// 封装层的修复：stop watcher **推迟到首次 Event() 返回之后**才启动。
+	// Event() 返回即证明 driver 已就绪，此后 Perform 才安全；提前到达的
+	// stop 仍保留在 channel 中，watcher 一启动就会看到，请求不会丢失。
+	// 首次事件若是 DestroyEvent，则循环立即结束、根本不启动 watcher
+	// （Destroy 优先，不发冗余关闭动作、不留 watcher）。
+	//
+	// 不用 sleep / busy wait / 改 Gio 缓存 / 把 Main 挪到 goroutine；
+	// loopDone 由 defer 关闭，watcher 在循环结束后立即退出。
 	loopDone := make(chan struct{})
 	defer close(loopDone)
-	go watchWindowStop(w, stop, loopDone)
+	var watcherStarted bool
+	startStopWatcher := func() {
+		if watcherStarted {
+			return
+		}
+		watcherStarted = true
+		go watchWindowStop(w, stop, loopDone)
+	}
 
 	var ops op.Ops
 	for {
 		e := w.Event()
+		if _, destroyed := e.(app.DestroyEvent); !destroyed {
+			startStopWatcher()
+		}
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			notifyViewDestroyed(view)
-			return nil
+			// R27-C：正常关窗返回 nil；提前销毁把 DestroyEvent.Err 交出，
+			// errors.Is 可同时判定 ErrWindowDestroy 与原始 cause。
+			// 这一控制形态仍不调用 app.Main()，也不终止测试进程。
+			return windowExitError(e.Err)
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 			view.Layout(gtx, th)

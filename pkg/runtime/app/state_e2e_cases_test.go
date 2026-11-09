@@ -1,3 +1,8 @@
+//go:build nativewindow
+
+// 真实 Gio 窗口端到端测试集合（R27-C R1 / F-C3）。默认 go test 不选中；
+// 原测试名与断言逐字保留，作者返修阶段不执行任何原生窗口。
+// 默认集合的等价受控链路见 controlled_window_test.go。
 package app
 
 import (
