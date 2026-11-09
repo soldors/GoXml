@@ -105,14 +105,22 @@ type DataGridFrameStats struct {
 	ScrollOffset int
 }
 
-// dgTextKey 是绘制宏缓存的键：稳定 RowID + 列号（表头用空 RowID）。
+// dgTextKey 是绘制宏缓存的键：稳定 RowID + 列号 + 像素尺寸
+//（列宽/行高/DPI 变化后得到新键，旧条目经 LRU 淘汰；表头用空 RowID）。
 type dgTextKey struct {
 	rowID string
 	col   int
+	w, h  int
 }
 
-// dgTextEntry 是一条缓存的绘制宏（CallOp 回放）与其 LRU 节点。
+// dgTextEntry 是一条缓存的绘制宏与其 LRU 节点。
+//
+// call 指向本条目**私有持久 Ops**（ops 字段）中的录制区间——这是
+// ADR-0009 实测确定的跨帧回放形态：Frame 级 ops 每帧新建，录制其中的
+// CallOp 下一帧即失效；私有 Ops 随条目存活，回放由 CallOp.Add 跨缓冲
+// 引用（对齐 codegen 绑定缓存槽位的实现）。
 type dgTextEntry struct {
+	ops  op.Ops
 	call op.CallOp
 	elem *list.Element
 }
@@ -151,8 +159,6 @@ type DataGrid struct {
 	Cell func(gtx layout.Context, row DataGridRow, col int, rect image.Rectangle) layout.Dimensions
 
 	// 帧诊断（底层数组复用）
-	accessBuf    []string
-	drawBuf      []string
 	colWidthsBuf []int
 	stats        DataGridFrameStats
 }
@@ -263,8 +269,10 @@ func (g *DataGrid) clearTextCache() {
 // → 访问窗口（可见+overscan）预热与披露。关闭语义不存在——表格始终
 // 渲染当前数据（空数据 = 仅表头的有界空表体）。
 func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	g.stats.Accessed = g.accessBuf[:0]
-	g.stats.Drawn = g.drawBuf[:0]
+	// 自切片重置：保留已增长的底层数组容量（稳定帧零分配的关键——
+	// 若从独立缓冲重置，容量每帧重新增长，恰产生 5+4=9 allocs/帧）。
+	g.stats.Accessed = g.stats.Accessed[:0]
+	g.stats.Drawn = g.stats.Drawn[:0]
 	g.stats.First, g.stats.Last = -1, -1
 
 	rowH := gtx.Dp(g.rowH)
@@ -389,7 +397,7 @@ func (g *DataGrid) drawHeader(gtx layout.Context, th *material.Theme, headerH in
 	x := 0
 	for c := range g.cols {
 		cellRect := image.Rectangle{Min: image.Pt(x, 0), Max: image.Pt(x+colWidths[c], headerH)}
-		e := g.textEntry(gtx, th, dgTextKey{rowID: "", col: c}, g.cols[c].Title, colWidths[c], headerH)
+		e := g.textEntry(gtx, th, dgTextKey{rowID: "", col: c, w: colWidths[c], h: headerH}, g.cols[c].Title, colWidths[c], headerH)
 		trans := op.Offset(image.Pt(cellRect.Min.X, 0)).Push(gtx.Ops)
 		e.call.Add(gtx.Ops)
 		trans.Pop()
@@ -411,7 +419,7 @@ func (g *DataGrid) drawRow(gtx layout.Context, th *material.Theme, row DataGridR
 		if x >= rowRect.Max.X {
 			break
 		}
-		e := g.textEntry(gtx, th, dgTextKey{rowID: row.ID, col: c}, dgCellText(row, c), colWidths[c], rowH)
+		e := g.textEntry(gtx, th, dgTextKey{rowID: row.ID, col: c, w: colWidths[c], h: rowH}, dgCellText(row, c), colWidths[c], rowH)
 		trans := op.Offset(image.Pt(x, rowRect.Min.Y)).Push(gtx.Ops)
 		e.call.Add(gtx.Ops)
 		trans.Pop()
@@ -430,7 +438,7 @@ func dgCellText(row DataGridRow, col int) string {
 
 // ensureCellMacro 为访问窗口内的行预热绘制宏缓存（不绘制）。
 func (g *DataGrid) ensureCellMacro(gtx layout.Context, th *material.Theme, row DataGridRow, col int, colWidths []int, rowH int) {
-	g.textEntry(gtx, th, dgTextKey{rowID: row.ID, col: col}, dgCellText(row, col), colWidths[col], rowH)
+	g.textEntry(gtx, th, dgTextKey{rowID: row.ID, col: col, w: colWidths[col], h: rowH}, dgCellText(row, col), colWidths[col], rowH)
 }
 
 // textEntry 取（必要时录制）单元格绘制宏；LRU 有界淘汰。
@@ -439,11 +447,13 @@ func (g *DataGrid) textEntry(gtx layout.Context, th *material.Theme, key dgTextK
 		g.lru.MoveToBack(e.elem)
 		return e
 	}
-	macro := op.Record(gtx.Ops)
-	g.recordCell(gtx, th, text, w, h)
-	call := macro.Stop()
-	elem := g.lru.PushBack(key)
-	g.texts[key] = &dgTextEntry{call: call, elem: elem}
+	e := &dgTextEntry{elem: g.lru.PushBack(key)}
+	macro := op.Record(&e.ops)
+	rec := gtx
+	rec.Ops = &e.ops
+	g.recordCell(rec, th, text, w, h)
+	e.call = macro.Stop()
+	g.texts[key] = e
 	if g.lru.Len() > dgTextCacheMax {
 		front := g.lru.Front()
 		if front != nil {
