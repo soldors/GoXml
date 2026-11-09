@@ -127,40 +127,50 @@ func TestC1RunStructureLoopEndsWhileMainStaysBlocked(t *testing.T) {
 	if got := len(remaining); got != 1 {
 		t.Fatalf("重复 DestroyEvent 被继续消费，剩余事件=%d", got)
 	}
-	t.Logf("OBS C1 顺序=%v；Main 仍阻塞；重复关闭回调=1 次；DestroyEvent.Err=%q 在冻结实现中被丢弃", steps, cause)
+	t.Logf("OBS C1 顺序=%v；Main 仍阻塞；重复关闭回调=1 次；DestroyEvent.Err=%q 已交出但 return 不可达", steps, cause)
 }
 
-// TestC1BothLoopsCurrentlyDropDestroyCause 冻结现状取证：两条现有窗口事件
-// 循环都忽略 DestroyEvent.Err（app.go:407-412 的 `_ = e` 与
-// app.go:588-590 的 `return nil`）。这是 C2 要修的缺口，不是新契约。
-func TestC1BothLoopsCurrentlyDropDestroyCause(t *testing.T) {
+// TestC1BothLoopsReturnDestroyCauseAfterRepair 是 C1 冻结现状探针的
+// 修复后形态（**判据只强化不弱化**）：
+//
+//	C1 在 d6b1fc0 上观测到两条循环都丢弃 DestroyEvent.Err，见
+//	delivery/raw/cmdlogs/r27c-c1-suite/ 与 r27c-c2-red-probe-first-fail/
+//	的原始输出（首败保留，不重跑覆盖）。C2 修复后这里改为要求
+//	两条循环都把 Err 交出，且 errors.Is 同时可判定 ErrWindowDestroy
+//	与原始 cause；正常关窗仍返回 nil。
+func TestC1BothLoopsReturnDestroyCauseAfterRepair(t *testing.T) {
 	cause := errors.New("c1 premature destroy")
 
-	// 环路 1（App.loopEvents）：当前无返回值，错误只能从源码确认。
+	// 环路 1（App.loopEvents）：结果记入 App，供 Run / 显式入口消费。
 	a := &App{view: &countingView{text: "c1"}, th: material.NewTheme()}
+	next, _ := c1ControlledEvents(gioapp.DestroyEvent{Err: cause})
 	loopEnded := make(chan struct{})
 	go func() {
 		defer close(loopEnded)
-		a.loopEvents(c1MustNext(c1ControlledEvents(gioapp.DestroyEvent{Err: cause})))
+		a.loopEvents(next)
 	}()
 	select {
 	case <-loopEnded:
 	case <-time.After(3 * time.Second):
 		t.Fatal("App 事件循环未结束")
 	}
+	got := a.takeLoopExit()
+	if !errors.Is(got, cause) || !errors.Is(got, ErrWindowDestroy) {
+		t.Fatalf("App 环路未交出可判别的销毁原因: %v", got)
+	}
 
-	// 环路 2（runWindowEvents）：当前固定返回 nil。
+	// 环路 2（runWindowEvents）：直接返回同一原因。
 	w := &c1Window{
 		events:  c1MustNext(c1ControlledEvents(gioapp.DestroyEvent{Err: cause})),
 		actions: make(chan system.Action, 1),
 	}
 	stop := make(chan struct{})
 	defer close(stop)
-	got := runWindowEvents(w, &countingView{text: "c1"}, material.NewTheme(), stop, nil)
-	if got != nil {
-		t.Fatalf("冻结实现应返回 nil（缺口），实得 %v；若已修复请同步更新本用例", got)
+	got = runWindowEvents(w, &countingView{text: "c1"}, material.NewTheme(), stop, nil)
+	if !errors.Is(got, cause) || !errors.Is(got, ErrWindowDestroy) {
+		t.Fatalf("RunWindow 环路未交出可判别的销毁原因: %v", got)
 	}
-	t.Logf("OBS C1 两条循环的 DestroyEvent.Err=%q 均未被交出", cause)
+	t.Logf("OBS C1 修复后两条循环都交出 DestroyEvent.Err=%q，双判别成立", cause)
 }
 
 // c1Window 是离屏 windowEvents，不创建 Gio 原生窗口。

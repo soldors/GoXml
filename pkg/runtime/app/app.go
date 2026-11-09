@@ -10,6 +10,7 @@ package app
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -237,6 +238,11 @@ type App struct {
 	// 只由事件循环 goroutine 写入（唯一写入者），但可能在任意 goroutine 被读
 	// （`FirstFrame()`），因此用 atomic 而非裸 time.Time。
 	firstFrameAt atomic.Int64
+
+	// R27-C：事件循环交出的 DestroyEvent.Err（正常关窗为 nil）。
+	// 见 recordLoopExit / takeLoopExit；不改 Run 的 Main 调用位置。
+	exitMu      sync.Mutex
+	loopExitErr error
 }
 
 // newWindow 按配置创建窗口句柄（不显示）。
@@ -371,7 +377,27 @@ func (a *App) Invalidate() {
 func (a *App) Run() error {
 	go a.loop()
 	mainFunc()
-	return a.fontFailure()
+	// R27-C：真实 Windows Main 永不返回，下面这行在生产形态不可达。
+	// 受控形态（注入 mainFunc）下才可能走到：把事件循环已经交出的
+	// DestroyEvent.Err 与字体严格失败合并，两条都能 errors.Is 判别，
+	// 字体诊断不被吞掉。这不改变「原 Run 返回边界不可达」的事实。
+	return combineExitErrors(a.takeLoopExit(), a.fontFailure())
+}
+
+// recordLoopExit / takeLoopExit 保存事件循环交出的窗口销毁原因。
+//
+// 用互斥锁而不是裸字段：loopEvents 在事件循环 goroutine 写，Run 在调用方
+// goroutine 读；真实 Main 不返回时两者不会并发，但受控注入形态会。
+func (a *App) recordLoopExit(err error) {
+	a.exitMu.Lock()
+	defer a.exitMu.Unlock()
+	a.loopExitErr = err
+}
+
+func (a *App) takeLoopExit() error {
+	a.exitMu.Lock()
+	defer a.exitMu.Unlock()
+	return a.loopExitErr
 }
 
 // RunWith 与 Run 相同，但允许注入主题。
@@ -405,9 +431,10 @@ func (a *App) loopEvents(next func() event.Event) {
 		e := next()
 		switch e := e.(type) {
 		case app.DestroyEvent:
-			// 窗口被销毁：循环结束。错误由调用方通过其它机制感知，
-			// 此处不打印，避免在库代码里直接写 stderr。
-			_ = e
+			// 窗口被销毁：循环结束。R27-C 起把 DestroyEvent.Err 交给调用方
+			// （正常关窗 Err=nil → 记录 nil）；此处仍不打印、不写 stderr、
+			// 不调用 Main、不终止进程，避免在库代码里直接做进程级动作。
+			a.recordLoopExit(windowExitError(e.Err))
 			notifyViewDestroyed(a.view)
 			return
 		case app.FrameEvent:
@@ -587,7 +614,10 @@ func runWindowEvents(w windowEvents, view View, th *material.Theme, stop <-chan 
 		switch e := e.(type) {
 		case app.DestroyEvent:
 			notifyViewDestroyed(view)
-			return nil
+			// R27-C：正常关窗返回 nil；提前销毁把 DestroyEvent.Err 交出，
+			// errors.Is 可同时判定 ErrWindowDestroy 与原始 cause。
+			// 这一控制形态仍不调用 app.Main()，也不终止测试进程。
+			return windowExitError(e.Err)
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 			view.Layout(gtx, th)
