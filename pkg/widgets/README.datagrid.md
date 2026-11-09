@@ -32,5 +32,11 @@ if id, ok := g.SelectedRowID(); ok { ... }
 - 稳定帧 Layout 热路径 0 allocs/op（INV-PERF-2 口径，见
   `TestDGStableLayoutZeroAllocs`）；文本宏按（RowID, 列, 像素尺寸）LRU
   缓存于条目私有持久 Ops（ADR-0009 形态），上限 4096 条。
-- 键盘：首版不支持键盘选择/滚动（不注册按键过滤器）。
+- 键盘：基础范围不支持键盘选择/滚动（默认不注册按键过滤器，按键不被
+  消费）。R28-B 提供**候选**键盘单选/纵向导航（默认关闭，opt-in）：
+  `EnableKeyboardNav(DataGridKeyboardConfig{})` 后 Up/Down/Home/End/
+  PageUp/PageDown 按稳定 RowID 单选并滚入可见区；主键按压网格=点击聚焦；
+  焦点转给 Editor 等消费者后网格自动停用。语义、边界与成本见
+  `testdata/datagrid-keyboard/keyboard-semantics.md`（候选，未批准
+  不入规范）。
 - 本组件不读 ThemeRef、不新增 GXML 标签、不接线 CLI——公共接线无需改动。
