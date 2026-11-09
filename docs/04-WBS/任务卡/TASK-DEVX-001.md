@@ -16,7 +16,11 @@
 |---|---|---|
 | TASK-DEVX-001-1 | 实现文件监听、防抖合并与构建失败处理 | go test -v ./internal/devx/watch ./internal/devx/watchadapter |
 | TASK-DEVX-001-2 | 实现自有子进程有界停止、超时清理与重启（优雅状态保存未实现） | go test -v -race ./internal/devx/watch ./internal/devx/watchadapter |
-| TASK-DEVX-001-3 | 未实现：状态 JSON 暂存、恢复及损坏文件处理 | 待实现后定义专属验收 |
+| TASK-DEVX-001-3 | R27 基础实现：显式 DTO 状态 JSON/校验/原子暂存/Watch opt-in 恢复；组合验收中，通用应用控制通道及 CLI 自动恢复未交付 | go test -v ./pkg/runtime/hydration ./internal/devx/hydration ./internal/devx/watch |
+
+## 2026-11-09 R27 批准范围
+
+基础协议和程序化 Hook 已批准、作者独立技术通过，现处协调者隔离组合验收；未合入、未发布。捕获/应用在各自所有者串行点，worker 仅搬不可变 DTO；默认关闭，失败保旧，仍按 stop-old→start-new。通用应用端控制通道、CLI 自动恢复参数、通用 Lifecycle 和原生整体验收不在已完成范围，-3 与整卡不因此关闭。见 [R27 范围与组合验收](../../05-开发/2026-11-09-R27-基础范围与组合验收.md)。
 
 ## 2026-11-08 R26 接线复核
 

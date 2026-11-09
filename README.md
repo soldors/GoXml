@@ -41,7 +41,8 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - **Router 基础与关闭接线已合入发布**：`pkg/runtime/router` + `app.WithOnDestroy(r.View(), r.Shutdown)`；[routed-gallery 教程](examples/gxml/testprojects/routed-gallery/README.md) 与 [随仓验收入口](scripts/verify-gallery-accept.py) 可复跑。MacroOp 转场动画、独立 OSWindow 逃生接口仍未实现；有界调度预算语义未批准。
 - **Expanded 基础范围已批准并发布**：流式单子节点、默认等权、显式尺寸优先；Grid、显式权重、自身新装饰继续拒绝，见 [输出契约 §4.9](docs/03-架构/代码生成输出契约.md)。
 - **工程与验收入口**：[preferences](examples/gxml/testprojects/crosspackage-preferences/README.md)、[taskboard](examples/gxml/testprojects/crosspackage-taskboard/README.md)、[routed-gallery](examples/gxml/testprojects/routed-gallery/README.md)、[component-layout-lab](examples/gxml/testprojects/component-layout-lab/README.md) 均已进入发布基线。
-- **R26 Windows 基础范围**：Windows `goxml watch`、纯静态 `goxml preview` 与 `pkg/widgets` ContextMenu/Modal 的基础范围已批准并实现接线，见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。本机原生观察、六包覆盖率及组件Layout门槛已收口；完整Frame成本另列，发布身份以协调者交付及Git引用为准。通用 Lifecycle/Hydration、DataGrid 未交付；ThemeRef 仍待批准。
+- **R27 隔离验收中**：显式 DTO Hydration、只读固定行高 DataGrid、显式单窗进程入口的 Windows 基础范围已批准，公开 API 已收敛；组合与原生门禁未全部完成，尚未发布。见 [R27 范围与验收](docs/05-开发/2026-11-09-R27-基础范围与组合验收.md)。通用 Lifecycle、CLI 自动恢复、扩展表格交互、ThemeRef 仍不在已交付范围。
+- **R26 已发布范围**：Windows `goxml watch`、纯静态 `goxml preview` 与 ContextMenu/Modal，见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。完整 Frame 成本和整卡剩余项分别登记。
 - 当前功能发布基线为 `96a7067`；需求/WBS/任务卡的现行状态见 [R25 项目状态总览](docs/04-WBS/2026-11-06-R25-项目状态总览.md)。已实现、限定验收、已合入和已推送分别登记，不以旧审计分组计算完成率；历史证据与原始快照保留。
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。历史并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
@@ -157,7 +158,7 @@ ADR-0013 主题草稿仍待裁决；ADR-0015 Image 已批准，范围以各自�
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input/Image/Expanded基础已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
 | Image v1 范围 | 静态 Src/Fit、PNG/JPEG、包内相对资产；绑定 Src/Fit、SVG、网络图不在已批准范围 |
-| CLI 已可用（generate） | 单文件/目录生成、`--out-dir`、`--clean`、`--check`（提交前编译）、增量缓存；Watch 未做（归 TASK-DEVX-001/002） |
+| CLI 已可用 | generate 单文件/目录、`--out-dir`、`--clean`、`--check`、增量缓存；R26 Windows watch 和纯静态 preview 已发布，R27 不新增自动状态恢复参数 |
 | 窗口渲染未自动验证 | 已有离屏像素/几何/事件语义和 Router 原生事件循环自动化；真实视觉仍需人工确认，R20 人工视觉与原生 race 结论限其声明的冻结提交 |
 | 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |
 | 字体整体正式验收未通过 | M1 阈值、跨平台、第二成功 family 未闭环；比较机制与真实 App M1 已有历史证据但本轮无新采样，见 [R23-B 差距矩阵](docs/03-架构/字体正式验收差距矩阵-R23B.md) |
