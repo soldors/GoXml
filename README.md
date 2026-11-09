@@ -41,7 +41,7 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - **Router 基础与关闭接线已合入发布**：`pkg/runtime/router` + `app.WithOnDestroy(r.View(), r.Shutdown)`；[routed-gallery 教程](examples/gxml/testprojects/routed-gallery/README.md) 与 [随仓验收入口](scripts/verify-gallery-accept.py) 可复跑。MacroOp 转场动画、独立 OSWindow 逃生接口仍未实现；有界调度预算语义未批准。
 - **Expanded 基础范围已批准并发布**：流式单子节点、默认等权、显式尺寸优先；Grid、显式权重、自身新装饰继续拒绝，见 [输出契约 §4.9](docs/03-架构/代码生成输出契约.md)。
 - **工程与验收入口**：[preferences](examples/gxml/testprojects/crosspackage-preferences/README.md)、[taskboard](examples/gxml/testprojects/crosspackage-taskboard/README.md)、[routed-gallery](examples/gxml/testprojects/routed-gallery/README.md)、[component-layout-lab](examples/gxml/testprojects/component-layout-lab/README.md) 均已进入发布基线。
-- **R27 隔离验收中**：显式 DTO Hydration、只读固定行高 DataGrid、显式单窗进程入口的 Windows 基础范围已批准，公开 API 已收敛；组合与原生门禁未全部完成，尚未发布。见 [R27 范围与验收](docs/05-开发/2026-11-09-R27-基础范围与组合验收.md)。通用 Lifecycle、CLI 自动恢复、扩展表格交互、ThemeRef 仍不在已交付范围。
+- **R27 Windows 基础范围**：显式 DTO Hydration、只读固定行高 DataGrid、显式单窗进程入口已批准并通过限定验收，公开 API 已收敛；无窗口组合/race、DataGrid 原生交互和单窗退出链路完成。见 [R27 范围与验收](docs/05-开发/2026-11-09-R27-基础范围与组合验收.md)，准确发布身份以 Git 引用和协调者凭据为准。通用 Lifecycle、CLI 自动恢复、扩展表格交互、ThemeRef 仍不在已交付范围。
 - **R26 已发布范围**：Windows `goxml watch`、纯静态 `goxml preview` 与 ContextMenu/Modal，见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。完整 Frame 成本和整卡剩余项分别登记。
 - 当前功能发布基线为 `96a7067`；需求/WBS/任务卡的现行状态见 [R25 项目状态总览](docs/04-WBS/2026-11-06-R25-项目状态总览.md)。已实现、限定验收、已合入和已推送分别登记，不以旧审计分组计算完成率；历史证据与原始快照保留。
 

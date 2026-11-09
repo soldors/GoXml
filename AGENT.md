@@ -1,6 +1,6 @@
 # AGENT.md: Goxml Multi-AI Engineering Directives
 
-> 2026-11-09 当前增量：R26 Windows Watch/静态 Preview/ContextMenu/Modal 已发布；R27 显式 DTO Hydration、DataGrid 与显式单窗入口基础范围已批准，协调者正在隔离组合验收，尚未原生执行/合入/发布。当前范围和 API 收敛见 `docs/05-开发/2026-11-09-R27-基础范围与组合验收.md`。下文带旧日期的目录拓扑按历史理解；架构红线继续适用。
+> 2026-11-09 当前增量：R26 Windows Watch/静态 Preview/ContextMenu/Modal 已发布；R27 显式 DTO Hydration、DataGrid 与显式单窗入口基础范围已批准，API 收敛、组合/race与本机原生限定验收已完成，准确发布身份以 Git 与协调者凭据为准。当前范围和未证边界见 `docs/05-开发/2026-11-09-R27-基础范围与组合验收.md`。下文带旧日期的目录拓扑按历史理解；架构红线继续适用。
 
 > 本文件是所有参与 **Goxml** 框架开发、重构、测试与代码审查的 AI Agent（如 Claude Code、Cursor、Windsurf、Aider 等）的执行规则与协同约束。它规定工作流、红线和交接要求；产品语义以正式契约和已批准 ADR 为准。若本文件与正式契约或已批准 ADR 冲突，必须登记冲突并交项目所有者裁决，执行者不得自行取舍。
 
