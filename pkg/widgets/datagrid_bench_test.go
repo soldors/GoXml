@@ -100,6 +100,35 @@ func BenchmarkDataGrid(b *testing.B) {
 				hb.frame()
 			}
 		})
+		b.Run(dgScaleName(rows)+"/header-only-viewport", func(b *testing.B) {
+			// R1 F-B1 边界成本：视口被表头占满（无可见体）——访问/绘制
+			// 必须与数据规模无关（0 行），回调 0 次。
+			g, hb := dgBenchGrid(b, rows)
+			hb.gtx.Constraints = layout.Exact(image.Pt(300, 24))
+			callbacks := 0
+			g.Cell = func(layout.Context, DataGridRow, int, image.Rectangle) layout.Dimensions {
+				callbacks++
+				return layout.Dimensions{}
+			}
+			for i := 0; i < 50; i++ {
+				hb.frame()
+			}
+			if cb := callbacks; cb != 0 {
+				b.Fatalf("无可见体不得调用回调：%d", cb)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			callbacks = 0
+			for i := 0; i < b.N; i++ {
+				hb.ops.Reset()
+				g.Layout(hb.gtx, hb.th)
+			}
+			b.StopTimer()
+			st := g.LastFrame()
+			if len(st.Accessed) != 0 || len(st.Drawn) != 0 || callbacks != 0 {
+				b.Fatalf("无可见体规模守卫：acc=%d drawn=%d callbacks=%d", len(st.Accessed), len(st.Drawn), callbacks)
+			}
+		})
 		b.Run(dgScaleName(rows)+"/set-rows-update", func(b *testing.B) {
 			g, _ := dgBenchGrid(b, rows)
 			b.ReportAllocs()
