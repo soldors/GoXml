@@ -289,7 +289,8 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	colWidths := g.columnWidthsPx(gtx)
 	contentH := len(g.rows) * rowH
 	maxOff := contentH - bodyH
-	if maxOff < 0 {
+	if maxOff < 0 || bodyH <= 0 {
+		// 无可见体时无可滚动内容（R1：偏移钳到 0，不产生隐形滚动余量）。
 		maxOff = 0
 	}
 	if g.scrollOff > maxOff {
@@ -304,23 +305,31 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	g.handleEvents(gtx, viewport, rowH, headerH, bodyH, maxOff, colWidths)
 
 	// 2. 访问窗口：可见行 + 有界 overscan；绘制窗口：仅可见行。
-	vis0 := 0
-	if bodyH > 0 {
+	// bodyH<=0（无可见体：视口被表头占满/小于表头/零视口）时窗口必须为
+	// 空——零访问零绘制，不靠最终 clip 裁剪像素（R1 修复 F-B1）。
+	vis0, vis1 := 0, 0
+	if bodyH > 0 && len(g.rows) > 0 {
 		vis0 = g.scrollOff / rowH
-	}
-	vis1 := len(g.rows)
-	if bodyH > 0 {
+		if vis0 > len(g.rows) {
+			vis0 = len(g.rows)
+		}
+		vis1 = len(g.rows)
 		if end := (g.scrollOff + bodyH + rowH - 1) / rowH; end < vis1 {
 			vis1 = end
 		}
 	}
-	acc0 := vis0 - dgOverscanRows
-	if acc0 < 0 {
-		acc0 = 0
-	}
-	acc1 := vis1 + dgOverscanRows
-	if acc1 > len(g.rows) {
-		acc1 = len(g.rows)
+	// overscan 只在存在可见体时外扩；bodyH<=0 时访问窗口保持为空
+	//（不加 2×overscan——那是 F-B1 的残留路径）。
+	acc0, acc1 := vis0, vis1
+	if bodyH > 0 {
+		acc0 = vis0 - dgOverscanRows
+		if acc0 < 0 {
+			acc0 = 0
+		}
+		acc1 = vis1 + dgOverscanRows
+		if acc1 > len(g.rows) {
+			acc1 = len(g.rows)
+		}
 	}
 
 	gridClip := clip.Rect(image.Rectangle{Max: viewport}).Push(gtx.Ops)
@@ -501,11 +510,11 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 			if e.Buttons&pointer.ButtonPrimary != 0 {
 				g.pressed = true
 				g.pid = e.PointerID
-				g.pressRowID, g.pressCol, g.pressValid = g.cellAt(e.Position, rowH, headerH, colWidths)
+				g.pressRowID, g.pressCol, g.pressValid = g.cellAt(e.Position, viewport, rowH, headerH, colWidths)
 			}
 		case pointer.Release:
 			if g.pressed && g.pid == e.PointerID {
-				rowID, col, ok := g.cellAt(e.Position, rowH, headerH, colWidths)
+				rowID, col, ok := g.cellAt(e.Position, viewport, rowH, headerH, colWidths)
 				// 身份判定：释放时单元格身份必须与按压时一致（滚动/重排
 				// 后同位置是另一行——不串）。
 				if ok && g.pressValid && rowID == g.pressRowID && col == g.pressCol {
@@ -529,12 +538,19 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 }
 
 // cellAt 把本组件局部坐标解析为（RowID, 列）：命中由本帧几何计算。
+//
+// 命中先判浮点边界再转整数（R1 修复 F-B2）：Release 事件会路由到按压
+// 时进入的处理者、其位置可落在本帧视口之外——先按本帧 viewport/body
+// 浮点比较拒绝越界（含 -0.1 这类截断后会折进界内的小数），再整数换算。
 // 表头带、视口外（越出数据范围）、超出总列宽都不命中。
-func (g *DataGrid) cellAt(pos f32.Point, rowH, headerH int, colWidths []int) (rowID string, col int, ok bool) {
-	y := int(pos.Y) - headerH
-	if y < 0 {
+func (g *DataGrid) cellAt(pos f32.Point, viewport image.Point, rowH, headerH int, colWidths []int) (rowID string, col int, ok bool) {
+	if pos.X < 0 || pos.Y < 0 || pos.X >= float32(viewport.X) || pos.Y >= float32(viewport.Y) {
 		return "", 0, false
 	}
+	if pos.Y < float32(headerH) {
+		return "", 0, false
+	}
+	y := int(pos.Y) - headerH
 	row := (y + g.scrollOff) / rowH
 	if row < 0 || row >= len(g.rows) {
 		return "", 0, false
