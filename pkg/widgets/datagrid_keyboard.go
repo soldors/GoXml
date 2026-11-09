@@ -112,6 +112,13 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 		firstVis = g.scrollOff / rowH
 	}
 
+	// 按键过滤器轮询只在持焦时进行：未持焦时 Focus 限定过滤器本来就不
+	// 匹配，注册只会让 Gio 全局 key.filter 切片每帧增长（实测 2.6KB/帧
+	// 的隐性分配）。语义不变——未持焦时按键本就不属于本网格。
+	if !g.kbFocused {
+		return
+	}
+
 	for _, name := range dgNavKeys {
 		for {
 			ev, ok := gtx.Source.Event(key.Filter{Focus: &g.tag, Name: name})
