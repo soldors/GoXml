@@ -37,6 +37,8 @@ func main() {
 	respReady := envOr("HYDRATE_SNAPSHOT_READY", "")
 
 	cur := demoDTO{Count: 0, Items: []string{}, NonDefault: "default"}
+	restored := false
+	restoredGen := 0
 
 	// 1) 恢复：状态文件存在则经协议校验并应用。
 	if state != "" {
@@ -50,6 +52,8 @@ func main() {
 					fmt.Printf("RESTORE_REJECT decode=%v\n", perr)
 				} else {
 					cur = d
+					restored = true
+					restoredGen = env.Generation
 					fmt.Printf("RESTORED pid=%d count=%d items=%v nonDefault=%s gen=%d\n",
 						os.Getpid(), cur.Count, cur.Items, cur.NonDefault, env.Generation)
 				}
@@ -65,7 +69,22 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("RUNNING pid=%d count=%d items=%v nonDefault=%s\n", os.Getpid(), cur.Count, cur.Items, cur.NonDefault)
+	fmt.Printf("RUNNING pid=%d count=%d items=%v nonDefault=%s restored=%v\n", os.Getpid(), cur.Count, cur.Items, cur.NonDefault, restored)
+	// 新代自报：pid/session/gen/nonce + 精确 DTO（父进程据此验证，而非重读文件冒充恢复）。
+	if reportFile := envOr("HYDRATE_REPORT", ""); reportFile != "" {
+		report := map[string]any{
+			"pid": os.Getpid(), "session": session, "gen": restoredGen, "restored": restored,
+			"nonce": envOr("HYDRATE_NONCE", ""),
+			"count": cur.Count, "items": cur.Items, "nonDefault": cur.NonDefault,
+		}
+		if rb, jerr := json.Marshal(report); jerr == nil {
+			// 原子写报告：temp+rename，避免父进程读到半个文件。
+			tmp := reportFile + ".tmp"
+			if os.WriteFile(tmp, rb, 0o644) == nil {
+				_ = os.Rename(tmp, reportFile)
+			}
+		}
+	}
 
 	if reqFile == "" || respFile == "" {
 		// 无快照请求配置：短暂存活后退出（受控上限）。

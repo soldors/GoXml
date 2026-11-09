@@ -208,15 +208,33 @@ func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
 			w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, false)
 			return true
 		}
-		// R27-A（opt-in）：新代成功、停旧之前，请求旧代快照并原子提交。失败/超时/取消 => 不切换（保旧）。
+		// R27-A（opt-in）：新代成功、停旧之前，请求**实际在服务旧代**(w.lastPublished)快照并原子提交。
+		// F-A5：oldGen = w.lastPublished（0=冷启动合法跳过）。失败/超时/取消 => 不切换（保旧）。
 		if w.cfg.Hydration != nil {
-			if herr := w.cfg.Hydration.BeforeSwap(ctx, gen); herr != nil {
+			if herr := w.cfg.Hydration.BeforeSwap(ctx, gen, w.lastPublished); herr != nil {
 				res.OK = false
 				res.Stage = "hydration"
 				res.Detail = herr.Error()
 				_, requeue := w.db.BuildFinished(gen, false)
 				w.report(gen, res, false, requeue)
 				return true
+			}
+			// F-A6：捕获耗时可让用户输入变化；发布前**再复查**取消与用户输入，若变化则本代 stale 不切换、重排。
+			if err := buildCtx.Err(); err != nil {
+				_, requeue := w.db.BuildFinished(gen, false)
+				w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
+				return true
+			}
+			if postHyd, herr := Scan(w.cfg); herr == nil {
+				if ch := Diff(post, postHyd); len(ch) > 0 {
+					if cs, cerr := ClassifyChanges(w.cfg.ProjectDir, postHyd, ch); cerr == nil && len(cs.Trigger) > 0 {
+						atMS := int(time.Since(w.runStart).Milliseconds())
+						_, _ = w.NotifyChange(ctx, atMS, cs.Trigger)
+						_, requeue := w.db.BuildFinished(gen, false)
+						w.report(gen, GenerationResult{OK: false, Stage: "stale", Detail: "user inputs changed during capture", Gen: gen}, false, requeue)
+						return true
+					}
+				}
 			}
 		}
 		if serr := w.p.swapper.Swap(ctx, gen); serr != nil {

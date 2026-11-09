@@ -12,6 +12,7 @@
 package hydration
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,16 +66,35 @@ var (
 	ErrStale           = errors.New("hydration: 快照代次已过期（stale）")
 )
 
-// ChecksumOf 计算 Payload 的 SHA-256 hex。
+// ChecksumOf 计算原始字节的 SHA-256 hex（诊断用；协议使用 canonicalChecksum）。
 func ChecksumOf(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalChecksum 计算 Payload 的**规范（紧凑 JSON）**形式的 SHA-256 hex。
+//
+// F-A2：Encode 重新序列化 Envelope 时，encoding/json 会对 <tag>/& 做 HTML 转义、对缩进/空白做紧凑化，
+// 使落盘 Payload 字节与原始入参不同——若对原始字节取校验和，则“自己的 Encode→Decode”会自毁。
+// 因此校验和基于**规范形式**：无论原始 payload 是紧凑/缩进/含 HTML 字符，json.Compact 归一后一致；
+// 真实篡改（值改变）仍改变规范形式从而被拒。payload 非法 JSON 时返回 ErrCorrupt（不校验非 JSON）。
+func canonicalChecksum(payload []byte) (string, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, payload); err != nil {
+		return "", fmt.Errorf("%w: payload 非合法 JSON: %v", ErrCorrupt, err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // NewEnvelope 用显式参数构造 Envelope（含校验和）。payload 必须 <= MaxPayloadBytes。
 func NewEnvelope(schema Schema, appID, sessionID string, generation int, now time.Time, payload []byte) (*Envelope, error) {
 	if len(payload) > MaxPayloadBytes {
 		return nil, ErrTooLarge
+	}
+	cs, cerr := canonicalChecksum(payload)
+	if cerr != nil {
+		return nil, cerr
 	}
 	return &Envelope{
 		Version:           EnvelopeVersion,
@@ -84,7 +104,7 @@ func NewEnvelope(schema Schema, appID, sessionID string, generation int, now tim
 		Generation:        generation,
 		CreatedAtUnixNano: now.UTC().UnixNano(),
 		Payload:           append(json.RawMessage(nil), payload...),
-		Checksum:          ChecksumOf(payload),
+		Checksum:          cs,
 	}, nil
 }
 
@@ -96,10 +116,15 @@ func (e *Envelope) Encode() ([]byte, error) {
 	if len(e.Payload) > MaxPayloadBytes {
 		return nil, ErrTooLarge
 	}
-	b, err := json.Marshal(e)
-	if err != nil {
+	// 用 Encoder 并关闭 HTML 转义：Payload 为 RawMessage，保持其 JSON 值不被 <>& 转义。
+	// 编码器仍会紧凑化（不改变规范形式），与 canonicalChecksum 口径一致（F-A2）。
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(e); err != nil {
 		return nil, fmt.Errorf("hydration: 编码 Envelope 失败: %w", err)
 	}
+	b := bytes.TrimRight(buf.Bytes(), "\n")
 	if len(b) > MaxEnvelopeBytes {
 		return nil, ErrTooLarge
 	}
@@ -131,7 +156,9 @@ func DecodeAndVerify(raw []byte, exp Expect) (*Envelope, error) {
 	if len(e.Payload) > MaxPayloadBytes {
 		return nil, ErrTooLarge
 	}
-	if ChecksumOf(e.Payload) != e.Checksum {
+	if cs, cerr := canonicalChecksum(e.Payload); cerr != nil {
+		return nil, cerr
+	} else if cs != e.Checksum {
 		return nil, ErrChecksum
 	}
 	if exp.Schema != "" && e.Schema != exp.Schema {

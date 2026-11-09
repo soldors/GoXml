@@ -33,16 +33,24 @@ type HydrationHook struct {
 	RestoreEnv func(gen int) []string
 }
 
-// BeforeSwap 在新代构建成功、停旧之前调用：请求旧代快照并原子提交。任何失败返回错误（保旧不切换）。
-func (h *HydrationHook) BeforeSwap(ctx context.Context, gen int) error {
-	if h == nil || h.Proto == nil || h.Capture == nil {
+// BeforeSwap 在新代构建成功、停旧之前调用：请求**实际在服务的旧代**（oldGen）快照并原子提交。
+// F-A5：oldGen 为真实已发布/在服务的代次（由 Watch 传入 w.lastPublished），**不是 gen-1**；
+// oldGen==0 表示尚无旧进程（冷启动），合法：不请求快照、不提交，直接允许发布。
+// 任何快照失败返回错误（保旧不切换）。
+func (h *HydrationHook) BeforeSwap(ctx context.Context, newGen, oldGen int) error {
+	if h == nil {
+		return nil
+	}
+	if oldGen == 0 {
+		// 冷启动：无旧进程可捕获，合法跳过（不写状态、不切换语义变化）。
+		return nil
+	}
+	if h.Proto == nil || h.Capture == nil {
 		return fmt.Errorf("hydration hook 未配置完整（Proto/Capture 必填）")
 	}
-	// 旧代 = gen-1（新代 gen 构建成功、尚未切换；运行中的旧代次为 gen-1）。
-	oldGen := gen - 1
 	_, err := h.Proto.Snapshot(ctx, func(c context.Context) ([]byte, error) {
 		return h.Capture(c, oldGen)
-	}, gen)
+	}, newGen)
 	if err != nil {
 		return err
 	}

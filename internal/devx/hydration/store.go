@@ -14,8 +14,10 @@
 package hydration
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,7 +85,14 @@ func (s *Store) WriteAtomic(raw []byte) error {
 	if cerr := tmp.Close(); cerr != nil {
 		return fmt.Errorf("hydration: 关闭临时文件失败: %w", cerr)
 	}
-	// rename 覆盖本会话文件（原子）。目标若被他人替换成不同 session 文件，我们不覆盖（由调用方保证 Path 属本 session）。
+	// F-A4：提交前证明目标文件属于本会话。若目标已存在，必须是**本会话**的合法状态文件（Envelope.SessionID
+	// == 本会话），否则拒绝覆盖（保旧：字节/mtime 不变）。未证明所有权则不覆盖，避免毁掉旧/他人文件。
+	if own, oerr := s.existingIsOwned(); oerr != nil {
+		return oerr
+	} else if !own {
+		return fmt.Errorf("hydration: 目标状态文件非本会话所有（拒绝覆盖，保旧）: %s", s.Path())
+	}
+	// rename 覆盖本会话文件（原子）。
 	if rerr := os.Rename(tmpName, s.Path()); rerr != nil {
 		return fmt.Errorf("hydration: rename 提交失败: %w", rerr)
 	}
@@ -91,15 +100,75 @@ func (s *Store) WriteAtomic(raw []byte) error {
 	return nil
 }
 
+func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// existingIsOwned 判断目标路径是否已存在且属于本会话（Envelope.SessionID==本会话且可解析）。
+// 不存在 => (true,nil) 可写。存在但读取/解析失败 => (false,err)（不覆盖，保旧）。存在且会话不符=> (false,nil)。
+func (s *Store) existingIsOwned() (bool, error) {
+	f, err := os.Open(s.Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("hydration: 检查目标文件失败: %w", err)
+	}
+	defer f.Close()
+	// 有界读：最多 MaxEnvelopeBytes+1，避免整份超大文件读完才判限额（F-A4）。
+	raw, rerr := readBounded(f, rst.MaxEnvelopeBytes+1)
+	if rerr != nil {
+		return false, fmt.Errorf("hydration: 读取既有状态文件失败（不覆盖）: %w", rerr)
+	}
+	if len(raw) > rst.MaxEnvelopeBytes {
+		return false, nil // 超大既有文件：不视为本会话，拒绝覆盖
+	}
+	// 只解析外层 SessionID 判定所有权（无需完整校验；完整校验由 ReadVerified 负责）。
+	var e rst.Envelope
+	if jerr := jsonUnmarshal(raw, &e); jerr != nil {
+		return false, nil // 无法解析的既有文件：不覆盖
+	}
+	return e.SessionID == s.sessionID, nil
+}
+
+// readBounded 从 r 读取最多 limit 字节；超过 limit 也最多读 limit（调用方据 len>max 判定）。
+func readBounded(r io.Reader, limit int) ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
+	for len(buf) < limit {
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return buf, err
+		}
+	}
+	if len(buf) > limit {
+		buf = buf[:limit]
+	}
+	return buf, nil
+}
+
 // ReadVerified 读取本会话状态文件并按 Expect 完整校验（schema/app/session/版本/checksum/generation）。
 // 文件不存在 => (nil, os.ErrNotExist 语义 via ErrNoState)。校验失败返回具体错误，不返回部分 enevelope。
 func (s *Store) ReadVerified(exp rst.Expect) (*rst.Envelope, error) {
-	raw, err := os.ReadFile(s.Path())
+	f, err := os.Open(s.Path())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNoState
 		}
 		return nil, fmt.Errorf("hydration: 读取状态文件失败: %w", err)
+	}
+	defer f.Close()
+	// F-A4：有界读取（最多 MaxEnvelopeBytes+1），不先整份读完再判限额。
+	raw, rerr := readBounded(f, rst.MaxEnvelopeBytes+1)
+	if rerr != nil {
+		return nil, fmt.Errorf("hydration: 读取状态文件失败: %w", rerr)
+	}
+	if len(raw) > rst.MaxEnvelopeBytes {
+		return nil, rst.ErrTooLarge
 	}
 	// 强制会话一致：调用方期望的 SessionID 若为空，补成本会话；避免误读他人文件。
 	if exp.SessionID == "" {

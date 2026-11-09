@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -90,4 +91,63 @@ func TestReadVerifiedWrongSessionRejected(t *testing.T) {
 		t.Fatalf("wrong session want ErrSessionMismatch, got %v", err)
 	}
 	_ = os.Remove(dir) // 防御：t.TempDir 自清；此处仅占位
+}
+
+// 所有权：本会话已有合法文件时允许覆盖（覆盖成功路径）；非本会话不可解析文件拒绝覆盖。
+func TestStoreOwnFileOverwriteAndUnparsableReject(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := NewStore(dir, "s1")
+	p := &Protocol{Store: st, Schema: "demo.v1", AppID: "app-1"}
+	if _, err := p.Snapshot(context.Background(), func(context.Context) ([]byte, error) { return []byte(`{"v":1}`), nil }, 1); err != nil {
+		t.Fatal(err)
+	}
+	// 第二次写（既有本会话文件）应成功覆盖。
+	if _, err := p.Snapshot(context.Background(), func(context.Context) ([]byte, error) { return []byte(`{"v":2}`), nil }, 2); err != nil {
+		t.Fatalf("overwrite own session file must succeed: %v", err)
+	}
+	// 非本会话、不可解析的既有文件：WriteAtomic 拒绝且不改字节。
+	_ = os.MkdirAll(st.Dir(), 0o755)
+	_ = os.WriteFile(st.Path(), []byte("not-a-json-envelope"), 0o644)
+	raw, _ := rst.NewEnvelope("demo.v1", "app-1", "s1", 3, time.Now(), []byte(`{}`))
+	b, _ := raw.Encode()
+	if err := st.WriteAtomic(b); err == nil {
+		t.Fatal("unparsable existing file must be rejected (no overwrite)")
+	}
+	after, _ := os.ReadFile(st.Path())
+	if string(after) != "not-a-json-envelope" {
+		t.Fatal("unparsable existing file bytes must be preserved")
+	}
+}
+
+// ReadVerified 目标为目录（open/read 失败路径）。
+func TestReadVerifiedPathIsDir(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := NewStore(dir, "s1")
+	_ = os.MkdirAll(st.Path(), 0o755) // Path 是目录
+	_, err := st.ReadVerified(rst.Expect{})
+	if err == nil {
+		t.Fatal("ReadVerified on dir path must error")
+	}
+}
+
+// WriteAtomic 失败路径：Dir 位置被普通文件占用 => MkdirAll/创建临时文件失败（真实 os 失败，非退化开关）。
+func TestWriteAtomicDirIsFile(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := NewStore(dir, "s1")
+	// 把 .goxml/hydration 的父 .goxml 建成文件，使 MkdirAll 失败。
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(filepath.Join(dir, ".goxml"), []byte("x"), 0o644)
+	if err := st.WriteAtomic([]byte(`{"a":1}`)); err == nil {
+		t.Fatal("WriteAtomic must fail when .goxml is a file")
+	}
+}
+
+// existingIsOwned：目标为目录（open 成功但读取失败 => 错误分支，不覆盖）。
+func TestWriteAtomicExistingPathIsDir(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := NewStore(dir, "s1")
+	_ = os.MkdirAll(st.Path(), 0o755) // Path 是目录
+	if err := st.WriteAtomic([]byte(`{"a":1}`)); err == nil {
+		t.Fatal("WriteAtomic must fail when target path is a directory")
+	}
 }

@@ -39,6 +39,23 @@ type Protocol struct {
 	CaptureTimeout time.Duration
 	// Now 注入时钟（nil 用 time.Now）。
 	Now func() time.Time
+
+	// captureSem 限制**并发在途捕获**数量（F-A1：不制造无限遗留 goroutine）。惰性初始化。
+	// 一个不合作的回调即使超时后仍占用一个槽位，直到其返回；槽位耗尽时新请求 ErrBusy（有界）。
+	captureSem chan struct{}
+}
+
+// ErrBusy 表示在途捕获已达上限（有界拒绝，不排队无限增长）。
+var ErrBusy = errors.New("hydration: 在途捕获已达上限（busy）")
+
+// maxInflightCaptures 是并发在途捕获上限（有界）。
+const maxInflightCaptures = 4
+
+func (p *Protocol) sem() chan struct{} {
+	if p.captureSem == nil {
+		p.captureSem = make(chan struct{}, maxInflightCaptures)
+	}
+	return p.captureSem
 }
 
 func (p *Protocol) now() time.Time {
@@ -72,14 +89,27 @@ func (p *Protocol) Snapshot(ctx context.Context, capture CaptureFunc, gen int) (
 	cctx, cancel := context.WithTimeout(ctx, p.captureTimeout())
 	defer cancel()
 
+	// F-A1：有界在途并发。槽满 => ErrBusy（不排队、不无限建 goroutine）。
+	sem := p.sem()
+	select {
+	case sem <- struct{}{}:
+	default:
+		return nil, ErrBusy
+	}
+
 	type capRes struct {
 		payload []byte
 		err     error
 	}
-	ch := make(chan capRes, 1)
-	go func() { pl, err := capture(cctx); ch <- capRes{pl, err} }()
-
+	// 缓冲 1：即使超时后调用方不再读取，回调返回时也能无阻塞写入并释放（不泄漏 goroutine）。
 	var payload []byte
+	ch := make(chan capRes, 1)
+	go func() {
+		defer func() { <-sem }() // 回调真正返回后才释放槽位
+		pl, err := capture(cctx)
+		ch <- capRes{pl, err}
+	}()
+
 	select {
 	case r := <-ch:
 		if r.err != nil {
@@ -87,9 +117,8 @@ func (p *Protocol) Snapshot(ctx context.Context, capture CaptureFunc, gen int) (
 		}
 		payload = r.payload
 	case <-cctx.Done():
-		// 有界等待：超时/取消 不提交，等 capture goroutine 返回（防迟到写与之竞争）。
-		r := <-ch
-		_ = r
+		// F-A1：**不 join 不合作回调**——有界返回、不提交；回调迟到的结果被丢弃（ch 缓冲接收后无人用）。
+		// 槽位由 goroutine 在回调返回时释放，故不会无限遗留；并发受 sem 上限约束。
 		return nil, fmt.Errorf("hydration: 捕获超时/取消（保旧不切换）: %w", cctx.Err())
 	}
 
@@ -124,6 +153,12 @@ func (p *Protocol) Restore(ctx context.Context, minGen int, apply ApplyFunc) (ap
 	}
 	if apply == nil {
 		return false, errors.New("hydration: apply 必填")
+	}
+	// F-A3：应用前**再复查取消**（避免边读边取消仍 Apply）；取消/过期请求不调用 apply。
+	// 注：本库只保证“取消/校验失败不调用 apply”；apply 回调自身的整体成功由所有者保证，
+	// 本库不声称能自动回滚任意用户回调（见 ApplyFunc 文档）。
+	if cerr := ctx.Err(); cerr != nil {
+		return false, cerr
 	}
 	if aerr := apply(ctx, env.Payload); aerr != nil {
 		return false, fmt.Errorf("hydration: 恢复应用失败（不部分应用）: %w", aerr)

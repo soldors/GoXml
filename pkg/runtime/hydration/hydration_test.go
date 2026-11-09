@@ -128,3 +128,32 @@ func TestEnvelopeLargePayloadRejected(t *testing.T) {
 		t.Fatalf("DecodeAndVerify raw-large want ErrTooLarge, got %v", err)
 	}
 }
+
+// Encode nil / oversized Envelope 分支（真实失败路径）。
+func TestEncodeNilAndOversize(t *testing.T) {
+	var nilEnv *Envelope
+	if _, err := nilEnv.Encode(); err == nil {
+		t.Fatal("nil envelope Encode must error")
+	}
+	big := &Envelope{Version: EnvelopeVersion, Payload: make([]byte, MaxPayloadBytes+1)}
+	if _, err := big.Encode(); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversize payload Encode want ErrTooLarge, got %v", err)
+	}
+}
+
+// DecodeAndVerify 非法 JSON 且 canonicalChecksum 失败路径 + DecodePayload 坏 payload。
+func TestDecodeInvalidJSONAndBadPayload(t *testing.T) {
+	// 构造一个 payload 非法 JSON 的 Envelope（直接 marshal 绕过 NewEnvelope）。
+	e := map[string]any{"version": EnvelopeVersion, "schema": "s", "appId": "a", "sessionId": "x",
+		"generation": 1, "payload": "not-json", "checksum": "deadbeef"}
+	raw, _ := json.Marshal(e)
+	if _, err := DecodeAndVerify(raw, Expect{}); !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrChecksum) {
+		t.Fatalf("invalid payload want corrupt/checksum, got %v", err)
+	}
+	if err := (&Envelope{Payload: []byte("{bad")}).DecodePayload(&struct{}{}); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("bad DecodePayload want ErrCorrupt, got %v", err)
+	}
+	if err := (&Envelope{}).DecodePayload(&struct{}{}); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("empty DecodePayload want ErrCorrupt, got %v", err)
+	}
+}
