@@ -117,3 +117,14 @@ func TestChecksumOnlyContentEquality(t *testing.T) {
 		t.Fatalf("checksum should be sha256 hex (64), got %d", len(a))
 	}
 }
+
+// 大 payload Encode/Decode 拒绝（走 Envelope 直接构造以触发 ErrTooLarge 分支）。
+func TestEnvelopeLargePayloadRejected(t *testing.T) {
+	e := &Envelope{Version: EnvelopeVersion, Payload: make([]byte, MaxPayloadBytes+1)}
+	if _, err := e.Encode(); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("Encode large want ErrTooLarge, got %v", err)
+	}
+	if _, err := DecodeAndVerify(make([]byte, MaxEnvelopeBytes+1), Expect{}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("DecodeAndVerify raw-large want ErrTooLarge, got %v", err)
+	}
+}
