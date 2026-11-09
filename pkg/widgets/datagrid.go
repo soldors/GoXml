@@ -106,7 +106,7 @@ type DataGridFrameStats struct {
 }
 
 // dgTextKey 是绘制宏缓存的键：稳定 RowID + 列号 + 像素尺寸
-//（列宽/行高/DPI 变化后得到新键，旧条目经 LRU 淘汰；表头用空 RowID）。
+// （列宽/行高/DPI 变化后得到新键，旧条目经 LRU 淘汰；表头用空 RowID）。
 type dgTextKey struct {
 	rowID string
 	col   int
