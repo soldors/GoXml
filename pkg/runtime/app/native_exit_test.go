@@ -31,6 +31,9 @@ type nativeEvidence struct {
 	CleanupDone  bool   `json:"cleanup_done"`
 	PID          int    `json:"pid"`
 	FontSource   string `json:"font_source"`
+	Frames       int    `json:"frames"`
+	AutoClose    bool   `json:"auto_close_requested"`
+	FontNotFound bool   `json:"font_not_found"`
 }
 
 // nativeRepoRoot 从包目录 pkg/runtime/app 上溯三级到仓库根。
@@ -82,18 +85,18 @@ func buildNativeExit(t *testing.T) string {
 	return exe
 }
 
-// TestNativeSingleWindowExit 需要人工 / Computer Use 关闭标题栏 X。
-// 准确 argv 与预期见交付 native-acceptance.md。
+// TestNativeSingleWindowExit defaults to a self-closing native lifecycle test.
+// Manual scenarios still require title-bar close; no desktop input is automated.
 func TestNativeSingleWindowExit(t *testing.T) {
 	scenario := os.Getenv("R27C_NATIVE_SCENARIO")
 	if scenario == "" {
-		scenario = "normal"
+		scenario = "normal-auto"
 	}
 	wantRC := 1
 	switch scenario {
-	case "normal", "grid":
+	case "normal", "normal-auto", "grid":
 		wantRC = 0
-	case "font-strict", "invalid-options":
+	case "font-strict", "font-strict-auto", "invalid-options":
 		wantRC = 1
 	default:
 		t.Fatalf("未知原生场景 %q", scenario)
@@ -146,6 +149,9 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	if scenario != "invalid-options" && (!res.CallbackDone || !res.CleanupDone) {
 		t.Fatalf("callback/cleanup did not complete before observer: %+v", res)
 	}
+	if (scenario == "normal-auto" || scenario == "font-strict-auto") && (!res.AutoClose || res.Frames < 2) {
+		t.Fatalf("automatic native close did not follow real frames: %+v", res)
+	}
 
 	markerBytes, err := os.ReadFile(filepath.Join(dir, "marker.txt"))
 	if err != nil {
@@ -154,15 +160,15 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(markerBytes)), "\n")
 
 	switch scenario {
-	case "normal", "grid":
+	case "normal", "normal-auto", "grid":
 		if res.Err != "" || res.DestroyErr != "" {
 			t.Fatalf("normal close contains error: %+v", res)
 		}
 		if len(lines) != 2 || lines[0] != "callback" || lines[1] != "observer:callback=true cleanup=true" {
 			t.Fatalf("callback/cleanup must precede observer: %q", markerBytes)
 		}
-	case "font-strict":
-		if res.FontErr == "" || res.Err == "" {
+	case "font-strict", "font-strict-auto":
+		if res.FontErr == "" || res.Err == "" || !res.FontNotFound {
 			t.Fatalf("strict Provider failure lost: %+v", res)
 		}
 	case "invalid-options":

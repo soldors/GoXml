@@ -1,13 +1,17 @@
 // nativeexit exercises only the approved public single-window process API.
 // It is built for coordinator acceptance; normal/grid/font-strict open a window
-// and require explicit native-run authorization. invalid-options exits before a
-// window. No event, failure, or exit injection is exposed by app.ProcessOptions.
+// and require explicit native-run authorization. The -auto scenarios close only
+// their own window after real frames, without desktop input. invalid-options
+// exits before a window. ProcessOptions exposes no event/failure/exit injection.
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
 	"github.com/goxml/goxml/contracts"
@@ -16,16 +20,27 @@ import (
 	"github.com/goxml/goxml/pkg/widgets"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 )
 
 type nativeView struct {
 	grid              *widgets.DataGrid
 	frames, maxScroll int
 	clicked           []string
+	autoReady         chan struct{}
+	closeRequested    atomic.Bool
 }
 
 func (v *nativeView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	v.frames++
+	if v.autoReady != nil {
+		if v.frames == 1 {
+			gtx.Execute(op.InvalidateCmd{})
+		} else if v.frames == 2 {
+			close(v.autoReady)
+		}
+	}
 	if v.grid == nil {
 		return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return material.Body1(th, "R27 single-window acceptance: resize, then close with the title-bar X.").Layout(gtx)
@@ -70,7 +85,7 @@ func errText(err error) string {
 }
 func main() {
 	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: nativeexit <new-evidence-dir> <normal|grid|font-strict|invalid-options>")
+		fmt.Fprintln(os.Stderr, "usage: nativeexit <new-evidence-dir> <normal|grid|font-strict|normal-auto|font-strict-auto|invalid-options>")
 		os.Exit(64)
 	}
 	dir, scenario := os.Args[1], os.Args[2]
@@ -97,7 +112,7 @@ func main() {
 	source := "system-default"
 	opts := goxmlapp.ProcessOptions{Observer: func(res goxmlapp.ExitResult) {
 		appendMarker(fmt.Sprintf("observer:callback=%t cleanup=%t", res.CallbackDone, res.CleanupDone))
-		data, err := json.Marshal(map[string]any{"scenario": scenario, "pid": os.Getpid(), "code": res.Code, "err": errText(res.Err), "destroy_err": errText(res.DestroyErr), "font_err": errText(res.FontErr), "callback_done": res.CallbackDone, "cleanup_done": res.CleanupDone, "font_source": source, "frames": v.frames, "max_scroll": v.maxScroll, "clicked_rows": v.clicked})
+		data, err := json.Marshal(map[string]any{"scenario": scenario, "pid": os.Getpid(), "code": res.Code, "err": errText(res.Err), "destroy_err": errText(res.DestroyErr), "font_err": errText(res.FontErr), "font_not_found": errors.Is(res.FontErr, contracts.ErrFontNotFound), "callback_done": res.CallbackDone, "cleanup_done": res.CleanupDone, "font_source": source, "frames": v.frames, "max_scroll": v.maxScroll, "clicked_rows": v.clicked, "auto_close_requested": v.closeRequested.Load()})
 		if err != nil {
 			panic(err)
 		}
@@ -107,7 +122,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "R27 result scenario=%s code=%d callback=%t cleanup=%t frames=%d err=%q\n", scenario, res.Code, res.CallbackDone, res.CleanupDone, v.frames, errText(res.Err))
 	}}
 	switch scenario {
-	case "normal":
+	case "normal", "normal-auto":
 	case "grid":
 		v.grid = widgets.NewDataGrid(unit.Dp(28))
 		if err := v.grid.SetColumns([]widgets.DataGridColumn{{Title: "RowID", WidthDp: 180}, {Title: "Value", WidthDp: 240}, {Title: "Group", WidthDp: 180}}); err != nil {
@@ -121,7 +136,7 @@ func main() {
 		if r := v.grid.SetRows(rows); !r.OK {
 			panic("grid fixture rejected")
 		}
-	case "font-strict":
+	case "font-strict", "font-strict-auto":
 		source = "explicit failing Provider fixture, not a system font failure"
 		opts.Lazy = failingLazy()
 	case "invalid-options":
@@ -137,7 +152,36 @@ func main() {
 		panic(err)
 	}
 	fmt.Fprintf(os.Stderr, "R27 start pid=%d scenario=%s source=%s\n", os.Getpid(), scenario, source)
-	goxmlapp.RunSingleWindowProcess(view, goxmlapp.Config{Title: "R27 native [" + scenario + "]", Width: 960, Height: 540, StrictFontFailure: scenario == "font-strict"}, opts)
+	title := "R27 native [" + scenario + "]"
+	if scenario == "normal-auto" || scenario == "font-strict-auto" {
+		// Only this fixture's window is addressed. No mouse/keyboard automation,
+		// foreign application control, injected events, or forced termination.
+		title += fmt.Sprintf(" pid=%d", os.Getpid())
+		v.autoReady = make(chan struct{})
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			select {
+			case <-v.autoReady: // The second real Layout follows a submitted first frame.
+			case <-ctx.Done():
+				fmt.Fprintln(os.Stderr, "automatic close: real frames did not arrive")
+				os.Exit(78)
+			}
+			if opts.Lazy != nil {
+				select {
+				case <-opts.Lazy.Done():
+				case <-ctx.Done():
+					fmt.Fprintln(os.Stderr, "automatic close: Lazy did not complete")
+					os.Exit(78)
+				}
+			}
+			if err := requestOwnedWindowClose(title, func() { v.closeRequested.Store(true) }); err != nil {
+				fmt.Fprintln(os.Stderr, "automatic close:", err)
+				os.Exit(78)
+			}
+		}()
+	}
+	goxmlapp.RunSingleWindowProcess(view, goxmlapp.Config{Title: title, Width: 960, Height: 540, StrictFontFailure: scenario == "font-strict" || scenario == "font-strict-auto"}, opts)
 	fmt.Fprintln(os.Stderr, "unreachable: process entry returned")
 	os.Exit(70)
 }
