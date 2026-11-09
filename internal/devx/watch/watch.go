@@ -208,6 +208,17 @@ func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
 			w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, false)
 			return true
 		}
+		// R27-A（opt-in）：新代成功、停旧之前，请求旧代快照并原子提交。失败/超时/取消 => 不切换（保旧）。
+		if w.cfg.Hydration != nil {
+			if herr := w.cfg.Hydration.BeforeSwap(ctx, gen); herr != nil {
+				res.OK = false
+				res.Stage = "hydration"
+				res.Detail = herr.Error()
+				_, requeue := w.db.BuildFinished(gen, false)
+				w.report(gen, res, false, requeue)
+				return true
+			}
+		}
 		if serr := w.p.swapper.Swap(ctx, gen); serr != nil {
 			p := res
 			p.OK = false
