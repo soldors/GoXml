@@ -71,23 +71,53 @@ func RunSingleWindowProcess(view View, cfg Config, opts ProcessOptions) {
 		finishProcess(processResultErr(fmt.Errorf("app: nil view"), "validate"), opts, steps)
 		return
 	}
-	th, err := resolveProcessTheme(opts)
-	if err != nil {
-		steps.add("theme")
-		finishProcess(processResultErr(err, "validate", "theme"), opts, steps)
-		return
-	}
-
+	// R27-C R1 / F-C1：**先按主题来源分流，再构造 App**。
+	//
+	// 旧实现无条件先调 resolveProcessTheme(opts)（内部走同步默认
+	// newThemeWithReport / 默认 Provider）。传入有效 Lazy 时这一步与懒加载
+	// 完全无关：默认 Provider 失败会让非 strict 的正常关窗在 NewLazyApp
+	// 之前就以 Code=1 退出，临时主题与异步加载根本没机会发生（协调者
+	// TestCoordR27LazyProcessDoesNotResolveSyncTheme 的反例）。
+	//
+	// 分流策略（**候选，待负责人裁决**）：
+	//   - opts.Lazy != nil：懒加载路径。主题由 Lazy 在运行时异步交付，首帧
+	//     用临时主题；不读取、不等待同步默认 Provider。Lazy 优先于显式
+	//     Theme 作为构造入口，显式 Theme 在该路径下不参与构造。
+	//   - opts.Lazy == nil：同步路径（显式 Theme 或默认 Provider）。B6 语义
+	//     不变——默认主题字体两条链路都失败时**开窗前**返回错误，绝不
+	//     静默降级到空白渲染；不把默认错误一概忽略。
+	//   - opts.ThemeErr 是调用方显式声明的开窗前失败，两条路径都保留，
+	//     它不是同步 Provider，不受分流影响。
+	//
+	// 保留严格字体语义：StrictFontFailure 由 App.fontFailure() 在事件循环
+	// 结束时判定，Lazy 路径仍交出包装了 contracts.ErrFontNotFound 的诊断。
 	var a *App
+	var err error
 	if opts.Lazy != nil {
+		if opts.ThemeErr != nil {
+			steps.add("theme")
+			finishProcess(processResultErr(opts.ThemeErr, "validate", "theme"), opts, steps)
+			return
+		}
 		a, err = NewLazyApp(view, opts.Lazy, cfg)
+		if err != nil {
+			steps.add("construct")
+			finishProcess(processResultErr(err, "validate", "construct"), opts, steps)
+			return
+		}
 	} else {
+		th, themeErr := resolveProcessTheme(opts)
+		if themeErr != nil {
+			steps.add("theme")
+			finishProcess(processResultErr(themeErr, "validate", "theme"), opts, steps)
+			return
+		}
 		a, err = NewApp(view, th, cfg)
-	}
-	if err != nil {
-		steps.add("construct")
-		finishProcess(processResultErr(err, "validate", "theme", "construct"), opts, steps)
-		return
+		if err != nil {
+			steps.add("construct")
+			finishProcess(processResultErr(err, "validate", "theme", "construct"), opts, steps)
+			return
+		}
 	}
 
 	next := opts.Next
