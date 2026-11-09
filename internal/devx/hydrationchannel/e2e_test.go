@@ -52,7 +52,12 @@ func buildConsole(t *testing.T) string {
 	if runtime.GOOS != "windows" {
 		out = filepath.Join(t.TempDir(), "hconsole")
 	}
-	cmd := exec.Command("go", "build", "-o", out, "./internal/devx/hydrationchannel/testdata/consoleapp")
+	buildArgs := []string{"build", "-o", out}
+	if ov := os.Getenv("HYD_CONSOLE_OVERLAY"); ov != "" {
+		buildArgs = append(buildArgs, "-overlay", ov)
+	}
+	buildArgs = append(buildArgs, "./internal/devx/hydrationchannel/testdata/consoleapp")
+	cmd := exec.Command("go", buildArgs...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
 	if b, err := cmd.CombinedOutput(); err != nil {
