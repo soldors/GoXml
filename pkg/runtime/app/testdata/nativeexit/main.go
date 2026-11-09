@@ -1,162 +1,143 @@
-// r27c-nativeexit 是 R27-C 自有的**单窗原生验收程序**（协调者专用）。
-//
-// 它消费显式进程级入口 app.RunSingleWindowProcess 的生产路径：
-//   - Next == nil  => 真实 Gio 窗口事件泵 a.w.Event（会创建平台窗口）；
-//   - mainFunc()   => 真实 gioapp.Main()，Windows 上永不返回；
-//   - Exit  == nil => 事件循环结束后由入口显式 os.Exit(Code)。
-//
-// 作者阶段只构建、不执行；带标签的原生测试在协调者阶段才选中。
-// 这不是通用 Run 已正常返回的证据，也不能冒充 Gio 真实 premature close。
-//
-// 用法：
-//
-//	r27c-nativeexit <evidence-dir> <normal|font-strict|theme-failure>
-//
-// evidence-dir 下产出：
-//
-//	marker.txt      callback 行（WithOnDestroy 回调）+ cleanup:<steps> 行
-//	result.json     ExitResult 的可观察副本（含真实 Code / Err / Steps / PID）
-//
-// 预期（详见交付 native-acceptance.md）：
-//
-//	normal        人工点标题栏 X 正常关窗 -> rc 0，stderr 无 fatal/死锁
-//	font-strict   注入严格字体失败源 + 人工关窗 -> rc 1，Err 含 ErrFontNotFound
-//	theme-failure 开窗前默认主题失败，不建窗 -> rc 1，Steps 无 destroy/callback
+// nativeexit exercises only the approved public single-window process API.
+// It is built for coordinator acceptance; normal/grid/font-strict open a window
+// and require explicit native-run authorization. invalid-options exits before a
+// window. No event, failure, or exit injection is exposed by app.ProcessOptions.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
-
 	"github.com/goxml/goxml/contracts"
 	goxmlapp "github.com/goxml/goxml/pkg/runtime/app"
+	"github.com/goxml/goxml/pkg/runtime/theme"
+	"github.com/goxml/goxml/pkg/widgets"
+	"os"
+	"path/filepath"
 )
 
-type nativeView struct{}
-
-func (nativeView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	inset := layout.Inset{Top: unit.Dp(28), Left: unit.Dp(28), Right: unit.Dp(28)}
-	return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return material.Body1(th,
-			"R27-C APP-EXIT-CONTRACT | 单窗原生验收：请点击标题栏 X 关闭窗口").Layout(gtx)
-	})
+type nativeView struct {
+	grid              *widgets.DataGrid
+	frames, maxScroll int
+	clicked           []string
 }
 
-type nativeResult struct {
-	Scenario   string   `json:"scenario"`
-	Code       int      `json:"code"`
-	Err        string   `json:"err"`
-	DestroyErr string   `json:"destroy_err"`
-	FontErr    string   `json:"font_err"`
-	Steps      []string `json:"steps"`
-	PID        int      `json:"pid"`
-	Injected   string   `json:"injected"`
+func (v *nativeView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	v.frames++
+	if v.grid == nil {
+		return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return material.Body1(th, "R27 single-window acceptance: resize, then close with the title-bar X.").Layout(gtx)
+		})
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return material.Body1(th, "R27 DataGrid: 10,000 rows. Scroll down, select rows, resize, return to top, close X.").Layout(gtx)
+		}),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			d := v.grid.Layout(gtx, th)
+			stats := v.grid.LastFrame()
+			if stats.ScrollOffset > v.maxScroll {
+				v.maxScroll = stats.ScrollOffset
+			}
+			if id, _, ok := v.grid.Clicked(); ok {
+				v.clicked = append(v.clicked, id)
+			}
+			return d
+		}),
+	)
 }
 
+type rejectedEmbedded struct{}
+
+func (rejectedEmbedded) Load() ([]byte, string, error) {
+	return nil, "owned-rejected-fixture", contracts.ErrFontNotFound
+}
+func failingLazy() *theme.Lazy {
+	provider := theme.NewProvider(theme.ProviderOptions{Candidates: []string{"owned-unavailable-font"}, Read: func(string) ([]byte, error) { return nil, os.ErrNotExist }, Embedded: rejectedEmbedded{}})
+	lz, err := theme.NewLazy(theme.LazyOptions{Provider: provider, Temp: material.NewTheme()})
+	if err != nil {
+		panic(err)
+	}
+	return lz
+}
 func errText(err error) string {
 	if err == nil {
 		return ""
 	}
 	return err.Error()
 }
-
-func appendMarker(path, line string) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "marker 打开失败:", err)
-		return
-	}
-	_, _ = f.WriteString(line + "\n")
-	_ = f.Close()
-}
-
 func main() {
 	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: r27c-nativeexit <evidence-dir> <normal|font-strict|theme-failure>")
+		fmt.Fprintln(os.Stderr, "usage: nativeexit <new-evidence-dir> <normal|grid|font-strict|invalid-options>")
 		os.Exit(64)
 	}
 	dir, scenario := os.Args[1], os.Args[2]
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "evidence-dir 创建失败:", err)
+	// Each run owns a fresh evidence directory; an old PASS cannot be reused.
+	if err := os.Mkdir(dir, 0700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(64)
 	}
 	marker := filepath.Join(dir, "marker.txt")
-	resultPath := filepath.Join(dir, "result.json")
-
-	view, err := goxmlapp.WithOnDestroy(nativeView{}, func() {
-		appendMarker(marker, "callback")
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "WithOnDestroy 失败:", err)
-		os.Exit(64)
+	appendMarker := func(line string) {
+		f, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			panic(err)
+		}
+		_, err = f.WriteString(line + "\n")
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			panic(err)
+		}
 	}
-
-	injected := "none"
-	opts := goxmlapp.ProcessOptions{
-		// Theme / ThemeErr / Next / Exit 全部零值 = 真实生产路径：
-		// 真实默认主题构建（NewThemeWithReport）+ 真实 Gio 窗口事件泵 + 真实 os.Exit。
-		Observer: func(res goxmlapp.ExitResult) {
-			appendMarker(marker, "cleanup:"+strings.Join(res.Steps, ","))
-			data, mErr := json.Marshal(nativeResult{
-				Scenario:   scenario,
-				Code:       res.Code,
-				Err:        errText(res.Err),
-				DestroyErr: errText(res.DestroyErr),
-				FontErr:    errText(res.FontErr),
-				Steps:      res.Steps,
-				PID:        os.Getpid(),
-				Injected:   injected,
-			})
-			if mErr != nil {
-				fmt.Fprintln(os.Stderr, "result 序列化失败:", mErr)
-				return
-			}
-			if wErr := os.WriteFile(resultPath, data, 0o600); wErr != nil {
-				fmt.Fprintln(os.Stderr, "result.json 写入失败:", wErr)
-			}
-			fmt.Fprintf(os.Stderr, "R27C NATIVE result: scenario=%s code=%d steps=%v err=%q\n",
-				scenario, res.Code, res.Steps, errText(res.Err))
-		},
-	}
-
+	v := &nativeView{}
+	source := "system-default"
+	opts := goxmlapp.ProcessOptions{Observer: func(res goxmlapp.ExitResult) {
+		appendMarker(fmt.Sprintf("observer:callback=%t cleanup=%t", res.CallbackDone, res.CleanupDone))
+		data, err := json.Marshal(map[string]any{"scenario": scenario, "pid": os.Getpid(), "code": res.Code, "err": errText(res.Err), "destroy_err": errText(res.DestroyErr), "font_err": errText(res.FontErr), "callback_done": res.CallbackDone, "cleanup_done": res.CleanupDone, "font_source": source, "frames": v.frames, "max_scroll": v.maxScroll, "clicked_rows": v.clicked})
+		if err != nil {
+			panic(err)
+		}
+		if err = os.WriteFile(filepath.Join(dir, "result.json"), data, 0600); err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(os.Stderr, "R27 result scenario=%s code=%d callback=%t cleanup=%t frames=%d err=%q\n", scenario, res.Code, res.CallbackDone, res.CleanupDone, v.frames, errText(res.Err))
+	}}
 	switch scenario {
 	case "normal":
-		// 真实默认主题 + 真实窗口；人工关闭标题栏 X。
-	case "font-strict":
-		// 显式注入严格字体失败源（受控，不是真实字体探测失败）。
-		// 窗口仍是真实 Gio 窗口，仍由人工关闭，退出码应为 1。
-		injected = "FontFailure(contracts.ErrFontNotFound)"
-		opts.FontFailure = func() error {
-			return fmt.Errorf("r27c native injected strict font failure: %w", contracts.ErrFontNotFound)
+	case "grid":
+		v.grid = widgets.NewDataGrid(unit.Dp(28))
+		if err := v.grid.SetColumns([]widgets.DataGridColumn{{Title: "RowID", WidthDp: 180}, {Title: "Value", WidthDp: 240}, {Title: "Group", WidthDp: 180}}); err != nil {
+			panic(err)
 		}
-	case "theme-failure":
-		// 开窗前默认主题失败：不建窗、不启动事件循环，直接 rc 1。
-		injected = "ThemeErr(contracts.ErrFontNotFound)"
-		opts.ThemeErr = fmt.Errorf("r27c native injected theme failure: %w", contracts.ErrFontNotFound)
+		rows := make([]widgets.DataGridRow, 10000)
+		for i := range rows {
+			id := fmt.Sprintf("ROW-%05d", i)
+			rows[i] = widgets.DataGridRow{ID: id, Cells: []string{id, fmt.Sprintf("value %d", i), fmt.Sprintf("group %d", i%7)}}
+		}
+		if r := v.grid.SetRows(rows); !r.OK {
+			panic("grid fixture rejected")
+		}
+	case "font-strict":
+		source = "explicit failing Provider fixture, not a system font failure"
+		opts.Lazy = failingLazy()
+	case "invalid-options":
+		source = "mutually exclusive Theme/Lazy validation"
+		opts.Theme = material.NewTheme()
+		opts.Lazy = failingLazy()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown scenario %q\n", scenario)
+		fmt.Fprintln(os.Stderr, "unknown scenario", scenario)
 		os.Exit(64)
 	}
-
-	fmt.Fprintf(os.Stderr,
-		"R27C NATIVE start: argv=%v scenario=%s injected=%s pid=%d evidence=%s\n",
-		os.Args, scenario, injected, os.Getpid(), dir)
-	fmt.Fprintln(os.Stderr, "R27C NATIVE hint: 关闭标题栏 X 后观察退出码与 result.json；不要强杀。")
-
-	goxmlapp.RunSingleWindowProcess(view, goxmlapp.Config{
-		Title:  "R27-C nativeexit [" + scenario + "]",
-		Width:  unit.Dp(960),
-		Height: unit.Dp(320),
-	}, opts)
-
-	// 不可达：真实 Windows Main 不返回，进程由事件循环 goroutine 显式退出。
-	fmt.Fprintln(os.Stderr, "unreachable: nativeexit returned without process exit")
+	view, err := goxmlapp.WithOnDestroy(v, func() { appendMarker("callback") })
+	if err != nil {
+		panic(err)
+	}
+	fmt.Fprintf(os.Stderr, "R27 start pid=%d scenario=%s source=%s\n", os.Getpid(), scenario, source)
+	goxmlapp.RunSingleWindowProcess(view, goxmlapp.Config{Title: "R27 native [" + scenario + "]", Width: 960, Height: 540, StrictFontFailure: scenario == "font-strict"}, opts)
+	fmt.Fprintln(os.Stderr, "unreachable: process entry returned")
 	os.Exit(70)
 }

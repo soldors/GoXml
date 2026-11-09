@@ -22,14 +22,15 @@ import (
 const nativeTimeout = 180 * time.Second
 
 type nativeEvidence struct {
-	Scenario   string   `json:"scenario"`
-	Code       int      `json:"code"`
-	Err        string   `json:"err"`
-	DestroyErr string   `json:"destroy_err"`
-	FontErr    string   `json:"font_err"`
-	Steps      []string `json:"steps"`
-	PID        int      `json:"pid"`
-	Injected   string   `json:"injected"`
+	Scenario     string `json:"scenario"`
+	Code         int    `json:"code"`
+	Err          string `json:"err"`
+	DestroyErr   string `json:"destroy_err"`
+	FontErr      string `json:"font_err"`
+	CallbackDone bool   `json:"callback_done"`
+	CleanupDone  bool   `json:"cleanup_done"`
+	PID          int    `json:"pid"`
+	FontSource   string `json:"font_source"`
 }
 
 // nativeRepoRoot 从包目录 pkg/runtime/app 上溯三级到仓库根。
@@ -90,9 +91,9 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	}
 	wantRC := 1
 	switch scenario {
-	case "normal":
+	case "normal", "grid":
 		wantRC = 0
-	case "font-strict", "theme-failure":
+	case "font-strict", "invalid-options":
 		wantRC = 1
 	default:
 		t.Fatalf("未知原生场景 %q", scenario)
@@ -101,11 +102,7 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	exe := buildNativeExit(t)
 	dir := os.Getenv("R27C_NATIVE_EVIDENCE_DIR")
 	if dir == "" {
-		dir = t.TempDir() // 自有临时目录，测试结束自动收口
-	} else {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		dir = filepath.Join(t.TempDir(), "owned-native-run") // child creates and owns this fresh directory
 	}
 	t.Logf("证据目录 %s；二进制 %s；scenario %s", dir, exe, scenario)
 
@@ -146,9 +143,8 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	if res.Code != wantRC || res.Scenario != scenario {
 		t.Fatalf("结果与真实 rc 不一致: %+v", res)
 	}
-	joined := strings.Join(res.Steps, ",")
-	if !strings.HasSuffix(joined, "observer,exit") {
-		t.Fatalf("observer 必须先于进程退出: %v", res.Steps)
+	if scenario != "invalid-options" && (!res.CallbackDone || !res.CleanupDone) {
+		t.Fatalf("callback/cleanup did not complete before observer: %+v", res)
 	}
 
 	markerBytes, err := os.ReadFile(filepath.Join(dir, "marker.txt"))
@@ -158,28 +154,23 @@ func TestNativeSingleWindowExit(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(markerBytes)), "\n")
 
 	switch scenario {
-	case "normal":
+	case "normal", "grid":
 		if res.Err != "" || res.DestroyErr != "" {
-			t.Fatalf("正常关窗不应有错误（若 Gio 报 premature close 应单独登记）: %+v", res)
+			t.Fatalf("normal close contains error: %+v", res)
 		}
-		for _, step := range []string{"destroy", "callback", "cleanup", "font", "result"} {
-			if !strings.Contains(joined, step) {
-				t.Fatalf("Steps 缺少 %q: %v", step, res.Steps)
-			}
-		}
-		if len(lines) < 2 || lines[0] != "callback" || !strings.HasPrefix(lines[1], "cleanup:") {
-			t.Fatalf("marker 顺序不是 callback→cleanup: %q", markerBytes)
+		if len(lines) != 2 || lines[0] != "callback" || lines[1] != "observer:callback=true cleanup=true" {
+			t.Fatalf("callback/cleanup must precede observer: %q", markerBytes)
 		}
 	case "font-strict":
-		if !strings.Contains(res.Err, "strict font failure") {
-			t.Fatalf("严格字体诊断被吞: %+v", res)
+		if res.FontErr == "" || res.Err == "" {
+			t.Fatalf("strict Provider failure lost: %+v", res)
 		}
-	case "theme-failure":
-		if strings.Contains(joined, "destroy") || strings.Contains(joined, "callback") {
-			t.Fatalf("开窗前失败不应启动事件循环: %v", res.Steps)
+	case "invalid-options":
+		if !strings.Contains(res.Err, "mutually exclusive") || res.CallbackDone || res.CleanupDone {
+			t.Fatalf("invalid options entered window: %+v", res)
 		}
-		if len(lines) != 1 || !strings.HasPrefix(lines[0], "cleanup:") {
-			t.Fatalf("开窗前失败应只写 cleanup marker: %q", markerBytes)
+		if len(lines) != 1 || lines[0] != "observer:callback=false cleanup=false" {
+			t.Fatalf("unexpected validation marker: %q", markerBytes)
 		}
 	}
 
@@ -188,6 +179,6 @@ func TestNativeSingleWindowExit(t *testing.T) {
 			t.Fatalf("stderr 含不应有的诊断 %q: %s", banned, stderr.String())
 		}
 	}
-	t.Logf("OBS native %s: rc=%d steps=%v err=%q injected=%s",
-		scenario, rc, res.Steps, res.Err, res.Injected)
+	t.Logf("OBS native %s: rc=%d callback=%t cleanup=%t err=%q source=%s",
+		scenario, rc, res.CallbackDone, res.CleanupDone, res.Err, res.FontSource)
 }

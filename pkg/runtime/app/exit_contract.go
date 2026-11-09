@@ -21,7 +21,7 @@ import (
 //      且必须由调用它的 main 明确让出进程所有权。
 //
 // 本文件不调用 app.Main()、不调用 os.Exit()、不创建平台窗口。
-// 新 API 全部是隔离候选，未获批准；不得写成已发布语义。
+// 基础范围已批准进入隔离验收；原生门禁未完成，不得写成已发布。
 // ============================================================================
 
 // ErrWindowDestroy 标记「窗口带着错误提前销毁」。DestroyEvent.Err 的
@@ -88,7 +88,7 @@ func combineExitErrors(destroyErr, fontErr error) error {
 
 // ExitResult 是事件循环结束之后、进程级退出之前生成的完整结果。
 //
-// Steps 是真实执行顺序的证据，不是注释承诺：
+// Internal step diagnostics preserve the real execution order in package tests:
 //
 //	destroy → callback → cleanup → font → result
 //
@@ -105,11 +105,11 @@ type ExitResult struct {
 	// CallbackDone / CleanupDone 说明显式回调与清理确实先于结果生成。
 	CallbackDone bool
 	CleanupDone  bool
-	// Steps 记录真实顺序，供受控 console 子进程断言。
-	Steps []string
+	// steps is a package-private diagnostic, not a public string contract.
+	steps []string
 }
 
-func (r ExitResult) stringSteps() []string { return append([]string(nil), r.Steps...) }
+func (r ExitResult) stringSteps() []string { return append([]string(nil), r.steps...) }
 
 // exitSteps 是只在事件循环 goroutine 内写入的顺序记录；用互斥锁是为了
 // 让 console observer 在另一个 goroutine 读快照时也不会有数据竞争。
@@ -176,7 +176,7 @@ func (a *App) driveSingleWindow(next func() event.Event, fontFailure func() erro
 				FontErr:      fontErr,
 				CallbackDone: true,
 				CleanupDone:  true,
-				Steps:        steps.snapshot(),
+				steps:        steps.snapshot(),
 			}, steps
 		case gioapp.FrameEvent:
 			a.frame(&ops, e)
@@ -196,8 +196,8 @@ func (a *App) runSingleWindowEvents(next func() event.Event, fontFailure func() 
 // newThemeWithReport，与 Run 的 B6 语义同源：报告缺失或字体两链路都
 // 失败时必须返回错误，不静默降级到空白渲染。
 func resolveProcessTheme(opts ProcessOptions) (*material.Theme, error) {
-	if opts.ThemeErr != nil {
-		return nil, opts.ThemeErr
+	if opts.themeErr != nil {
+		return nil, opts.themeErr
 	}
 	if opts.Theme != nil {
 		return opts.Theme, nil
@@ -218,6 +218,6 @@ func processResultErr(err error, steps ...string) ExitResult {
 	return ExitResult{
 		Code:  1,
 		Err:   err,
-		Steps: append([]string(nil), steps...),
+		steps: append([]string(nil), steps...),
 	}
 }

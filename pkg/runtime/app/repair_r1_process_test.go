@@ -45,7 +45,7 @@ func r1RunProcess(t *testing.T, cfg Config, opts ProcessOptions) ExitResult {
 	exitStubMain(t)
 	var res ExitResult
 	opts.Observer = func(r ExitResult) { res = r }
-	opts.Exit = func(int) {}
+	opts.exit = func(int) {}
 	RunSingleWindowProcess(&countingView{text: "r1"}, cfg, opts)
 	return res
 }
@@ -73,7 +73,7 @@ func TestR1LazyProcessNeverConsultsSyncThemeProvider(t *testing.T) {
 	lz := newFailingLazy(t, material.NewTheme())
 	res := r1RunProcess(t, Config{StrictFontFailure: false}, ProcessOptions{
 		Lazy: lz,
-		Next: r1DestroyNext(),
+		next: r1DestroyNext(),
 	})
 	if *calls != 0 {
 		t.Fatalf("Lazy 路径仍读取同步默认 Provider: calls=%d", *calls)
@@ -82,8 +82,8 @@ func TestR1LazyProcessNeverConsultsSyncThemeProvider(t *testing.T) {
 		t.Fatalf("非 strict 正常关窗应 Code=0 且无错误: %+v", res)
 	}
 	for _, s := range []string{"destroy", "callback", "cleanup", "font", "result", "observer", "exit"} {
-		if !r1HasStep(res.Steps, s) {
-			t.Fatalf("未真正进入事件循环（缺 %q）: %v", s, res.Steps)
+		if !r1HasStep(res.steps, s) {
+			t.Fatalf("未真正进入事件循环（缺 %q）: %v", s, res.steps)
 		}
 	}
 	if !res.CallbackDone || !res.CleanupDone {
@@ -107,7 +107,7 @@ func TestR1LazyStrictProcessKeepsFontDiagnosticThroughRealLazy(t *testing.T) {
 		}
 		return gioapp.DestroyEvent{}
 	}
-	res := r1RunProcess(t, Config{StrictFontFailure: true}, ProcessOptions{Lazy: lz, Next: next})
+	res := r1RunProcess(t, Config{StrictFontFailure: true}, ProcessOptions{Lazy: lz, next: next})
 	if *calls != 0 {
 		t.Fatalf("strict Lazy 路径仍读取同步默认 Provider: calls=%d", *calls)
 	}
@@ -127,18 +127,18 @@ func TestR1LazyStrictProcessKeepsFontDiagnosticThroughRealLazy(t *testing.T) {
 // 不把默认错误一概忽略、不静默降级。
 func TestR1SyncDefaultProviderFailureFailsBeforeWindow(t *testing.T) {
 	calls := r1StubSyncTheme(t, fmt.Errorf("default provider: %w", contracts.ErrFontNotFound))
-	res := r1RunProcess(t, Config{}, ProcessOptions{Next: r1DestroyNext()})
+	res := r1RunProcess(t, Config{}, ProcessOptions{next: r1DestroyNext()})
 	if *calls != 1 {
 		t.Fatalf("同步路径应恰好构建一次默认主题: calls=%d", *calls)
 	}
 	if res.Code != 1 || !errors.Is(res.Err, contracts.ErrFontNotFound) {
 		t.Fatalf("默认主题失败未交出可判别错误: %+v", res)
 	}
-	if r1HasStep(res.Steps, "destroy") || r1HasStep(res.Steps, "callback") {
-		t.Fatalf("开窗前失败不应启动事件循环: %v", res.Steps)
+	if r1HasStep(res.steps, "destroy") || r1HasStep(res.steps, "callback") {
+		t.Fatalf("开窗前失败不应启动事件循环: %v", res.steps)
 	}
-	if !r1HasStep(res.Steps, "theme") {
-		t.Fatalf("开窗前失败应记录 theme 阶段: %v", res.Steps)
+	if !r1HasStep(res.steps, "theme") {
+		t.Fatalf("开窗前失败应记录 theme 阶段: %v", res.steps)
 	}
 }
 
@@ -147,12 +147,12 @@ func TestR1ExplicitThemeProcessSkipsSyncProvider(t *testing.T) {
 	calls := r1StubSyncTheme(t, errors.New("unused synchronous provider failed"))
 	res := r1RunProcess(t, Config{}, ProcessOptions{
 		Theme: material.NewTheme(),
-		Next:  r1DestroyNext(),
+		next:  r1DestroyNext(),
 	})
 	if *calls != 0 {
 		t.Fatalf("显式 Theme 路径仍读取同步默认 Provider: calls=%d", *calls)
 	}
-	if res.Code != 0 || !r1HasStep(res.Steps, "destroy") {
+	if res.Code != 0 || !r1HasStep(res.steps, "destroy") {
 		t.Fatalf("显式 Theme 正常关窗应 Code=0 且进入事件循环: %+v", res)
 	}
 }
@@ -164,8 +164,8 @@ func TestR1LazyThemeErrStillFailsBeforeWindow(t *testing.T) {
 	lz := newFailingLazy(t, material.NewTheme())
 	res := r1RunProcess(t, Config{}, ProcessOptions{
 		Lazy:     lz,
-		ThemeErr: fmt.Errorf("caller declared theme failure: %w", contracts.ErrFontNotFound),
-		Next:     r1DestroyNext(),
+		themeErr: fmt.Errorf("caller declared theme failure: %w", contracts.ErrFontNotFound),
+		next:     r1DestroyNext(),
 	})
 	if *calls != 0 {
 		t.Fatalf("ThemeErr 路径不应读取同步默认 Provider: calls=%d", *calls)
@@ -173,8 +173,8 @@ func TestR1LazyThemeErrStillFailsBeforeWindow(t *testing.T) {
 	if res.Code != 1 || !errors.Is(res.Err, contracts.ErrFontNotFound) {
 		t.Fatalf("显式 ThemeErr 未被交出: %+v", res)
 	}
-	if r1HasStep(res.Steps, "destroy") {
-		t.Fatalf("开窗前失败不应启动事件循环: %v", res.Steps)
+	if r1HasStep(res.steps, "destroy") {
+		t.Fatalf("开窗前失败不应启动事件循环: %v", res.steps)
 	}
 }
 
@@ -185,7 +185,7 @@ func TestR1LazyProcessPreservesTemporaryThemeAndAsyncLoad(t *testing.T) {
 	lz := newFailingLazy(t, material.NewTheme())
 	res := r1RunProcess(t, Config{StrictFontFailure: false}, ProcessOptions{
 		Lazy: lz,
-		Next: r1DestroyNext(),
+		next: r1DestroyNext(),
 	})
 	requireTerminal(t, lz)
 	if lz.State() != theme.LoadFailed {

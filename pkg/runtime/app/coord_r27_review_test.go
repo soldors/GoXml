@@ -22,7 +22,7 @@ func TestCoordR27LazyProcessDoesNotResolveSyncTheme(t *testing.T) {
 	}
 	lz := newFailingLazy(t, nil)
 	var result ExitResult
-	RunSingleWindowProcess(&countingView{}, Config{StrictFontFailure: false}, ProcessOptions{Lazy: lz, Next: func() event.Event { return gioapp.DestroyEvent{} }, Observer: func(r ExitResult) { result = r }, Exit: func(int) {}})
+	RunSingleWindowProcess(&countingView{}, Config{StrictFontFailure: false}, ProcessOptions{Lazy: lz, next: func() event.Event { return gioapp.DestroyEvent{} }, Observer: func(r ExitResult) { result = r }, exit: func(int) {}})
 	if syncCalls != 0 || result.Code != 0 {
 		t.Fatalf("lazy process consulted synchronous font path before construction: calls=%d result=%+v", syncCalls, result)
 	}

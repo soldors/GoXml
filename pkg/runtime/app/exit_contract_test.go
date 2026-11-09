@@ -130,8 +130,8 @@ func TestExitContractSingleWindowOrderAndOnce(t *testing.T) {
 		!errors.Is(res.Err, ErrWindowDestroy) || !errors.Is(res.Err, contracts.ErrFontNotFound) {
 		t.Fatalf("并存错误/退出码不符: %+v", res)
 	}
-	if strings.Join(res.Steps, ",") != strings.Join(want, ",") {
-		t.Fatalf("ExitResult.Steps 未记录顺序: %v", res.Steps)
+	if strings.Join(res.steps, ",") != strings.Join(want, ",") {
+		t.Fatalf("ExitResult.steps 未记录顺序: %v", res.steps)
 	}
 }
 
@@ -189,15 +189,15 @@ func TestExitContractProcessBoundaryObserverBeforeExit(t *testing.T) {
 	var observed ExitResult
 	opts := ProcessOptions{
 		Theme: material.NewTheme(),
-		Next:  func() event.Event { return gioapp.DestroyEvent{Err: destroyCause} },
-		FontFailure: func() error {
+		next:  func() event.Event { return gioapp.DestroyEvent{Err: destroyCause} },
+		fontFailure: func() error {
 			return fmt.Errorf("strict font: %w", contracts.ErrFontNotFound)
 		},
 		Observer: func(res ExitResult) {
 			order = append(order, "observer")
 			observed = res
 		},
-		Exit: func(code int) { order = append(order, fmt.Sprintf("exit:%d", code)) },
+		exit: func(code int) { order = append(order, fmt.Sprintf("exit:%d", code)) },
 	}
 	RunSingleWindowProcess(&countingView{text: "process"}, Config{}, opts)
 
@@ -205,7 +205,7 @@ func TestExitContractProcessBoundaryObserverBeforeExit(t *testing.T) {
 		t.Fatalf("observer 必须先于进程退出: %v", order)
 	}
 	wantTail := []string{"observer", "exit"}
-	got := observed.Steps
+	got := observed.steps
 	if len(got) < len(wantTail)+5 {
 		t.Fatalf("步骤不完整: %v", got)
 	}
@@ -233,13 +233,13 @@ func TestExitContractThemeFailureBeforeAnyWindow(t *testing.T) {
 	var observed ExitResult
 	exited := make(chan int, 1)
 	RunSingleWindowProcess(&countingView{text: "theme"}, Config{}, ProcessOptions{
-		ThemeErr: themeErr,
-		Next: func() event.Event {
+		themeErr: themeErr,
+		next: func() event.Event {
 			nextCalls++
 			return gioapp.DestroyEvent{}
 		},
 		Observer: func(res ExitResult) { observed = res },
-		Exit:     func(code int) { exited <- code },
+		exit:     func(code int) { exited <- code },
 	})
 	select {
 	case code := <-exited:
@@ -255,8 +255,8 @@ func TestExitContractThemeFailureBeforeAnyWindow(t *testing.T) {
 	if !errors.Is(observed.Err, contracts.ErrFontNotFound) || observed.Code != 1 {
 		t.Fatalf("主题失败未进入结果: %+v", observed)
 	}
-	if strings.Contains(strings.Join(observed.Steps, ","), "destroy") {
-		t.Fatalf("开窗前失败不应产生事件循环步骤: %v", observed.Steps)
+	if strings.Contains(strings.Join(observed.steps, ","), "destroy") {
+		t.Fatalf("开窗前失败不应产生事件循环步骤: %v", observed.steps)
 	}
 }
 

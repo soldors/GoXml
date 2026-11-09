@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	gioapp "gioui.org/app"
+	"gioui.org/widget/material"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,21 +34,9 @@ type helperOutcome struct {
 
 func buildExitHelper(t *testing.T) string {
 	t.Helper()
-	goExe, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal("需要 PATH 上的 Go:", err)
-	}
-	repo, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
-	}
-	exe := filepath.Join(t.TempDir(), "exithelper.exe")
-	cmd := exec.Command(goExe, "build", "-o", exe, "./pkg/runtime/app/testdata/exithelper")
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
-		"CGO_ENABLED=0", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("构建 exithelper 失败: %v\n%s", err, out)
 	}
 	return exe
 }
@@ -58,8 +49,8 @@ func runExitHelper(t *testing.T, exe, scenario string) (int, string, string, hel
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, marker, resultPath, scenario)
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestExitHelperProcess$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "R27_EXIT_CHILD=1", "R27_EXIT_MARKER="+marker, "R27_EXIT_RESULT="+resultPath, "R27_EXIT_SCENARIO="+scenario)
 	out, runErr := cmd.CombinedOutput()
 
 	rc := 0
@@ -171,4 +162,68 @@ func TestExitHelperNoWindowAndNoStrayStderr(t *testing.T) {
 			t.Fatalf("helper 输出含不应有的诊断 %q: %s", banned, out)
 		}
 	}
+}
+
+// TestExitHelperProcess is selected only in a self-owned child process. Its
+// package-local seams retain the real public entry and real os.Exit boundary.
+func TestExitHelperProcess(t *testing.T) {
+	if os.Getenv("R27_EXIT_CHILD") != "1" {
+		return
+	}
+	marker, resultPath, scenario := os.Getenv("R27_EXIT_MARKER"), os.Getenv("R27_EXIT_RESULT"), os.Getenv("R27_EXIT_SCENARIO")
+	appendMarker := func(line string) {
+		f, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			panic(err)
+		}
+		_, err = f.WriteString(line + "\n")
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			panic(err)
+		}
+	}
+	errText := func(err error) string {
+		if err == nil {
+			return ""
+		}
+		return err.Error()
+	}
+	view, err := WithOnDestroy(&countingView{text: "helper"}, func() { appendMarker("callback") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroy := gioapp.DestroyEvent{}
+	if scenario == "destroy" {
+		destroy.Err = errors.New("helper native premature close")
+	}
+	next, _ := exitControlled(synthFrameEvent(&frameRecorder{}), destroy)
+	opts := ProcessOptions{Theme: material.NewTheme(), next: next,
+		Observer: func(res ExitResult) {
+			appendMarker("cleanup:" + strings.Join(res.steps, ","))
+			b, err := json.Marshal(helperOutcome{Code: res.Code, Err: errText(res.Err), DestroyErr: errText(res.DestroyErr), FontErr: errText(res.FontErr), Steps: res.steps, Marker: "cleanup-before-exit"})
+			if err != nil {
+				panic(err)
+			}
+			if err := os.WriteFile(resultPath, b, 0600); err != nil {
+				panic(err)
+			}
+		},
+	}
+	switch scenario {
+	case "normal", "destroy":
+	case "theme":
+		opts.themeErr = errors.New("helper theme failure: font family not found")
+		opts.next = nil
+	case "strict":
+		opts.fontFailure = func() error { return fmt.Errorf("helper strict font failure: goxml: font family not found") }
+	default:
+		t.Fatalf("unknown child scenario %q", scenario)
+	}
+	// Main intentionally blocks; only the public entry's real os.Exit can end
+	// this child. No Window.Event or platform Main is called.
+	mainFunc = func() { select {} }
+	RunSingleWindowProcess(view, Config{Title: "r27-exit-child"}, opts)
+	t.Fatal("unreachable: process entry returned without exiting child")
 }
