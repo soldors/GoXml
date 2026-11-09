@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	rst "github.com/goxml/goxml/pkg/runtime/hydration"
@@ -40,9 +41,11 @@ type Protocol struct {
 	// Now 注入时钟（nil 用 time.Now）。
 	Now func() time.Time
 
-	// captureSem 限制**并发在途捕获**数量（F-A1：不制造无限遗留 goroutine）。惰性初始化。
+	// captureSem 限制**并发在途捕获**数量（F-A1：不制造无限遗留 goroutine）。经 sync.Once 安全惰性初始化
+	// （F-A9：并发首次调用无 DATA RACE、不会分裂成多个 channel）。
 	// 一个不合作的回调即使超时后仍占用一个槽位，直到其返回；槽位耗尽时新请求 ErrBusy（有界）。
 	captureSem chan struct{}
+	semOnce    sync.Once
 }
 
 // ErrBusy 表示在途捕获已达上限（有界拒绝，不排队无限增长）。
@@ -52,9 +55,9 @@ var ErrBusy = errors.New("hydration: 在途捕获已达上限（busy）")
 const maxInflightCaptures = 4
 
 func (p *Protocol) sem() chan struct{} {
-	if p.captureSem == nil {
+	p.semOnce.Do(func() {
 		p.captureSem = make(chan struct{}, maxInflightCaptures)
-	}
+	})
 	return p.captureSem
 }
 
@@ -115,6 +118,10 @@ func (p *Protocol) Snapshot(ctx context.Context, capture CaptureFunc, gen int) (
 		if r.err != nil {
 			return nil, fmt.Errorf("hydration: 捕获失败（保旧不切换）: %w", r.err)
 		}
+		// F-A1-R1：在接收捕获结果处复查取消/超时（提交线性化点之一）；此前取消则不进入提交。
+		if cerr := cctx.Err(); cerr != nil {
+			return nil, fmt.Errorf("hydration: 捕获后提交前已取消（保旧）: %w", cerr)
+		}
 		payload = r.payload
 	case <-cctx.Done():
 		// F-A1：**不 join 不合作回调**——有界返回、不提交；回调迟到的结果被丢弃（ch 缓冲接收后无人用）。
@@ -129,6 +136,12 @@ func (p *Protocol) Snapshot(ctx context.Context, capture CaptureFunc, gen int) (
 	raw, err := env.Encode()
 	if err != nil {
 		return nil, err
+	}
+	// F-A1-R1：提交线性化点——真正写盘前**最后一次**复查取消/超时（Envelope 构造可能耗时，期间可取消）。
+	// 取消发生在提交线性化点前 => 返回对应错误、旧状态字节与 mtime 不变（不调用 WriteAtomic）。
+	// 提交成功后才到来的取消不要求回滚。
+	if cerr := cctx.Err(); cerr != nil {
+		return nil, fmt.Errorf("hydration: 提交前已取消（保旧）: %w", cerr)
 	}
 	if err := p.Store.WriteAtomic(raw); err != nil {
 		return nil, err

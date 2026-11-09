@@ -208,10 +208,13 @@ func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
 			w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, false)
 			return true
 		}
-		// R27-A（opt-in）：新代成功、停旧之前，请求**实际在服务旧代**(w.lastPublished)快照并原子提交。
-		// F-A5：oldGen = w.lastPublished（0=冷启动合法跳过）。失败/超时/取消 => 不切换（保旧）。
+		// R27-A（opt-in）：新代成功、停旧之前，请求**实际在服务的旧代**快照并原子提交。
+		// F-A5-R1：oldGen 取真实在服务的进程身份（经 ServiceObserver 观察 Current()/Running()），**不是**
+		// lastPublished（发布历史）。无在服务进程（冷启动/gen2 启动失败后服务已空）=> 不向死进程索取快照，
+		// 按已有有效快照/冷启动策略让新代恢复服务。失败/超时/取消 => 不切换（保旧）。
 		if w.cfg.Hydration != nil {
-			if herr := w.cfg.Hydration.BeforeSwap(ctx, gen, w.lastPublished); herr != nil {
+			oldGen := w.servingGeneration()
+			if herr := w.cfg.Hydration.BeforeSwap(ctx, gen, oldGen); herr != nil {
 				res.OK = false
 				res.Stage = "hydration"
 				res.Detail = herr.Error()
@@ -219,21 +222,36 @@ func (w *Watch) runGeneration(ctx context.Context, gen int) bool {
 				w.report(gen, res, false, requeue)
 				return true
 			}
-			// F-A6：捕获耗时可让用户输入变化；发布前**再复查**取消与用户输入，若变化则本代 stale 不切换、重排。
+			// F-A6-R1：捕获耗时可让用户输入变化；发布前**再复查**取消与用户输入。Scan/Classify/Notify 任一
+			// 失败都必须 fail-closed：停止本代、报告真实阶段/原因、不 Swap、不谎报 published、保持旧服务。
 			if err := buildCtx.Err(); err != nil {
 				_, requeue := w.db.BuildFinished(gen, false)
 				w.report(gen, GenerationResult{OK: false, Stage: "canceled", Detail: err.Error(), Gen: gen}, false, requeue)
 				return true
 			}
-			if postHyd, herr := Scan(w.cfg); herr == nil {
-				if ch := Diff(post, postHyd); len(ch) > 0 {
-					if cs, cerr := ClassifyChanges(w.cfg.ProjectDir, postHyd, ch); cerr == nil && len(cs.Trigger) > 0 {
-						atMS := int(time.Since(w.runStart).Milliseconds())
-						_, _ = w.NotifyChange(ctx, atMS, cs.Trigger)
+			postHyd, serr := Scan(w.cfg)
+			if serr != nil {
+				_, requeue := w.db.BuildFinished(gen, false)
+				w.report(gen, GenerationResult{OK: false, Stage: "rescan", Detail: serr.Error(), Gen: gen}, false, requeue)
+				return true
+			}
+			if ch := Diff(post, postHyd); len(ch) > 0 {
+				cs, cerr := ClassifyChanges(w.cfg.ProjectDir, postHyd, ch)
+				if cerr != nil {
+					_, requeue := w.db.BuildFinished(gen, false)
+					w.report(gen, GenerationResult{OK: false, Stage: "reclassify", Detail: cerr.Error(), Gen: gen}, false, requeue)
+					return true
+				}
+				if len(cs.Trigger) > 0 {
+					atMS := int(time.Since(w.runStart).Milliseconds())
+					if _, nerr := w.NotifyChange(ctx, atMS, cs.Trigger); nerr != nil {
 						_, requeue := w.db.BuildFinished(gen, false)
-						w.report(gen, GenerationResult{OK: false, Stage: "stale", Detail: "user inputs changed during capture", Gen: gen}, false, requeue)
+						w.report(gen, GenerationResult{OK: false, Stage: "requeue", Detail: nerr.Error(), Gen: gen}, false, requeue)
 						return true
 					}
+					_, requeue := w.db.BuildFinished(gen, false)
+					w.report(gen, GenerationResult{OK: false, Stage: "stale", Detail: "user inputs changed during capture", Gen: gen}, false, requeue)
+					return true
 				}
 			}
 		}
