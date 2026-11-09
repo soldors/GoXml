@@ -51,6 +51,8 @@ type ProcessManager struct {
 	Stdout, Stderr io.Writer
 	StopTimeout    time.Duration
 	Spawn          func(gen int, bin string, args []string) (*exec.Cmd, error)
+	// EnvFor 可选：为新代 gen 追加环境变量（R27-A hydration 恢复注入状态文件/会话）。nil=不追加。
+	EnvFor func(gen int) []string
 
 	mu      sync.Mutex
 	current *Child
@@ -99,6 +101,9 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 	} else {
 		cmd = exec.Command(bin, m.Args...)
 		cmd.Dir = m.WorkDir
+		if m.EnvFor != nil {
+			cmd.Env = append(os.Environ(), m.EnvFor(gen)...)
+		}
 		cmd.Stdout = m.Stdout
 		if cmd.Stdout == nil {
 			cmd.Stdout = os.Stderr

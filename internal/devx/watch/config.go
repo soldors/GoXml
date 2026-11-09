@@ -46,6 +46,11 @@ type Config struct {
 
 	// ExcludeDirs 是额外排除的目录名（相对或绝对路径前缀），用于避免扫描自有构建输出/缓存。
 	ExcludeDirs []string
+
+	// Hydration 是**可选 opt-in** 的跨进程状态暂存/恢复钩子（R27-A 候选）。nil 时 Watch 行为与 R26
+	// 完全一致（无额外 I/O、无额外线程、顺序/输出/失败保旧/进程清理不变）。非 nil 时在“新代停旧前”
+	// 请求旧代快照并原子提交；快照失败/超时/取消 => 保持旧代不切换（保旧）。
+	Hydration *HydrationHook
 }
 
 // 默认定量（写入候选决策表，作为本轮**选定值**而非隐藏 flag）。
