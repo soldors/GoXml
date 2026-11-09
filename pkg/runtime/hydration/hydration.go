@@ -1,4 +1,4 @@
-// Package hydration 定义跨进程状态暂存/恢复的**显式 DTO 协议**（R27-A，TASK-DEVX-001-3 候选）。
+// Package hydration 定义跨进程状态暂存/恢复的**显式 DTO 协议**（R27 Windows 基础范围）。
 //
 // 边界（务必与本包注释一起理解）：
 //   - **显式 opt-in**：调用方用自己的 DTO 类型 + codec（本包提供基于标准库 encoding/json 的通用
@@ -8,7 +8,7 @@
 //     停止前所有后续编辑都已保存，也**不宣称**无损持续同步或零停机。
 //   - 本包只依赖标准库；开发工具层（internal/devx/hydration）消费本包，反向禁止（Runtime 不 import devx）。
 //
-// 该包是**候选**：API 与默认策略未获批，由协调者/负责人裁决。
+// 基础范围已获批并通过限定验收；通用控制通道、CLI 自动恢复与整卡仍未闭环。
 package hydration
 
 import (

@@ -1,4 +1,4 @@
-// Package hydration（devx 层）实现跨进程状态的**原子文件存储**与**会话协议编排**（R27-A 候选）。
+// Package hydration（devx 层）实现跨进程状态的**原子文件存储**与**会话协议编排**（R27 获批基础范围）。
 //
 // 依赖方向：本包**消费** pkg/runtime/hydration 的 DTO 协议（Runtime 层不 import 本包；禁止反向）。
 // 只依赖标准库 + runtime 层。

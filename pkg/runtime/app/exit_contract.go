@@ -12,7 +12,7 @@ import (
 )
 
 // ============================================================================
-// R27-C：退出契约（BUG-028 的可运行候选）
+// R27-C：退出契约（BUG-028 的获批单窗基础路径）
 //
 // 三层分离，不许互相冒充：
 //   1. 库函数返回 —— Run / RunWindow* 的 error（本文件让它交出 DestroyEvent.Err）；
@@ -64,7 +64,7 @@ func windowExitError(cause error) error {
 	return &WindowExitError{Cause: cause}
 }
 
-// combineExitErrors 是并存错误的合并策略（候选，待裁决）：
+// combineExitErrors 是获批的并存错误合并策略：
 //
 //   - 只有一条错误时原样返回，保留 errors.Is 判别；
 //   - 两条并存时用 errors.Join，窗口原因在前、字体诊断在后，

@@ -1,9 +1,9 @@
 package widgets
 
-// DataGrid（TASK-WIDGET-001-3 候选）：只读、固定行高、垂直虚拟滚动的
+// DataGrid（TASK-WIDGET-001-3 基础范围）：只读、固定行高、垂直虚拟滚动的
 // 表格组件。不是 GXML 布局 Grid，不新增 GXML 标签或 Compiler 路径。
 //
-// # 契约要点（候选，见交付 scope-matrix.md，未批准不入规范）
+// # 契约要点（Windows 基础范围已批准，限制见 README.datagrid.md）
 //
 //   - 数据由调用方一次性提供（SetRows）：显示字符串必须由调用方预生成，
 //     组件不在 Layout 内做任何字符串化（性能预算 §3.4 AP-3）；

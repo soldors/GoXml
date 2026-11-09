@@ -74,7 +74,7 @@ func RunSingleWindowProcess(view View, cfg Config, opts ProcessOptions) {
 
 	next := opts.next
 	if next == nil {
-		// 生产路径：真实 Gio 窗口事件泵。本轮只构建、不执行。
+		// 生产路径：真实 Gio 窗口事件泵，已由原生限定验收覆盖。
 		next = a.w.Event
 	}
 	fontFailure := opts.fontFailure
