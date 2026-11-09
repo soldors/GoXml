@@ -60,10 +60,21 @@ func c1ControlledEvents(evts ...event.Event) (func() event.Event, chan event.Eve
 //	Windows 真实 Main 下不可达，「关闭后返回 error」不能由现有签名兑现。
 func TestC1RunStructureLoopEndsWhileMainStaysBlocked(t *testing.T) {
 	orig := mainFunc
-	t.Cleanup(func() { mainFunc = orig })
 	never := make(chan struct{})
 	mainFunc = func() { <-never } // 模拟 osMain 的永久阻塞，不接管真实主线程
-	t.Cleanup(func() { close(never) })
+	// 捕获注入值到局部变量：后台 goroutine 只读这个局部函数变量，
+	// 不再读全局 mainFunc，避免 cleanup 写回时产生数据竞争（C3 race 修复）。
+	blockingMain := mainFunc
+	mainDone := make(chan struct{})
+	t.Cleanup(func() {
+		close(never)
+		select {
+		case <-mainDone:
+		case <-time.After(5 * time.Second):
+			t.Error("注入的 Main goroutine 未在 5 秒内收口")
+		}
+		mainFunc = orig
+	})
 
 	trace := &c1Trace{}
 	wrapped, err := WithOnDestroy(&countingView{text: "c1"}, func() { trace.add("callback") })
@@ -94,7 +105,8 @@ func TestC1RunStructureLoopEndsWhileMainStaysBlocked(t *testing.T) {
 	// 与 a.Run() 同构：mainFunc 在调用方（主）线程上阻塞。
 	mainReturned := make(chan struct{})
 	go func() {
-		mainFunc()
+		defer close(mainDone)
+		blockingMain()
 		close(mainReturned)
 	}()
 
