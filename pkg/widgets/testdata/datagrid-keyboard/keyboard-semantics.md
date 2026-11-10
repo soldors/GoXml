@@ -1,6 +1,7 @@
-# DataGrid 键盘导航候选语义表（R28-B，未批准不入规范）
+# DataGrid 键盘导航语义表（R28-B，已批准基础语义）
 
-本表随 pkg/widgets/datagrid_keyboard.go 冻结；为验收与裁决的单一口径。
+本表随 `pkg/widgets/datagrid_keyboard.go` 冻结；为实现、验收与 ADR-0017 的单一口径。
+基础语义已批准，但原生键盘、IME、DPI 与发布级窗口验收仍未完成；本表不批准其余候选范围。
 
 ## API
 
