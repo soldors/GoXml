@@ -44,6 +44,7 @@ import (
 	"gioui.org/f32"
 	"gioui.org/font"
 	"gioui.org/io/event"
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -88,6 +89,10 @@ type DataGridUpdateReport struct {
 	Duplicates []string
 	// SelectionCleared 表示因选中行不在新数据中而清除了选择。
 	SelectionCleared bool
+	// KeyboardIndexBuilt/KeyboardIndexRows：键盘导航开启时本阶段在同一次
+	// O(N) 遍历中重建 RowID→索引的披露（候选；关闭时恒 false/0）。
+	KeyboardIndexBuilt bool
+	KeyboardIndexRows  int
 	// Elapsed 是校验阶段耗时（诊断用）。
 	Elapsed time.Duration
 }
@@ -161,6 +166,12 @@ type DataGrid struct {
 	// 帧诊断（底层数组复用）
 	colWidthsBuf []int
 	stats        DataGridFrameStats
+
+	// 键盘单选/纵向导航（R28-B 候选，默认关闭；实现见 datagrid_keyboard.go）
+	kbEnabled  bool
+	kbPageRows int
+	kbFocused  bool
+	idToIdx    map[string]int
 }
 
 // NewDataGrid 以固定行高构造表格（表头高度默认等于行高）。
@@ -196,6 +207,10 @@ func (g *DataGrid) SetRows(rows []DataGridRow) DataGridUpdateReport {
 	start := time.Now()
 	rep := DataGridUpdateReport{Rows: len(rows)}
 	seen := make(map[string]struct{}, len(rows))
+	var kbIdx map[string]int // 仅启用键盘导航时构建（同一次 O(N) 遍历）
+	if g.kbEnabled {
+		kbIdx = make(map[string]int, len(rows))
+	}
 	dup := 0
 	for i := range rows {
 		rep.ScannedIDs++
@@ -219,6 +234,9 @@ func (g *DataGrid) SetRows(rows []DataGridRow) DataGridUpdateReport {
 			continue
 		}
 		seen[id] = struct{}{}
+		if kbIdx != nil {
+			kbIdx[id] = i
+		}
 	}
 	rep.Elapsed = time.Since(start)
 	if dup > 0 {
@@ -227,6 +245,9 @@ func (g *DataGrid) SetRows(rows []DataGridRow) DataGridUpdateReport {
 	}
 	rep.OK = true
 	g.rows = rows
+	g.idToIdx = kbIdx
+	rep.KeyboardIndexBuilt = kbIdx != nil
+	rep.KeyboardIndexRows = len(kbIdx)
 	g.clearTextCache()
 	// 选中行不在新数据中：显式清除（不静默误选）。
 	if g.selOK {
@@ -303,6 +324,9 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 
 	// 1. 事件区与事件消费（先消费后绘制，Gio 惯用法）。
 	g.handleEvents(gtx, viewport, rowH, headerH, bodyH, maxOff, colWidths)
+	// 1b. 键盘导航（候选，默认关闭=直接返回）：在本帧可见窗口计算之前
+	// 消费按键，使键盘引起的滚动当帧生效。
+	g.handleKeyboard(gtx, viewport, rowH, headerH, bodyH, maxOff)
 
 	// 2. 访问窗口：可见行 + 有界 overscan；绘制窗口：仅可见行。
 	// bodyH<=0（无可见体：视口被表头占满/小于表头/零视口）时窗口必须为
@@ -511,6 +535,11 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 				g.pressed = true
 				g.pid = e.PointerID
 				g.pressRowID, g.pressCol, g.pressValid = g.cellAt(e.Position, viewport, rowH, headerH, colWidths)
+				if g.kbEnabled {
+					// 点击聚焦（候选）：主键按压在网格内任意位置（含表头/
+					// 空白带）都请求键盘焦点——使「初始无选择」可达。
+					gtx.Execute(key.FocusCmd{Tag: &g.tag})
+				}
 			}
 		case pointer.Release:
 			if g.pressed && g.pid == e.PointerID {

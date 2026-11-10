@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"gioui.org/font"
+	"gioui.org/io/event"
 	"gioui.org/io/input"
+	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/paint"
@@ -33,7 +35,8 @@ type dgBenchHarness struct {
 	overlay func(gtx layout.Context)
 }
 
-func (hb *dgBenchHarness) frame() {
+func (hb *dgBenchHarness) frame(events ...event.Event) {
+	hb.r.Queue(events...)
 	hb.ops.Reset()
 	hb.gtx.Ops = &hb.ops
 	if hb.overlay != nil {
@@ -129,7 +132,39 @@ func BenchmarkDataGrid(b *testing.B) {
 				b.Fatalf("无可见体规模守卫：acc=%d drawn=%d callbacks=%d", len(st.Accessed), len(st.Drawn), callbacks)
 			}
 		})
+		b.Run(dgScaleName(rows)+"/kb-enabled-idle", func(b *testing.B) {
+			// 键盘候选开启后的空闲稳定帧（6 个 Focus 限定过滤器轮询 +
+			// 焦点状态读取）：仍必须 0 allocs/op。
+			g, hb := dgBenchGrid(b, rows)
+			g.EnableKeyboardNav(DataGridKeyboardConfig{})
+			for i := 0; i < 50; i++ {
+				hb.frame()
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				hb.ops.Reset()
+				g.Layout(hb.gtx, hb.th)
+			}
+			b.StopTimer()
+			st := g.LastFrame()
+			b.Logf("accessed rows/frame=%d drawn=%d", len(st.Accessed), len(st.Drawn))
+		})
+		b.Run(dgScaleName(rows)+"/kb-key-frame", func(b *testing.B) {
+			// 按键发生帧（含 Router.Frame）：每迭代一条 Down Press。
+			g, hb := dgBenchGrid(b, rows)
+			g.EnableKeyboardNav(DataGridKeyboardConfig{})
+			for i := 0; i < 50; i++ {
+				hb.frame()
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				hb.frame(key.Event{Name: key.NameDownArrow, State: key.Press})
+			}
+		})
 		b.Run(dgScaleName(rows)+"/set-rows-update", func(b *testing.B) {
+			// 显式更新成本（键盘关闭：仅校验遍历）。
 			g, _ := dgBenchGrid(b, rows)
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -139,6 +174,22 @@ func BenchmarkDataGrid(b *testing.B) {
 				b.StartTimer()
 				rep := g.SetRows(fresh)
 				if !rep.OK {
+					b.Fatal("更新失败")
+				}
+			}
+		})
+		b.Run(dgScaleName(rows)+"/set-rows-update-with-index", func(b *testing.B) {
+			// 显式更新成本（键盘开启：同一次遍历内重建 RowID→索引）。
+			g, _ := dgBenchGrid(b, rows)
+			g.EnableKeyboardNav(DataGridKeyboardConfig{})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				fresh := dgTestRows(rows)
+				b.StartTimer()
+				rep := g.SetRows(fresh)
+				if !rep.OK || !rep.KeyboardIndexBuilt {
 					b.Fatal("更新失败")
 				}
 			}
@@ -181,8 +232,32 @@ func TestDGStableLayoutZeroAllocs(t *testing.T) {
 	if allocs := res.AllocsPerOp(); allocs != 0 {
 		t.Fatalf("稳定帧 Layout 热路径必须 0 allocs/op，得到 %d（耗时 %v/%d 次迭代）", allocs, res.T, res.N)
 	}
+	if bytes := res.AllocedBytesPerOp(); bytes != 0 {
+		// AllocsPerOp 整数除法会掩盖隔帧分配；以字节口径复核。
+		t.Fatalf("稳定帧 Layout 热路径必须 0 B/op，得到 %d（存在隔帧隐性分配）", bytes)
+	}
 	if ns := res.T / time.Duration(res.N); ns > 1_000_000 {
 		t.Fatalf("万行可见布局应 ≤1ms（性能预算 §4），得到 %v/op", ns)
+	}
+
+	// 键盘候选开启后的空闲稳定帧：同样 0 allocs/op（过滤器轮询不分配）。
+	g.EnableKeyboardNav(DataGridKeyboardConfig{})
+	for i := 0; i < 100; i++ {
+		frame()
+	}
+	res2 := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			ops.Reset()
+			gtx.Ops = &ops
+			g.Layout(gtx, th)
+		}
+	})
+	if allocs := res2.AllocsPerOp(); allocs != 0 {
+		t.Fatalf("键盘开启空闲帧必须 0 allocs/op，得到 %d", allocs)
+	}
+	if bytes := res2.AllocedBytesPerOp(); bytes != 0 {
+		t.Fatalf("键盘开启空闲帧必须 0 B/op，得到 %d（存在隔帧隐性分配）", bytes)
 	}
 }
 
