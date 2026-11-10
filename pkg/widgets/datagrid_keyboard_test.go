@@ -532,3 +532,51 @@ func TestKBIndexReport(t *testing.T) {
 		t.Fatalf("索引重建后 End 身份不符：%q", sel)
 	}
 }
+
+// TestKBPageClampEdges 补全「首尾钳制」的边界矩阵（R28-B 收口：明确遗漏
+// 的行为守卫，非扩功能）：PageUp 初始无选择、翻页超表长、PageRows 大于
+// 数据行数——期望均为手算的钳制结果。
+func TestKBPageClampEdges(t *testing.T) {
+	// 1) 初始无选择时 PageUp：firstVis(0) - page(7) 钳到 0 → 选可见首行。
+	g, h := kbSetupFocused(t, 100)
+	kbKey(h, key.NamePageUp)
+	if sel, _ := g.SelectedRowID(); sel != dgRowID(0) {
+		t.Fatalf("无选择 PageUp 应钳到可见首行：%q", sel)
+	}
+
+	// 2) PageRows 大于数据行数：PageDown 一次即钳到末行（End 等价）。
+	g2 := NewDataGrid(unit.Dp(dgMatrixRowH))
+	if err := g2.SetColumns(dgTestCols()); err != nil {
+		t.Fatal(err)
+	}
+	if rep := g2.SetRows(dgTestRows(5)); !rep.OK {
+		t.Fatal("初始化失败")
+	}
+	g2.EnableKeyboardNav(DataGridKeyboardConfig{PageRows: 50})
+	h2 := newOverlayHarness(t, 300, 200)
+	h2.overlay = func(gtx layout.Context) { g2.Layout(gtx, h2.th) }
+	h2.frame()
+	kbFocus(h2)
+	kbKey(h2, key.NamePageDown)
+	if sel, _ := g2.SelectedRowID(); sel != dgRowID(4) {
+		t.Fatalf("PageRows 超表长应钳到末行：%q", sel)
+	}
+	// 末行 PageDown 原地钳制（不重滚）。
+	off := g2.ScrollOffset()
+	kbKey(h2, key.NamePageDown)
+	if sel, _ := g2.SelectedRowID(); sel != dgRowID(4) {
+		t.Fatalf("末行 PageDown 应原地钳制：%q", sel)
+	}
+	if g2.ScrollOffset() != off {
+		t.Fatalf("钳制不得重滚：%d → %d", off, g2.ScrollOffset())
+	}
+
+	// 3) PageRows + PageUp 组合：翻回并钳到首行。
+	kbKey(h2, key.NamePageUp)
+	if sel, _ := g2.SelectedRowID(); sel != dgRowID(0) {
+		t.Fatalf("PageUp 应钳到首行（50>5 行数据）：%q", sel)
+	}
+	if g2.ScrollOffset() != 0 {
+		t.Fatalf("首行应滚到顶：%d", g2.ScrollOffset())
+	}
+}
