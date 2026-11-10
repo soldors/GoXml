@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-10 R28 已批准开发范围
+
+- **Hydration**：批准开发态 Windows 首发范围，使用 `127.0.0.1:0` 回环 TCP、显式 DTO、显式 opt-in/默认关闭，以及 `.goxml/hydration/<session>.state` 推荐状态目录。大小、超时和并发限制仍是可配置的开发态默认；代次不符必须 `ErrMismatch` 且不返回 payload。
+- **DataGrid**：批准 C-DG10..16 键盘导航语义，保持默认关闭；原生键盘、IME、DPI 与发布级验收仍未完成。
+- **Lifecycle**：批准 opt-in Owner/Router 页面生命周期合同；`CancelOnly` 只取消 owner 根，页面 Context 由 Router `Shutdown`/`Finalize` 负责，Finalize 不替宿主自动 Shutdown。
+- 以上范围已在组合分支完成无窗口回归、race、构建、vet、docgate 与 diagdoc；原生窗口、跨平台运行和发布级门禁仍需单独验收，不能视为本次已发布。
+
 ## 2026-11-09 R27 Windows 基础范围
 
 新增显式 DTO Hydration/Watch opt-in、只读虚拟 DataGrid、显式单窗进程入口。基础范围批准、独立技术复核、组合回归/race与本机原生限定验收已完成。公开 ProcessOptions 仅生产字段，内部注入/步骤不形成公共合同；Theme/Lazy 歧义开窗前拒绝。原生 DataGrid 滚动/选择/缩放/标题栏关闭通过；普通及严格失败自动场景在真实帧后仅向自有窗口请求正常关闭，分别退出0/1，无 DATA RACE和进程残留。旧 App.Run/多窗口/跨平台边界不自动解决，BUG-028 仍按限定结果登记，详见 [范围与组合验收](docs/05-开发/2026-11-09-R27-基础范围与组合验收.md)。
