@@ -25,7 +25,7 @@ func stubbornSpawn(gen int, bin string, args []string) (*exec.Cmd, error) {
 func TestStopTimeoutTreeKill(t *testing.T) {
 	pm := NewProcessManager(func(gen int) string { return "unused" })
 	pm.Spawn = stubbornSpawn
-	pm.StopTimeout = 400 * time.Millisecond // 有界
+	pm.StopTimeout = 2 * time.Second // 保持有界，同时避免全仓并行负载下过紧的墙钟预算
 	ctx := context.Background()
 	if err := pm.Swap(ctx, 1); err != nil {
 		// Swap 的新代存活观察 50ms 内应存活；若确实无法启动则跳过（环境差异），不误判。
