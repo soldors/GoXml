@@ -28,3 +28,11 @@
 现行范围和复跑命令见 [R26 接线与验收](../../05-开发/2026-11-08-R26-Windows接线与验收.md)。
 
 已修正原表中的历史目录，`cmd/goxml/watch` 不是当前实现目录。现行核心与适配器验收为 `go test -v ./internal/devx/watch ./internal/devx/watchadapter`，公共入口为 `go test -v -run ^TestDevWatch ./internal/cli`。采用成功构建后先停旧再起新；未实现优雅状态保存/恢复，不关闭 -3。
+
+## 2026-11-10 R28 开发态 Windows 首发批准范围
+
+负责人已批准 Hydration 的开发态 Windows 首发范围：回环 TCP `127.0.0.1:0`、显式 DTO、`.goxml/hydration/<session>.state` 推荐目录，以及显式 opt-in、默认关闭。状态目录、payload/Envelope 大小、超时和并发限制是可配置的开发态推荐默认，不宣称为跨平台或发布级固定合同。
+
+generation 必须来自同一 Watch 编号域：`ServiceObserver.ServingGeneration()`、请求 `ServingGen`、端点响应 `Gen` 与客户端旧代校验保持一致；任一错配返回 `ErrMismatch` 且不暴露 payload。token 只用于会话绑定、请求关联和重放拒绝，不承担认证或授权。
+
+**负责人已批准开发态 Windows 首发范围，原生/跨平台发布等级待验收。** 本补记不关闭整卡：CLI 自动恢复参数、通用应用控制通道、最终公开 API、原生窗口/IME、多窗口协调、跨平台运行和正式发布门禁仍未完成。正式决策矩阵见 [ADR-0016-Hydration开发态跨进程状态恢复范围](../../03-架构/adr/ADR-0016-Hydration开发态跨进程状态恢复范围.md)。
