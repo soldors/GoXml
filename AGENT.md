@@ -1,6 +1,6 @@
 # AGENT.md: Goxml Multi-AI Engineering Directives
 
-> 2026-11-09 当前增量：R26 Windows Watch/静态 Preview/ContextMenu/Modal 已发布；R27 显式 DTO Hydration、DataGrid 与显式单窗入口基础范围已批准，API 收敛、组合/race与本机原生限定验收已完成，准确发布身份以 Git 与协调者凭据为准。当前范围和未证边界见 `docs/05-开发/2026-11-09-R27-基础范围与组合验收.md`。下文带旧日期的目录拓扑按历史理解；架构红线继续适用。
+> 2026-11-09 当前增量：R26 Windows Watch/静态 Preview/ContextMenu/Modal 已发布；R27 显式 DTO Hydration、DataGrid 与显式单窗入口基础范围已批准，API 收敛、组合/race 与本机原生限定验收已完成；R28-C Lifecycle Owner/Router opt-in 页面生命周期合同已批准并完成组合验证，默认行为保持关闭。成功页面提交后的取消、旧页 OnUnmount 一次性保证与首个业务 Layout 前 Mount 已固定；原生 DestroyEvent/native race 尚未验收，发布级状态仍待原生接受。当前范围和未证边界以 Git、任务卡和协调者凭据为准；下文带旧日期的目录拓扑按历史理解；架构红线继续适用。
 
 > 本文件是所有参与 **Goxml** 框架开发、重构、测试与代码审查的 AI Agent（如 Claude Code、Cursor、Windsurf、Aider 等）的执行规则与协同约束。它规定工作流、红线和交接要求；产品语义以正式契约和已批准 ADR 为准。若本文件与正式契约或已批准 ADR 冲突，必须登记冲突并交项目所有者裁决，执行者不得自行取舍。
 
@@ -87,9 +87,9 @@ goxml/
 │   └── diagdoc/           # 诊断码目录一致性门禁（AST 发射校验）
 ├── pkg/runtime/           # [部分已有] [运行时底座] 生成代码所依赖的轻量级运行时库（app/、router/、theme/）
 │   ├── app/               # [已有] 窗口创建与 Gio 主循环入口（最小实现）
-│   ├── router/            # [已有] 路由基础与关闭；MacroOp 转场/OSWindow 扩展仍规划
+│   ├── router/            # [已有] 路由基础与关闭；R28-C opt-in LifecyclePage/Owner 接线已批准；MacroOp 转场/OSWindow 扩展仍规划
 │   ├── theme/             # [已有] Gio Theme 字体策略、Provider、Lazy 与显式选面；强类型 ThemeRef 接线仍待批准
-│   ├── lifecycle/         # [规划] Context 驱动的 OnMount/OnUnmount 生命周期管理
+│   ├── lifecycle/         # [已有·opt-in] Context 驱动的 OnMount/OnUnmount Owner 生命周期核心；默认关闭，原生 DestroyEvent/race 验收待完成
 │   └── hydration/         # [规划] Live Reload 状态序列化暂存与恢复 (.goxml_state.json)
 ├── pkg/platform/          # [部分已有] font/ 已有；托盘、菜单、异步弹窗、剪贴板仍规划
 ├── pkg/widgets/           # [候选已有] ContextMenu/Modal；原生/性能门禁未齐，DataGrid 仍规划
@@ -259,7 +259,7 @@ AI 必须使用以下标准命令验证自身改动，严禁擅自修改验证�
 11. **编译编排契约**：`docs/03-架构/编译编排契约.md`（阶段中止点、失败门禁、产物与提交分离；实现见 `internal/compiler/pipeline`）
 12. **运行时入口契约**：`docs/03-架构/运行时入口契约.md`（窗口创建、主循环与退出；实现见 `pkg/runtime/app`）
 13. **测试与质量门禁**：`docs/06-测试/测试与质量门禁规范.md`（测试分层、覆盖率和发布门禁依据）
-14. **架构决议留痕**：`docs/03-架构/adr/` (ADR-0001 ~ ADR-0008)
+14. **架构决议留痕**：`docs/03-架构/adr/` (ADR-0001 ~ ADR-0018；Lifecycle Owner/Router 合同见 ADR-0018)
 15. **当前开发进度**：`docs/04-WBS/2026-11-06-R25-项目状态总览.md`（R25 批准范围已发布）；任务全集与依赖见 `docs/04-WBS/WBS总表.md`
 16. **Codegen任务与当前断点**：`docs/04-WBS/任务卡/TASK-CODEGEN-001.md`；布局、绑定、事件、`<For>`、`<If>` 与 Grid 已有实现，不再以“仅 Page＋静态 Text”作为现状。任务验收、性能证据和未批准候选仍须分别查卡片及最新开发日志，不能由实现存在推定全部完成。
 17. **断点交接记录**：`docs/05-开发/交接包/`（现有 Parser/Expander/Analyzer/Codegen/Orch 五份，均标注「事后补齐」）。
