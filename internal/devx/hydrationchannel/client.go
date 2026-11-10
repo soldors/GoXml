@@ -130,6 +130,11 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 			return nil, ErrCaptureFail
 		}
 	}
+	// 代次关联守卫（Client）：成功响应的 Gen 必须等于请求的 oldGen；不等即 ErrMismatch，
+	// 不接受 payload（双重防线：即使端点被绕过，客户端也拒绝错代字节）。
+	if resp.Gen != oldGen {
+		return nil, ErrMismatch
+	}
 	if len(resp.Payload) > MaxResponseBytes {
 		return nil, ErrTooLarge
 	}

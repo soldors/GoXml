@@ -175,6 +175,12 @@ func (e *Endpoint) handle(conn net.Conn) {
 		e.writeErr(conn, ErrCaptureFail, req.ReqID, req.Session)
 		return
 	}
+	// 代次关联守卫（Endpoint）：owner 实际捕获的代次必须等于请求方声明的 ServingGen。
+	// 不等即 ErrMismatch，**绝不**返回 payload（防止旧请求拿到新代快照字节）。
+	if gen != req.ServingGen {
+		e.writeErr(conn, ErrMismatch, req.ReqID, req.Session)
+		return
+	}
 	if len(payload) > MaxResponseBytes {
 		e.writeErr(conn, ErrTooLarge, req.ReqID, req.Session)
 		return
