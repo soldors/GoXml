@@ -49,7 +49,11 @@ Router 只在成功 publish 且进入实际渲染前安排待定挂载。`render
 宿主可以把已有的 `app.WithOnDestroy` 用作关闭事件入口，将 `Router.LifecycleFinalize` 作为一次性 finalize 回调：
 
 ```go
-app.WithOnDestroy(router.LifecycleFinalize)
+wrapped, err := app.WithOnDestroy(router.View(), router.LifecycleFinalize)
+if err != nil {
+    return err
+}
+_ = wrapped
 ```
 
 该接线的约束是：DestroyEvent 回调最多触发一次，`LifecycleFinalize` 本身保持幂等；它不隐式代替 `Router.Shutdown`。若宿主合同要求同时取消 Router 根 Context，应由宿主显式编排 `Shutdown` 与 `LifecycleFinalize`，不可依赖回调副作用猜测顺序。
