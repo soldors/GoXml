@@ -104,6 +104,10 @@ type Router struct {
 	// rootCtx 是 Router 级 Context，页面 Context 由它派生。
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
+
+	// life 为 nil 表示未 opt-in 生命周期（R28-C）。所有新增行为都只在
+	// 该分支发生；未开启时既有行为、锁序与计数合同逐字不变。
+	life *lifecycleBridge
 }
 
 // New 创建路由核心。
@@ -249,9 +253,16 @@ func (r *Router) SetInvalidator(inv Invalidator) error {
 // can commit, that result is dropped without changing the page or NavError.
 func (r *Router) Shutdown() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.rootCancel()
 	r.dropPendingLocked()
+	life := r.life
+	r.mu.Unlock()
+	// R28-C：Shutdown 允许后台线程调用；这里只取消/拒绝排队更新，
+	// **绝不**在调用它的后台线程执行 UI OnUnmount。owner 最终化由
+	// UI owner 的销毁回调 LifecycleFinalize 负责。
+	if life != nil {
+		life.cancelOnly()
+	}
 }
 
 func (r *Router) dropPendingLocked() {
@@ -306,6 +317,15 @@ func (r *Router) drain() {
 			fn()
 		}
 	}
+	// R28-C：UI owner 在**实际执行时**复查生命周期后才应用路由变更；
+	// 迟到/旧代次更新在这里被丢弃。未 opt-in 时仅一次 nil 判断，
+	// 稳定帧不分配内存。
+	r.mu.Lock()
+	life := r.life
+	r.mu.Unlock()
+	if life != nil {
+		life.runPosted()
+	}
 	r.applyNavigation()
 }
 
@@ -351,8 +371,14 @@ func (r *Router) applyNavigation() {
 	r.page = page
 	r.pageCancel = cancel
 	r.navErr = nil
+	life := r.life
 	r.mu.Unlock()
-	if oldCancel != nil {
+	if life != nil {
+		// R28-C：仅在**成功发布之后**（UI owner、锁外）才动生命周期。
+		// 旧页 Context 先取消 + OnUnmount 一次；新页只记录 pending，
+		// 真正的 Mount 在 renderCurrent 的首次业务 Layout 之前。
+		life.onSwitch(oldCancel, page, ctx)
+	} else if oldCancel != nil {
 		oldCancel()
 	}
 }
@@ -371,9 +397,15 @@ func (r *Router) setNavErr(err error) {
 func (r *Router) renderCurrent(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	r.mu.Lock()
 	page := r.page
+	life := r.life
 	r.mu.Unlock()
 	if page == nil {
 		return layout.Dimensions{}
+	}
+	// R28-C：首次业务 Layout 之前，由 UI owner 在状态锁之外提交挂载。
+	// 未发布 / 失败 / 被丢弃的在途页没有 pending，不会走到 Mount。
+	if life != nil {
+		life.mountPending()
 	}
 	return page.Layout(gtx, th)
 }
