@@ -126,6 +126,9 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 			return nil, ErrOwnerClosed
 		case ErrTooLarge.Error():
 			return nil, ErrTooLarge
+		case ErrMismatch.Error():
+			// 端点在错代/关联不符时以 ErrMismatch 拒绝；客户端须原样还原，不得降级为 ErrCaptureFail。
+			return nil, ErrMismatch
 		default:
 			return nil, ErrCaptureFail
 		}
