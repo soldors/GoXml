@@ -124,9 +124,11 @@ func TestDataGridKeyboardNativeFixture(t *testing.T) {
 	var ed widget.Editor
 	th := material.NewTheme()
 
-	// 真实公开 API：RunWindow 驱动真实窗口（R27 原生验收同款入口），
-	// 标题栏关闭后返回（defer 记录 exit）。所有布局与留痕在 view.Layout
-	// 内完成。
+	// 真实公开 API：RunWindow 驱动真实窗口（R27 原生验收同款入口）。
+	// R1 修复：传入**自有且不提前关闭**的 stop channel——nil 会在创建
+	// 窗口前被拒绝（"app: nil stop channel"）；窗口经标题栏关闭自行返回，
+	// stop 永不关闭即不会提前终止测试宿主。
+	stop := make(chan struct{})
 	view := &fixtureView{
 		gridA: gridA,
 		gridB: gridB,
@@ -134,12 +136,23 @@ func TestDataGridKeyboardNativeFixture(t *testing.T) {
 		th:    th,
 		log:   log,
 	}
-	if err := goxmlapp.RunWindow(view, th, goxmlapp.Config{
+	// 真实 close 经公开 WithOnDestroy 观察记录（事件循环收到
+	// DestroyEvent 时同步回调）。
+	wv, err := goxmlapp.WithOnDestroy(view, func() {
+		log.emit(map[string]interface{}{"event": "destroy-callback"})
+	})
+	if err != nil {
+		t.Fatalf("WithOnDestroy: %v", err)
+	}
+	runErr := goxmlapp.RunWindow(wv, th, goxmlapp.Config{
 		Title:  "R28-B DataGrid keyboard fixture",
 		Width:  unit.Dp(960),
 		Height: unit.Dp(640),
-	}, nil); err != nil {
-		t.Fatalf("RunWindow: %v", err)
+	}, stop)
+	// 成功返回 / 错误 / 运行方观察到的 rc 三者区分记录（不互相冒充）。
+	log.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(runErr)})
+	if runErr != nil {
+		t.Logf("RunWindow 返回错误（原样记录，交运行方判定）: %v", runErr)
 	}
 	if log.frameN == 0 {
 		t.Fatal("RunWindow 未执行任何帧")
@@ -162,6 +175,11 @@ type fixtureView struct {
 	lastH      int
 	lastDpi    float32
 	lastEdLen  int
+
+	lastSelB      string
+	lastBodyHpx   int
+	lastRowHpx    int
+	lastHeaderHpx int
 }
 
 func (v *fixtureView) Layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -176,12 +194,19 @@ func (v *fixtureView) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 		body(btx)
 		tr.Pop()
 	}
-	band(0, 300, func(gtx layout.Context) { v.gridA.Layout(gtx, th) })
+	const bandBodyH = 300
+	band(0, bandBodyH, func(gtx layout.Context) { v.gridA.Layout(gtx, th) })
 	band(300, 140, func(gtx layout.Context) { v.gridB.Layout(gtx, th) })
 	band(440, 60, func(gtx layout.Context) {
 		v.ed.Update(gtx)
 		material.Editor(th, v.ed, "editor (焦点消费者 2)").Layout(gtx)
 	})
+
+	// 几何留痕：gridA 实际 body viewport 与本帧 Dp 换算的行高/表头
+	// （judge 依此判定滚动边界，不用整窗高度和固定 24px）。
+	bodyHpx := bandBodyH - gtx.Dp(unit.Dp(24)) // band 300 − 表头 24dp
+	rowHpx := gtx.Dp(unit.Dp(24))
+	headerHpx := gtx.Dp(unit.Dp(24))
 
 	// 状态观察（Layout 之后：本帧 sel/滚动/焦点已更新）。
 	focus := "none"
@@ -212,11 +237,13 @@ func (v *fixtureView) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 		selStr = sel
 	}
 	if selStr != v.lastSel {
-		v.log.emit(map[string]interface{}{"event": "sel-change", "from": v.lastSel, "to": selStr, "visible": v.selVisible, "focus": focus})
+		v.log.emit(map[string]interface{}{"event": "sel-change", "from": v.lastSel, "to": selStr, "visible": v.selVisible, "focus": focus,
+			"bodyHpx": v.lastBodyHpx, "rowHpx": v.lastRowHpx, "headerHpx": v.lastHeaderHpx})
 		v.lastSel = selStr
 	}
 	if v.gridA.ScrollOffset() != v.lastOff && v.lastOff >= 0 {
-		v.log.emit(map[string]interface{}{"event": "scroll", "offset": v.gridA.ScrollOffset(), "sel": selStr, "selVisible": v.selVisible})
+		v.log.emit(map[string]interface{}{"event": "scroll", "offset": v.gridA.ScrollOffset(), "sel": selStr, "selVisible": v.selVisible,
+			"bodyHpx": v.lastBodyHpx, "rowHpx": v.lastRowHpx, "headerHpx": v.lastHeaderHpx})
 	}
 	v.lastOff = v.gridA.ScrollOffset()
 
@@ -245,8 +272,20 @@ func (v *fixtureView) Layout(gtx layout.Context, th *material.Theme) layout.Dime
 		}
 	}
 
+	selB, selBOK := v.gridB.SelectedRowID()
+	selBStr := ""
+	if selBOK {
+		selBStr = selB
+	}
+	if selBStr != v.lastSelB {
+		// 禁用对照：gridB 仅鼠标选择可用（键盘导航未开启）。
+		v.log.emit(map[string]interface{}{"event": "selB-change", "from": v.lastSelB, "to": selBStr, "focus": focus})
+		v.lastSelB = selBStr
+	}
+
 	if v.log.frameN%60 == 0 {
 		v.log.emit(map[string]interface{}{"event": "heartbeat", "focus": focus, "sel": selStr, "selVisible": v.selVisible, "offset": v.gridA.ScrollOffset()})
 	}
+	v.lastBodyHpx, v.lastRowHpx, v.lastHeaderHpx = bodyHpx, rowHpx, headerHpx
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }

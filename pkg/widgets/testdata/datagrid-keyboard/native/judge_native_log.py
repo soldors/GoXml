@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""R28-B DataGrid 原生键盘验收日志自动判定。
+"""R28-B DataGrid 原生键盘验收日志自动判定（R1 修正版）。
 
 用法: python judge_native_log.py <native-grid-fixture-log.jsonl>
 
-依不变式自动判定（人工观察项见 native-acceptance 计划，不在本脚本范围）:
-  R1 sel-change 目标必须是 ROW-\\d{5} 或空串
-  R2 focus==gridA 的 sel-change 必须 visible==true（键盘/鼠标选择当帧可见）
+R1 修正（不得缺证通过）：
+  - 必须存在 destroy-callback 或 close（真实关窗证据），且 exit 在其后；
+  - 必须有导航证据：≥1 次 scroll 事件，或某次 sel-change 相对上一次选中
+    行的索引跳变 ≥2（Home/End/Page 语义）——「只选择未导航」不通过；
+  - 必须有几何留痕：任何 scroll/sel-change 事件缺 bodyHpx/rowHpx 判定
+    依据即 FAIL（几何用 fixture 留痕的本帧 Dp 换算值，不用整窗高度和
+    固定 24px）；
+  - 空日志、错序（exit 先于 close）直接 FAIL。
+
+不变式：
+  R1 sel-change 目标必须是 ROW-\d{5} 或空串
+  R2 focus==gridA 的 sel-change 必须 visible==true
   R3 focus 值域 {gridA, gridB, editor, none}
-  R4 unconsumed-key 不得出现在 focus==gridA（持焦网格的按键必须被消费）
-  R5 edit-delta 必须 focus==editor（文本输入归属焦点消费者）
-  R6 scroll offset ∈ [0, rows*24 - bodyH]（按最近 resize 推导）
-  R7 exit 事件存在且在 close 之后
-  R8 resize 事件必须记录 pxPerDp（DPI 观察依据）
+  R4 unconsumed-key 不得出现在 focus==gridA
+  R5 edit-delta 必须 focus==editor
+  R6 scroll offset ∈ [0, rows*rowHpx - bodyHpx]（按事件自带留痕几何判定）
+  R7 close（destroy-callback/close）存在，exit 在其后
+  R8 resize 必须记录 pxPerDp
+  R9 必须有导航证据（scroll 或 ≥2 行跳变的选择）
+  R10 scroll/sel-change 必须自带几何留痕（bodyHpx/rowHpx/headerHpx）
 
 退出码 0=PASS，1=FAIL。
 """
@@ -22,20 +33,28 @@ import sys
 
 SEL_RE = re.compile(r"^ROW-\d{5}$")
 VALID_FOCUS = {"gridA", "gridB", "editor", "none"}
-ROW_H = 24
-HEADER_H = 24
+
+
+def row_index(rid):
+    if not rid or not SEL_RE.match(rid):
+        return None
+    return int(rid.split("-")[1])
 
 
 def main():
     if len(sys.argv) != 2:
         print("usage: judge_native_log.py <log.jsonl>")
         return 1
-    events = []
-    with open(sys.argv[1], encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                events.append(json.loads(line))
+    try:
+        raw = open(sys.argv[1], encoding="utf-8").read().strip()
+    except FileNotFoundError:
+        print("FAIL: 日志文件不存在")
+        return 1
+    if not raw:
+        print("FAIL: 空日志")
+        return 1
+    events = [json.loads(line) for line in raw.splitlines()]
+
     fails = []
     last_viewport_h = None
     rows = 10000
@@ -43,6 +62,10 @@ def main():
     exit_seq = None
     sel_changes = 0
     unconsumed = 0
+    scrolls = 0
+    last_sel_idx = None
+    nav_evidence = False
+    geom_missing = 0
 
     for ev in events:
         seq = ev.get("seq", 0)
@@ -55,6 +78,14 @@ def main():
                 fails.append(f"R1 seq={seq}: 非法 RowID 目标 {to!r}")
             if focus == "gridA" and to and not ev.get("visible"):
                 fails.append(f"R2 seq={seq}: gridA 持焦选择当帧不可见 to={to}")
+            if any(k not in ev for k in ("bodyHpx", "rowHpx", "headerHpx")):
+                geom_missing += 1
+                fails.append(f"R10 seq={seq}: sel-change 缺几何留痕")
+            idx = row_index(to) if to else None
+            if idx is not None:
+                if last_sel_idx is not None and abs(idx - last_sel_idx) >= 2:
+                    nav_evidence = True  # 跳变 = Home/End/Page 导航语义
+                last_sel_idx = idx
         if kind == "focus-change":
             to = ev.get("to")
             if to not in VALID_FOCUS:
@@ -71,30 +102,45 @@ def main():
             if ev.get("pxPerDp") in (None, 0):
                 fails.append(f"R8 seq={seq}: resize 未记录 pxPerDp")
         if kind == "scroll":
-            if last_viewport_h:
-                body_h = last_viewport_h - HEADER_H
-                max_off = rows * ROW_H - body_h
+            scrolls += 1
+            body_h = ev.get("bodyHpx")
+            row_h = ev.get("rowHpx")
+            if body_h is None or row_h is None or row_h <= 0 or body_h <= 0:
+                geom_missing += 1
+                fails.append(f"R10 seq={seq}: scroll 缺几何留痕")
+            else:
+                nav_evidence = True  # 键盘滚动本身即导航证据
+                max_off = rows * row_h - body_h
                 off = ev.get("offset", 0)
                 if off < 0 or off > max_off:
                     fails.append(f"R6 seq={seq}: 滚动越界 offset={off} max={max_off}")
+        if kind == "destroy-callback":
+            if close_seq is None:
+                close_seq = seq  # 真实 close（公开 WithOnDestroy 观察）
         if kind == "close":
-            close_seq = seq
+            if close_seq is None:
+                close_seq = seq
         if kind == "exit":
             exit_seq = seq
+            if "runErr" not in ev:
+                fails.append(f"R11 seq={seq}: exit 缺 run-return 区分字段")
 
     if exit_seq is None:
         fails.append("R7: 缺少 exit 事件")
-    elif close_seq is not None and exit_seq < close_seq:
-        fails.append("R7: exit 先于 close")
+    if close_seq is None:
+        fails.append("R7: 缺少真实关窗证据（destroy-callback/close）")
+    elif exit_seq is not None and exit_seq < close_seq:
+        fails.append("R7: exit 先于 close（错序）")
+    if not nav_evidence:
+        fails.append("R9: 只有选择没有导航证据（无 scroll、无 ≥2 行跳变）")
     if sel_changes == 0:
         fails.append("R-judge: 无任何选择变化——验收操作未执行或日志缺失")
-    if unconsumed == 0:
-        print("note: 无 unconsumed-key 事件（未做无焦点按键泄漏观察，可接受）")
 
     for f_ in fails:
         print("FAIL:", f_)
-    print(f"events={len(events)} sel-changes={sel_changes} unconsumed={unconsumed} "
-          f"close={close_seq} exit={exit_seq}")
+    print(f"events={len(events)} sel-changes={sel_changes} scrolls={scrolls} "
+          f"unconsumed={unconsumed} close={close_seq} exit={exit_seq} "
+          f"geom-missing={geom_missing} nav={nav_evidence}")
     if fails:
         print("VERDICT: FAIL")
         return 1

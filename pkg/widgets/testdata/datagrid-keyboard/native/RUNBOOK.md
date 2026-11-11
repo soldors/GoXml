@@ -6,8 +6,12 @@
 ## 1. 构建二进制（作者阶段已完成并记录 SHA-256/大小；如需重编见下）
 
 ```bash
+# 选择器锚定（两命令均须满足）：带标签列出且命中一个；默认不选
+go test -tags nativewindow -list '.*' ./pkg/widgets        # 含 TestDataGridKeyboardNativeFixture
+go test -list '.*' ./pkg/widgets                           # 不含该名（任何 nativewindow 用例都不出现）
+
 # 普通（CGO=0）
-CGO_ENABLED=0 go build -tags nativewindow -c -o native-grid-fixture.test.exe ./pkg/widgets
+CGO_ENABLED=0 go test -tags nativewindow -c -o native-grid-fixture.test.exe ./pkg/widgets
 # race（CGO=1 MinGW）
 CC=D:/Codes/SQLMonitor/.tools/mingw64/bin/gcc.exe CGO_ENABLED=1 \
   go test -tags nativewindow -c -race -o native-grid-fixture-race.test.exe ./pkg/widgets
