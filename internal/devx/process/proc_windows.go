@@ -117,45 +117,113 @@ func stopJob(job JobHandle, pid int, deadline time.Time) error {
 	if job == 0 {
 		return nil
 	}
-	// fail-closed：若调用时截止已过，立即报告“退出证明过期”，不得报告成功（保留 expired-deadline 契约）。
+	// 一旦接管非零 Job 句柄，**任何**返回路径（含过期/错误）都必须释放该句柄（defer 保证）。
+	// KILL_ON_JOB_CLOSE 关闭即兜底终止整棵树。
+	defer CloseJobOwnership(job)
+
+	// fail-closed：调用时截止已过 => 立即报告“退出证明过期”，但句柄仍由 defer 释放。
 	if !time.Now().Before(deadline) {
 		return errors.New("process exit proof deadline expired")
 	}
-	// 先捕获退出见证（仍在 Job 内的进程句柄），确保即便成员随后退出也有可等待句柄。
+	// 捕获退出见证（仍在 Job 内的自有进程句柄）。
 	handles, captureErr := jobProcessHandles(job)
 	defer func() {
 		for _, h := range handles {
 			windows.CloseHandle(h)
 		}
 	}()
-	// 关键顺序（最小修复）：**先用已持有的 Windows Job 句柄终止整棵自有树**（TerminateJobObject
-	// 同步 kill 全部 Job 成员，含后代），不被外部 taskkill 的等待期挤占单一 StopTimeout。
+	// 权威终止：先用已持有的 Job 句柄 TerminateJobObject 同步 kill 全部 Job 成员（含后代）。
 	var termErr error
 	if terr := windows.TerminateJobObject(job, 1); terr != nil {
 		termErr = fmt.Errorf("TerminateJobObject: %w", terr)
 	}
-	// 退出证明：等待已捕获的自有句柄在截止前全部 signal（在 taskkill 之前做，避免被其耗时饿死）。
-	waitErr := waitProcessHandles(handles, deadline)
-	// taskkill 仅作**有界补充**（gate 契约要求 Manager 仍**调用** tree 命令）。此时树已被 Job 句柄终止；
-	// 为避免外部 taskkill 的等待期挤占单一 StopTimeout、拖延有界返回，**异步**发起（bounded 于同一 deadline），
-	// 不在收口路径同步等待。Job 终止与退出证明才是权威收口依据。
+	// 外部 tree 命令：与退出证明**并行**发起（各自有界于同一 StopTimeout），并在**返回前收口**自己启动的命令
+	// （不留到返回后再按原 PID 动作）。并行保证慢命令/不存在目标不挤掉证明预算（证明不被 taskkill 串行阻塞），
+	// 同时 taskkill 获得从发起到取消的完整 STOP 窗口以便真正启动（entered）。命令失败可观测，不掩盖证明结果。
 	var killErr error
+	var tkDone chan error
 	if pid > 0 {
-		ctx, cancel := context.WithDeadline(context.Background(), deadline)
-		done := make(chan error, 1)
-		go func() { done <- KillProcessTree(ctx, pid); cancel() }()
-		// 仅在 Job 终止或退出证明**失败**时，才在有界余量内等待并保留 taskkill 错误（fail-closed，不吞错）。
-		if captureErr != nil || termErr != nil || waitErr != nil {
-			select {
-			case killErr = <-done:
-			case <-time.After(time.Until(deadline)):
-				killErr = errors.New("taskkill not completed within deadline")
-			}
+		// 为返回后的外层 c.done 收口保留预算：tree 命令使用**较早的子截止**（deadline - doneReserve），
+		// 使其在被取消后能于外层 StopTimeout 之前被收口；并行发起保证启动窗口；证明仍用完整 deadline。
+		doneReserve := time.Until(deadline) / 4
+		if doneReserve > 300*time.Millisecond {
+			doneReserve = 300 * time.Millisecond
+		}
+		tkDeadline := deadline.Add(-doneReserve)
+		if !time.Now().Before(tkDeadline) {
+			tkDeadline = time.Now().Add(time.Until(deadline) / 2)
+		}
+		tkDone = make(chan error, 1)
+		ctx, cancel := context.WithDeadline(context.Background(), tkDeadline)
+		go func() { err := KillProcessTree(ctx, pid); cancel(); tkDone <- err }()
+	}
+	// 退出证明（权威）：同一 StopTimeout 内 (a) Job ActiveProcesses==0 且 (b) 已捕获句柄全部 signaled。
+	proofErr := waitJobEmptyAndHandles(job, handles, deadline)
+	// 返回前收口自有 tree 命令（其子截止已早于 deadline，故此处等待有界且留出 c.done 余量）。
+	if tkDone != nil {
+		select {
+		case killErr = <-tkDone:
+		case <-time.After(time.Until(deadline)):
+			killErr = errors.New("tree command not reaped within deadline")
 		}
 	}
-	// 关闭 Job 句柄（KILL_ON_JOB_CLOSE 兜底）。
-	CloseJobOwnership(job)
-	return errors.Join(captureErr, termErr, waitErr, killErr)
+	// 若 Job 句柄已**证明整棵树退出**（捕获/终止/双重退出证明均成功），tree 命令仅补充：其慢/无目标/
+	// 被取消的错误**不**使 Shutdown 失败（不得误报）；但它已在返回前同步发起并收口（不留到返回后动作）。
+	// 反之若退出证明失败，tree 命令错误必须保留（fail-closed，不吞错）。
+	if captureErr == nil && termErr == nil && proofErr == nil {
+		killErr = nil
+	}
+	return errors.Join(captureErr, termErr, proofErr, killErr)
+}
+
+// runTaskkillBounded 在返回前同步运行自有 tree 命令，并收口该命令本身；只占用总余量的有界子预算
+// （<= 剩余一半），为 Job 终止与退出证明保留预算。命令被 ctx 取消后仍等待其退出（收口自有命令）。
+func runTaskkillBounded(pid int, deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return errors.New("no budget for tree command")
+	}
+	budget := remaining / 2
+	if budget <= 0 {
+		budget = remaining
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(budget))
+	defer cancel()
+	return KillProcessTree(ctx, pid)
+}
+
+// waitJobEmptyAndHandles 双重退出证明：Job ActiveProcesses==0 且已捕获句柄全部 signaled，均有界于 deadline。
+// Job 查询失败或进程等待未达 WAIT_OBJECT_0 => 返回错误（阻止交接）。
+func waitJobEmptyAndHandles(job JobHandle, handles []windows.Handle, deadline time.Time) error {
+	// (b) 先等已捕获自有句柄：必须明确 WAIT_OBJECT_0。
+	for _, h := range handles {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("process exit proof deadline expired")
+		}
+		state, err := windows.WaitForSingleObject(h, uint32((remaining+time.Millisecond-1)/time.Millisecond))
+		if err != nil || state != windows.WAIT_OBJECT_0 {
+			return fmt.Errorf("process exit not proven: state=%d err=%v", state, err)
+		}
+	}
+	// (a) Job 记账归零：处理“句柄快照后新起的后代”或快照遗漏的残余；轮询 ActiveProcesses 至 0。
+	var lastErr error
+	for time.Now().Before(deadline) {
+		var info jobAccounting
+		err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
+		if err != nil {
+			return fmt.Errorf("QueryInformationJobObject: %w", err)
+		}
+		if info.ActiveProcesses == 0 {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("job 未在 StopTimeout 内清空（ActiveProcesses 未归零）")
 }
 
 func jobProcessHandles(job JobHandle) ([]windows.Handle, error) {
