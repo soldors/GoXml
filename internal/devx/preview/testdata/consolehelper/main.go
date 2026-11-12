@@ -7,11 +7,19 @@
 //
 //	consolehelper ready            打印 READY 后立即退出 0（正常退出路径）
 //	consolehelper sleep <seconds>  打印 READY 后睡指定秒数再退出 0（超时路径）
-//	consolehelper tree <seconds>   打印 READY，启动一个子进程（子进程睡
-//	                               <seconds> 后把 marker 文件写到 --child-out
-//	                               指定路径），父进程等待子进程退出
-//	                               （进程树收口判据：父进程被 /T 终止后，
-//	                               子进程不应再写出 marker）
+//	consolehelper tree <seconds>   打印 READY，先启动一个子进程（子进程睡
+//	                               10 秒后把 marker 文件写到 --child-out
+//	                               指定路径），然后父进程睡 <seconds> 秒
+//	                               再退出 0（进程树收口判据：父进程被 /T
+//	                               终止后，子进程不应再写出 marker）
+//
+//	tree 的宿主树自然寿命必须由 <seconds> 决定。R28 全树阻断 2 判别
+//	（preview-shutdown-delivery-hy4 probe-a）：旧实现父进程 child.Wait()
+//	后即退出，整树自然寿命实际只有子进程的 ~3 秒，与测试的 2 秒超时 +
+//	taskkill 执行（负载下 2–2.4 秒）重叠，负载下宿主先于终止命令自然
+//	退出，taskkill 如实返回 rc128「没有找到进程」，测试误判终止失败。
+//	子进程不等待、由判据窗口覆盖：若树未被收口，子进程 3 秒后必然写出
+//	marker。
 //
 // 它没有任何窗口/图形依赖，纯 console。
 package main
@@ -46,20 +54,27 @@ func main() {
 				fmt.Fprintln(os.Stderr, "tree mode requires --child-out")
 				os.Exit(2)
 			}
-			// 子进程：睡 3 秒后写 marker（若父进程树已被收口，这里永远走不到；
-			// 3 秒 < 测试的收口判定窗口，杀漏了 marker 必然出现）。
+			// 子进程：睡 10 秒后写 marker（若父进程树已被收口，这里永远
+			// 走不到；杀漏了 marker 必然出现）。10 秒 = killCommandTimeout
+			// 5 秒预算的 2 倍余量：R28 全树阻断 2 判别实测终止路径在负载下
+			// 可达 4.5 秒以上（定时器唤醒延迟 2.5s + taskkill 执行 2–2.4s），
+			// 旧的 3 秒窗口小于该耗时，子进程会在被终止前走完自然寿命写
+			// marker 退出，把「未及时终止」误判成泄漏（假阳性）或让
+			// taskkill 对已消失的子进程报「没有此进程实例」（rc255）。
 			self, err := os.Executable()
 			if err != nil {
 				os.Exit(3)
 			}
-			child := exec.Command(self, "child", "3", out)
+			child := exec.Command(self, "child", "10", out)
 			child.Stdout = nil
 			child.Stderr = nil
 			if err := child.Start(); err != nil {
 				os.Exit(3)
 			}
 			fmt.Println("READY")
-			_ = child.Wait()
+			// 父进程睡 <seconds>：宿主树自然寿命与参数一致；不等待子进程
+			// （旧实现整树寿命只有子进程的 ~3 秒，见文件头注释）。
+			time.Sleep(time.Duration(secs) * time.Second)
 			os.Exit(0)
 		}
 		fmt.Println("READY")

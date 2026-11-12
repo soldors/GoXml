@@ -11,9 +11,29 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// lockedBuffer 是可从 cmd.Stdout 写入、测试 goroutine 并发读的缓冲
+// （exec 的 copy goroutine 与测试轮询并发访问，bytes.Buffer 非并发安全）。
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
 
 func sha(b []byte) string {
 	h := sha256.Sum256(b)
@@ -399,17 +419,41 @@ func TestSupervisorLifecycle(t *testing.T) {
 
 	t.Run("进程树收口", func(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "child-marker.txt")
-		r, err := StartHost(helper, "", "tree", "30", "--child-out", marker)
+		// 就绪门闩：consolehelper tree 分支在 spawn 子进程之后才打印
+		// READY；读到 READY 才开始计时，消除「宿主尚未 spawn 子进程就
+		// 进入超时窗口」的时序前提（R28 全树阻断 2-A 判别结论）。
+		out := &lockedBuffer{}
+		r, err := StartHostWithOutput(helper, "", out, nil, "tree", "30", "--child-out", marker)
 		if err != nil {
 			t.Fatal(err)
+		}
+		readyDeadline := time.Now().Add(10 * time.Second)
+		for !strings.Contains(out.String(), "READY") {
+			if time.Now().After(readyDeadline) {
+				t.Fatalf("宿主未在就绪窗口内打印 READY: %q", out.String())
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 		exitErr, werr := r.Wait(2 * time.Second)
 		if werr != ErrHostTimeout || exitErr != nil {
 			t.Fatalf("tree 30 应超时: exitErr=%v waitErr=%v", exitErr, werr)
 		}
-		// 子进程 3 秒后写 marker；树收口成功则 marker 永不出现。
-		// 等 4.5 秒（覆盖子进程的写入窗口）再判。
-		time.Sleep(4500 * time.Millisecond)
+		// 终止命令成功判据：超时类别下终止失败会并入错误链（werr 不再
+		// 等于 ErrHostTimeout），这里再显式断言 StopError 为空，防止
+		// 未来把终止失败静默化。
+		if serr := r.StopError(); serr != nil {
+			t.Fatalf("树终止应成功，终止失败被观测: %v", serr)
+		}
+		// 退出证明：树终止后宿主在有界窗口内回收，无泄漏。
+		if !r.waitBriefly(5 * time.Second) {
+			t.Fatal("树终止后宿主应在有界窗口内回收（真实退出证明）")
+		}
+		// 子进程 10 秒后写 marker；树收口成功则 marker 永不出现。
+		// 等 11.5 秒（覆盖子进程的写入窗口 + 判别余量）再判：写入窗口
+		// 必须 > 负载下整条终止路径耗时（实测可达 4.5s+，见
+		// consolehelper 文件头注释），否则子进程在被终止前自然写出
+		// marker，把「未及时终止」误判成泄漏。
+		time.Sleep(11500 * time.Millisecond)
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatalf("进程树应收口（子进程不应存活到写 marker）：stat=%v", err)
 		}
