@@ -49,7 +49,7 @@ fixture、judge、RUNBOOK 与本日志。
 
 - `cfb93b8` — R28-B1 修正线：fixture 入口可达（stop channel）/WithOnDestroy
   close 记录/judge 几何留痕判定；独立复核确认。
-- 本线 R28-B2 拆分提交：datagrid_fixturelog.go（默认编译的生产者）+
+-  — R28-B2 拆分提交：datagrid_fixturelog.go（默认编译的生产者）+
   datagrid_fixturelog_test.go（三用例对齐）+ nativewindow 测试精简。
   键盘因果经 keyboard-nav 事件由生产者测试留痕（测试已知按键），judge
   据此区分纯鼠标/键盘轨迹。原生键盘/IME/DPI 仍未验证。

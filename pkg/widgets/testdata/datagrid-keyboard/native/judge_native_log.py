@@ -64,7 +64,6 @@ def main():
     unconsumed = 0
     scrolls = 0
     last_sel_idx = None
-    nav_evidence = False
     geom_missing = 0
 
     for ev in events:
@@ -109,7 +108,6 @@ def main():
                 geom_missing += 1
                 fails.append(f"R10 seq={seq}: scroll 缺几何留痕")
             else:
-                nav_evidence = True  # 键盘滚动本身即导航证据
                 max_off = rows * row_h - body_h
                 off = ev.get("offset", 0)
                 if off < 0 or off > max_off:
@@ -124,6 +122,8 @@ def main():
             exit_seq = seq
             if "runErr" not in ev:
                 fails.append(f"R11 seq={seq}: exit 缺 run-return 区分字段")
+            elif ev["runErr"] not in ("<nil>", "None"):
+                fails.append(f"R12 seq={seq}: RunWindow 非 nil 错误={ev['runErr']}——fixture 运行失败")
 
     if exit_seq is None:
         fails.append("R7: 缺少 exit 事件")
@@ -131,8 +131,17 @@ def main():
         fails.append("R7: 缺少真实关窗证据（destroy-callback/close）")
     elif exit_seq is not None and exit_seq < close_seq:
         fails.append("R7: exit 先于 close（错序）")
-    if not nav_evidence:
-        fails.append("R9: 只有选择没有导航证据（无 scroll、无 ≥2 行跳变）")
+    # R9: 键盘因果判定——keyboard-nav 事件由生产者测试在按下导航键时
+    # 经同一 emit 路径留痕；纯鼠标轨迹（有 gridA 选择但零 keyboard-nav）
+    # 被拒绝作为键盘验收证据。
+    keyboard_nav_events = sum(1 for ev in events if ev.get("event") == "keyboard-nav")
+    keyboard_evidence = "ABSENT"
+    if keyboard_nav_events > 0:
+        keyboard_evidence = "CONFIRMED-BY-PRODUCER"
+    has_grid_sel = any(ev.get("event") == "sel-change" and ev.get("focus") == "gridA" for ev in events)
+    if has_grid_sel and keyboard_nav_events == 0:
+        fails.append("R9: 纯鼠标轨迹（gridA 持焦选择但零 keyboard-nav 事件）——"
+                     "键盘导航需按 native-acceptance-plan 人工专项验证")
     if sel_changes == 0:
         fails.append("R-judge: 无任何选择变化——验收操作未执行或日志缺失")
 
@@ -140,7 +149,9 @@ def main():
         print("FAIL:", f_)
     print(f"events={len(events)} sel-changes={sel_changes} scrolls={scrolls} "
           f"unconsumed={unconsumed} close={close_seq} exit={exit_seq} "
-          f"geom-missing={geom_missing} nav={nav_evidence}")
+          f"geom-missing={geom_missing} keyboard-evidence={keyboard_evidence}")
+    print("KEYBOARD: NOT-JUDGED-FROM-LOG — manual native testing per "
+          "native-acceptance-plan required (键位/连发/IME/DPI 均为人工专项)")
     if fails:
         print("VERDICT: FAIL")
         return 1
