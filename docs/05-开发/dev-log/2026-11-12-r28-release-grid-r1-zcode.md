@@ -55,3 +55,5 @@ fixture、judge、RUNBOOK 与本日志。
   据此区分纯鼠标/键盘轨迹。原生键盘/IME/DPI 仍未验证。
 
 - 72bc121 — R28-B2 fixture 拆分与生产者/消费者对齐
+
+- d216f18 — judge R9/R12 修正 + dev-log 补记 72bc121
