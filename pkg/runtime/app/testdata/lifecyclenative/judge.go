@@ -58,7 +58,7 @@ func readyToClose(s ReadyState) (bool, string) {
 }
 
 // Trace 是 result.json / marker.txt 的机器可读投影。
-// JSON 字段名即手册 §3 字段表里的名字，保证「手册 ↔ 机器判据」逐字对账。
+// JSON 字段名即手册 §5 字段表里的名字，保证「手册 ↔ 机器判据」逐字对账。
 type Trace struct {
 	Scenario                         string   `json:"scenario"`
 	Markers                          []string `json:"marker_lines"`
@@ -76,6 +76,9 @@ type Trace struct {
 	ShutdownCalls                    int      `json:"shutdown_calls"`
 	ShutdownCallsBeforeFinalize      int      `json:"shutdown_calls_before_finalize"`
 	ShutdownCallsAtFinalize          int      `json:"shutdown_calls_at_finalize"`
+	ReadyPublished                   bool     `json:"ready_published"`
+	RouterRootErrBeforeFinalize      string   `json:"router_root_err_before_finalize"`
+	RouterRootErrAfterFinalize       string   `json:"router_root_err_after_finalize"`
 	FrameRequests                    int      `json:"frame_requests"`
 	FramesNeeded                     int      `json:"frames_needed"`
 	CloseArrivedEarly                bool     `json:"close_arrived_early"`
@@ -141,10 +144,10 @@ func subsequence(got, want []string) bool {
 }
 
 // Judge 对一份已落盘证据做 fail-closed 判定。任何缺失、错序、早关闭、
-// 后台观测缺失或三条件不满足都会产生原因并拒绝通过。
+// 后台观测缺失、就绪未发布、写盘失败或三条件不满足都会产生原因并拒绝通过。
 func Judge(t Trace) Verdict {
 	// 空切片而非 nil：PASS 时 result.json 的 log_judge.reasons 必须是 []，
-	// 与手册 §4/§5 的「reasons=[]」逐字一致，不能序列化成 null。
+	// 与手册的「reasons=[]」逐字一致，不能序列化成 null。
 	reasons := []string{}
 	add := func(code, detail string) { reasons = append(reasons, code+": "+detail) }
 
@@ -190,13 +193,27 @@ func Judge(t Trace) Verdict {
 		add("process-code", fmt.Sprintf("code=%d", t.ProcessCode))
 	}
 
-	// 5) Finalize 不隐式 Shutdown（fixture 侧可观测：finalize 前后调用次数不变）
+	// 5) fixture 侧显式调用计数**自洽性**（收窄口径）：
+	//    只说明 fixture 在 Finalize 前后没有自己多调 r.Shutdown()；
+	//    **不作为 Router 内部是否隐式 Shutdown 的证据**。真实行为证据见 5b。
 	if t.ShutdownCallsAtFinalize != t.ShutdownCallsBeforeFinalize {
-		add("finalize-implicit-shutdown", fmt.Sprintf("before=%d at=%d",
+		add("fixture-shutdown-call-count-changed", fmt.Sprintf("before=%d at=%d",
 			t.ShutdownCallsBeforeFinalize, t.ShutdownCallsAtFinalize))
 	}
 
-	// 6) 早关闭 / ready 拒绝一律 fail-closed
+	// 5b) 真实 Router 根 Context 观察（natural 场景）：公开 router.Context()
+	//     返回的根在 LifecycleFinalize 前后必须仍活跃。Router.Shutdown() 会
+	//     取消该根，因此若 Finalize 隐式触发 Shutdown，这里会变成
+	//     "context canceled"；这是可观察、可区分的真实行为证据。
+	//     shutdown-first 场景后台已显式 Shutdown，根必然已取消，故不适用。
+	if t.Scenario == scenarioNatural {
+		if t.RouterRootErrBeforeFinalize != "" || t.RouterRootErrAfterFinalize != "" {
+			add("router-root-canceled-after-finalize", fmt.Sprintf("before=%q after=%q",
+				t.RouterRootErrBeforeFinalize, t.RouterRootErrAfterFinalize))
+		}
+	}
+
+	// 6) 早关闭 / ready 拒绝一律 fail-closed 且不可逆
 	if t.CloseArrivedEarly || countKey(t.Markers, "close-arrived-early") > 0 {
 		add("close-arrived-early", "destroy callback arrived before readiness evidence")
 	}
@@ -220,6 +237,9 @@ func Judge(t Trace) Verdict {
 		}
 		if t.ShutdownCalls != 1 {
 			add("shutdown-call-count", fmt.Sprintf("calls=%d want 1", t.ShutdownCalls))
+		}
+		if !t.ReadyPublished {
+			add("ready-not-published", "ready-to-close was never durably published")
 		}
 		readyIdx, cbIdx := firstIndex(t.Markers, "ready-to-close"), firstIndex(t.Markers, "callback")
 		if readyIdx < 0 {

@@ -46,6 +46,7 @@ func fullShutdownFirstTrace() Trace {
 		ShutdownCalls:                    1,
 		ShutdownCallsBeforeFinalize:      1,
 		ShutdownCallsAtFinalize:          1,
+		ReadyPublished:                   true,
 		FrameRequests:                    2,
 		FramesNeeded:                     3,
 		CloseArrivedEarly:                false,
@@ -67,6 +68,7 @@ func fullNaturalTrace() Trace {
 	t.ShutdownCalls = 0
 	t.ShutdownCallsBeforeFinalize = 0
 	t.ShutdownCallsAtFinalize = 0
+	t.ReadyPublished = false
 	t.FrameRequests = 0
 	t.FramesNeeded = 0
 	return t
@@ -181,11 +183,13 @@ func TestJudgeRequiresExactlyOneUnmount(t *testing.T) {
 	mustReject(t, "OnUnmount 两次", "unmount-exactly-once", tr)
 }
 
-// 反向：Finalize 前后 Shutdown 次数变化（隐式 Shutdown）必须拒绝。
-func TestJudgeRejectsImplicitShutdownInFinalize(t *testing.T) {
+// 反向：fixture 侧显式调用计数在 Finalize 前后变化必须拒绝。
+// 口径已收窄：这只是 fixture 日志自洽检查，**不证明** Router 内部行为；
+// Router 内部行为由 r2_contract_test.go 的真实 Router 组合守卫证明。
+func TestJudgeRejectsFixtureShutdownCountChanged(t *testing.T) {
 	tr := fullShutdownFirstTrace()
 	tr.ShutdownCallsAtFinalize = 2
-	mustReject(t, "Finalize 隐式 Shutdown", "finalize-implicit-shutdown", tr)
+	mustReject(t, "fixture 显式计数变化", "fixture-shutdown-call-count-changed", tr)
 }
 
 // 反向：没有 fixture 主动请求的后续帧，不得判通过。

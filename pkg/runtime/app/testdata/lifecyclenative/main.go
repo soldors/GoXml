@@ -1,6 +1,6 @@
 //go:build nativewindow
 
-// Command lifecyclenative 是 R28-C/C1 Lifecycle **原生关窗验收** 的编译专用 fixture。
+// Command lifecyclenative 是 R28-C/C1/C2 Lifecycle **原生关窗验收** 的编译专用 fixture。
 //
 // 纪律（务必与受控证据分开记录）：
 //   - 本程序位于 pkg/runtime/app/testdata/，Go 的 ./... 默认忽略；并带
@@ -14,10 +14,17 @@
 //     gtx.Ops；它请求后续真实 FrameEvent，不是事件注入，也不合成帧。
 //   - 自然关闭由授权的人工点击标题栏 X 完成；步骤见同目录 README.md。
 //   - 只用公开 app.WithOnDestroy / app.RunSingleWindowProcess / app.ProcessOptions
-//     / app.ExitResult 与真实 router.Router；不新增公开 API，不调用
-//     NotifyOwnerDestroyed，不复制资产管线。
-//   - Finalize 不隐式 Shutdown：后台 goroutine 显式调用一次 r.Shutdown()，
-//     销毁回调只调用 r.LifecycleFinalize()，绝不在此再调 Shutdown。
+//     / app.ExitResult / router.Context 与真实 router.Router；不新增公开 API，
+//     不调用 NotifyOwnerDestroyed，不复制资产管线。
+//   - **唯一的就绪发布点**是 recorder.publishReady()：在同一互斥锁临界区内
+//     先成功把 ready-to-close 写入 marker.txt，再置 readyPublished。不存在
+//     「flag 已置但 marker 未写」的中间态；写盘失败则不发布。关窗检查
+//     checkCloseArrival() 在同一把锁里只读已发布的落盘状态，早到判定不可逆，
+//     之后补写 marker 也不能把先到的关闭改成通过。
+//   - Finalize 不隐式 Shutdown 的**可观察证据**是真实 Router 根 Context：
+//     公开 router.Context() 返回的根在 LifecycleFinalize 前后仍活跃；
+//     Router.Shutdown() 会取消该根，两者可由受控对照区分。fixture 自己的
+//     shutdown_calls 计数只说明 fixture 调过几次，不作为 Router 内部行为证据。
 //
 // 本 fixture 输出的字段是**证据字段定义**；编译成功、log_judge PASS 都不是
 // 原生验收证据。真实 DestroyEvent、runner rc、进程无残留、native race 仍需授权执行者填写。
@@ -50,10 +57,11 @@ const framesNeededForShutdown = 3
 // judge.go 同包引用它作为 fail-closed 原因，保证写入方与判定方逐字一致。
 const markerEarlyPrefix = "close-arrived-early:"
 
-// recorder 记录 UI owner 上真实发生的顺序；mutex 只用于后台 Shutdown
-// goroutine 与 UI owner 之间的快照/marker 同步，不改变任何产品行为。
+// recorder 记录 UI owner 上真实发生的顺序；mutex 同时保护 marker.txt 写入、
+// markers 快照、就绪发布与关窗检查，保证发布点是唯一且原子的。
 type recorder struct {
 	mu                          sync.Mutex
+	markerPath                  string
 	scenario                    string
 	framesNeeded                int
 	steps                       []string
@@ -71,12 +79,16 @@ type recorder struct {
 	shutdownCalls               int
 	shutdownCallsBeforeFinalize int
 	shutdownCallsAtFinalize     int
-	readyToCloseWritten         bool
-	readyRefusedReason          string
-	closeArrivedEarly           bool
-	closeEarlyReason            string
-	ready                       chan struct{}
-	readyOnce                   sync.Once
+	// 唯一发布态：只有 marker.txt 中 ready-to-close 成功落盘后才为 true。
+	readyPublished      bool
+	readyPublishErr     string
+	readyRefusedReason  string
+	closeArrivedEarly   bool
+	closeEarlyReason    string
+	routerRootErrBefore string
+	routerRootErrAfter  string
+	ready               chan struct{}
+	readyOnce           sync.Once
 }
 
 func (r *recorder) add(step string) {
@@ -85,23 +97,69 @@ func (r *recorder) add(step string) {
 	r.steps = append(r.steps, step)
 }
 
-// writeMarker 在同一个锁里写文件与追加行，保证 marker.txt 与
-// result.json 的 marker_lines 顺序逐字一致。
-func (r *recorder) writeMarker(path, line string) {
+// setMarkerPath 只在初始化/受控测试里调用；与发布、关窗检查共用同一把锁。
+func (r *recorder) setMarkerPath(path string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	r.markerPath = path
+	r.mu.Unlock()
+}
+
+// writeMarkerLocked 必须在持锁时调用：**写盘成功**才追加 markers，
+// 保证 marker.txt 与 result.json 的 marker_lines 逐字一致。失败不追加。
+func (r *recorder) writeMarkerLocked(line string) error {
+	if r.markerPath == "" {
+		return errors.New("marker path not set")
+	}
+	f, err := os.OpenFile(r.markerPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	_, err = f.WriteString(line + "\n")
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		panic(err)
+		return err
 	}
 	r.markers = append(r.markers, line)
+	return nil
+}
+
+// writeMarker 保持 (path, line) 签名以兼容协调者 R1 受控探针；
+// 返回 error 让「写入失败」成为可观察、可拒绝的真实状态。
+func (r *recorder) writeMarker(path, line string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if path != "" {
+		r.markerPath = path
+	}
+	return r.writeMarkerLocked(line)
+}
+
+// publishReady 是**唯一的就绪发布点**。写盘与发布态置位在同一个临界区内，
+// 不存在「flag 已置但 marker 尚未写入」的可观察交错；写盘失败绝不发布；
+// 也绝不清除已记录的 closeArrivedEarly（早到后补写不能翻案）。
+func (r *recorder) publishReady() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writeMarkerLocked(markerReady); err != nil {
+		r.readyPublishErr = err.Error()
+		r.readyRefusedReason = "ready marker write failed: " + err.Error()
+		return err
+	}
+	r.readyPublished = true
+	return nil
+}
+
+// setReadyWritten 仅为兼容协调者 R1 受控探针保留：修复后**不再存在**
+// 可提前置位的就绪 flag，因此它是显式 no-op。就绪状态只由 publishReady 改变。
+// 探针用它模拟「后台观测完成、尚未发布」的交错，关窗检查必须仍判早到。
+func (r *recorder) setReadyWritten() {}
+
+func (r *recorder) setReadyRefused(reason string) {
+	r.mu.Lock()
+	r.readyRefusedReason = reason
+	r.mu.Unlock()
 }
 
 func (r *recorder) onMount(ctx context.Context) {
@@ -163,20 +221,9 @@ func (r *recorder) noteShutdownObservation(unmounts int, cleanupDone bool) (bool
 	return r.shutdownObserved, r.shutdownUnmounts
 }
 
-func (r *recorder) setReadyWritten() {
-	r.mu.Lock()
-	r.readyToCloseWritten = true
-	r.mu.Unlock()
-}
-
-func (r *recorder) setReadyRefused(reason string) {
-	r.mu.Lock()
-	r.readyRefusedReason = reason
-	r.mu.Unlock()
-}
-
-// checkCloseArrival 在销毁回调入口判定「关窗是否早到」：后台观测缺失或
-// ready-to-close 未写都记为证据不足；fixture **不阻止**真实关闭，只拒判通过。
+// checkCloseArrival 与 publishReady 共用同一把锁：只读「已成功落盘发布」的
+// 状态。后台观测缺失或未发布都记为证据不足；fixture **不阻止**真实关闭，
+// 但判定会拒通过。closeArrivedEarly 一旦置位不可逆。
 func (r *recorder) checkCloseArrival() (bool, string) {
 	if r.scenario != scenarioShutdownFirst {
 		return false, ""
@@ -188,11 +235,11 @@ func (r *recorder) checkCloseArrival() (bool, string) {
 		r.closeEarlyReason = "background shutdown observation missing"
 		return true, r.closeEarlyReason
 	}
-	if !r.readyToCloseWritten {
+	if !r.readyPublished {
 		r.closeArrivedEarly = true
-		r.closeEarlyReason = "ready-to-close marker not written"
-		if r.readyRefusedReason != "" {
-			r.closeEarlyReason += ": " + r.readyRefusedReason
+		r.closeEarlyReason = "ready-to-close marker not published"
+		if r.readyPublishErr != "" {
+			r.closeEarlyReason += ": " + r.readyPublishErr
 		}
 		return true, r.closeEarlyReason
 	}
@@ -211,19 +258,35 @@ func (r *recorder) noteFinalizeDoneShutdownCounts() {
 	r.mu.Unlock()
 }
 
+// noteRouterRoot 记录公开 router.Context() 的可观察状态。
+func (r *recorder) noteRouterRoot(before bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	if before {
+		r.routerRootErrBefore = text
+	} else {
+		r.routerRootErrAfter = text
+	}
+}
+
 // aux 在锁内读取仅供展示的辅助字段，避免 Observer 与后台 goroutine 竞态。
 func (r *recorder) aux() map[string]any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return map[string]any{
-		"ready_to_close":       r.readyToCloseWritten,
+		"ready_published":      r.readyPublished,
+		"ready_publish_err":    r.readyPublishErr,
 		"ready_refused_reason": r.readyRefusedReason,
 		"close_early_reason":   r.closeEarlyReason,
 		"layouts":              r.layouts,
 	}
 }
 
-// trace 生成机器判据的唯一输入投影；与 Judge / README §3 逐字段对应。
+// trace 生成机器判据的唯一输入投影；与 Judge / README §5 逐字段对应。
 func (r *recorder) trace(res app.ExitResult) Trace {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -248,6 +311,9 @@ func (r *recorder) trace(res app.ExitResult) Trace {
 		ShutdownCalls:                    r.shutdownCalls,
 		ShutdownCallsBeforeFinalize:      r.shutdownCallsBeforeFinalize,
 		ShutdownCallsAtFinalize:          r.shutdownCallsAtFinalize,
+		ReadyPublished:                   r.readyPublished,
+		RouterRootErrBeforeFinalize:      r.routerRootErrBefore,
+		RouterRootErrAfterFinalize:       r.routerRootErrAfter,
 		FrameRequests:                    r.frameRequests,
 		FramesNeeded:                     r.framesNeeded,
 		CloseArrivedEarly:                r.closeArrivedEarly,
@@ -296,11 +362,16 @@ func main() {
 	markerPath := filepath.Join(dir, "marker.txt")
 
 	rec := &recorder{scenario: scenario}
+	rec.setMarkerPath(markerPath)
 	if scenario == scenarioShutdownFirst {
 		rec.framesNeeded = framesNeededForShutdown
 		rec.ready = make(chan struct{})
 	}
-	appendMarker := func(line string) { rec.writeMarker(markerPath, line) }
+	mustMarker := func(line string) {
+		if err := rec.writeMarker(markerPath, line); err != nil {
+			panic(err)
+		}
+	}
 
 	r := router.New()
 	if err := r.EnableLifecycle(); err != nil {
@@ -320,7 +391,7 @@ func main() {
 			Mount: rec.onMount,
 			Unmount: func() {
 				rec.onUnmount()
-				appendMarker(markerUnmount)
+				mustMarker(markerUnmount)
 			},
 		}, nil
 	}); err != nil {
@@ -342,21 +413,22 @@ func main() {
 			unmounts := rec.unmounts
 			rec.mu.Unlock()
 			observed, atShutdown := rec.noteShutdownObservation(unmounts, cleanupDone)
-			appendMarker(fmt.Sprintf("background-shutdown:unmounts=%d cleanup=%t",
+			mustMarker(fmt.Sprintf("background-shutdown:unmounts=%d cleanup=%t",
 				atShutdown, cleanupDone))
-			// 只有后台 Shutdown 已完成、未发生 OnUnmount、CleanupDone=false
-			// 三个条件同时满足，才写「可关窗」marker。
+			// 三条件不满足：不发布，写 ready-refused。
 			ok, reason := readyToClose(ReadyState{
 				ShutdownCompleted: observed,
 				Unmounts:          atShutdown,
 				CleanupDone:       cleanupDone,
 			})
-			if ok {
-				rec.setReadyWritten()
-				appendMarker(markerReady)
-			} else {
+			if !ok {
 				rec.setReadyRefused(reason)
-				appendMarker(markerReadyRefusedPrefix + reason)
+				mustMarker(markerReadyRefusedPrefix + reason)
+				return
+			}
+			// 唯一发布点：写盘成功与发布态置位在同一临界区；失败不发布。
+			if err := rec.publishReady(); err != nil {
+				mustMarker(markerReadyRefusedPrefix + "ready marker write failed: " + err.Error())
 			}
 		}()
 	}
@@ -366,24 +438,28 @@ func main() {
 	// finalize（Finalize 返回后 = 完成）→ observer（cleanup 之后）。
 	view, err := app.WithOnDestroy(r.View(), func() {
 		if early, reason := rec.checkCloseArrival(); early {
-			appendMarker(markerEarlyPrefix + reason)
+			mustMarker(markerEarlyPrefix + reason)
 		}
-		appendMarker(markerCallback)
+		mustMarker(markerCallback)
 		rec.add("callback")
 		rec.noteFinalizeShutdownCounts()
-		r.LifecycleFinalize() // UI owner：一次最终化；不隐式调用 Shutdown
+		// 真实 Router 根 Context 观察（公开 API）：若 Finalize 隐式触发
+		// Shutdown，这里会后变为 context canceled，是可区分的可见副作用。
+		rec.noteRouterRoot(true, r.Context().Err())
+		r.LifecycleFinalize() // UI owner：一次最终化；销毁回调不调用 Shutdown
+		rec.noteRouterRoot(false, r.Context().Err())
 		rec.noteFinalizeDoneShutdownCounts()
 		rec.add("finalize")
-		appendMarker(markerFinalize)
+		mustMarker(markerFinalize)
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "WithOnDestroy:", err)
 		os.Exit(70)
 	}
 
-	title := fmt.Sprintf("R28-C1 lifecycle native [%s] pid=%d", scenario, os.Getpid())
+	title := fmt.Sprintf("R28-C2 lifecycle native [%s] pid=%d", scenario, os.Getpid())
 	opts := app.ProcessOptions{Observer: func(res app.ExitResult) {
-		appendMarker(fmt.Sprintf("observer:callback=%t cleanup=%t code=%d",
+		mustMarker(fmt.Sprintf("observer:callback=%t cleanup=%t code=%d",
 			res.CallbackDone, res.CleanupDone, res.Code))
 		tr := rec.trace(res)
 		verdict := Judge(tr)
@@ -427,6 +503,15 @@ func main() {
 			"callback_done": res.CallbackDone,
 			"cleanup_done":  res.CleanupDone,
 		}
+		// 证据口径：shutdown_calls 只说明 fixture 显式调用次数；
+		// Router 内部行为以 router.Context() 的可观察状态为准。
+		obs["evidence_scope"] = map[string]any{
+			"shutdown_calls": "fixture 侧显式调用计数，只证明 fixture 调过几次，" +
+				"不作为 Router 内部行为的证据",
+			"router_root_context": "公开 router.Context() 在 LifecycleFinalize 前后的真实状态；" +
+				"Router.Shutdown() 会取消该根，受控对照可区分",
+			"close_arrived_early": "一旦记录不可逆，随后补写 ready marker 不翻案",
+		}
 		obs["native_destroy_event_verdict"] = "未验证：需授权人工标题栏关闭；编译与 log_judge 均不等于原生验收"
 		// 以下字段只能由授权执行者填写，编译/静态分析/受控回归无法产生。
 		obs["runner_fields_required"] = []string{
@@ -445,11 +530,11 @@ func main() {
 		if err := os.WriteFile(filepath.Join(dir, "result.json"), data, 0600); err != nil {
 			panic(err)
 		}
-		fmt.Fprintf(os.Stderr, "R28-C1 lifecycle observer code=%d callback=%t cleanup=%t unmounts=%d log_judge=%s reasons=%v\n",
+		fmt.Fprintf(os.Stderr, "R28-C2 lifecycle observer code=%d callback=%t cleanup=%t unmounts=%d log_judge=%s reasons=%v\n",
 			res.Code, res.CallbackDone, res.CleanupDone, tr.Unmounts, verdictText, verdict.Reasons)
 	}}
 
-	fmt.Fprintf(os.Stderr, "R28-C1 lifecycle start pid=%d scenario=%s title=%q (manual title-bar X to close)\n",
+	fmt.Fprintf(os.Stderr, "R28-C2 lifecycle start pid=%d scenario=%s title=%q (manual title-bar X to close)\n",
 		os.Getpid(), scenario, title)
 	app.RunSingleWindowProcess(view, app.Config{Title: title, Width: 960, Height: 540}, opts)
 	fmt.Fprintln(os.Stderr, "unreachable: process entry returned")
