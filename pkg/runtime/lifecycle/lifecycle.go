@@ -290,8 +290,16 @@ func (o *Owner) Finalize() {
 	o.mu.Unlock()
 }
 
-// CancelOnly 可由**后台线程**调用（例如 Router.Shutdown）：立即取消根与页面
-// Context、拒绝排队更新，但**绝不执行 OnUnmount**——UI 回调不能在后台线程跑。
+// CancelOnly 可由**后台线程**调用（例如 Router.Shutdown）：只**直接**取消
+// owner 根 Context、拒绝排队更新，但**绝不执行 OnUnmount**——UI 回调不能在
+// 后台线程跑。
+//
+// 注意：本函数不承诺取消**独立 parent 的页面** Context。MountHandle 传入非 nil
+// 且独立于 owner 根的 parent 时，页面 Context 的取消由调用方负责：
+// Router.Shutdown 取消 Router 根，或 Finalize 的 unmountCurrent 调用
+// Handle.cancel。parent 为 nil 时页面 Context 派生自 owner 根，会随
+// rootCancel 一并取消。本注释只澄清所有权，不改变任何行为。
+//
 // 若此后 owner 不再运行，CleanupDone() 保持 false，必须由调用方披露。
 // 重复调用幂等，不会重复计数丢弃项。
 func (o *Owner) CancelOnly() {
