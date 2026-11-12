@@ -25,7 +25,7 @@ python scripts/record-command.py run --id native-grid-fixture \
   --cwd <worktree> --containment win-job --timeout 300 \
   --lock-path D:/Codes/Goxml-night-reports/2026-10-27/heavy.lock \
   --lock-mode acquire --lock-agent <runner> --lock-task R28-B-NATIVE-KEYBOARD \
-  -- ./native-grid-fixture.test.exe -test.run TestNativeDataGridKeyboardFixture \
+  -- ./native-grid-fixture.test.exe -test.run '^TestDataGridKeyboardNativeFixture$' \
      -test.v -fixture-log <abs path>/native-grid-fixture-log.jsonl
 ```
 
