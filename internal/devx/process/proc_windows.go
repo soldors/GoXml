@@ -117,19 +117,45 @@ func stopJob(job JobHandle, pid int, deadline time.Time) error {
 	if job == 0 {
 		return nil
 	}
+	// fail-closed：若调用时截止已过，立即报告“退出证明过期”，不得报告成功（保留 expired-deadline 契约）。
+	if !time.Now().Before(deadline) {
+		return errors.New("process exit proof deadline expired")
+	}
+	// 先捕获退出见证（仍在 Job 内的进程句柄），确保即便成员随后退出也有可等待句柄。
 	handles, captureErr := jobProcessHandles(job)
 	defer func() {
 		for _, h := range handles {
 			windows.CloseHandle(h)
 		}
 	}()
+	// 关键顺序（最小修复）：**先用已持有的 Windows Job 句柄终止整棵自有树**（TerminateJobObject
+	// 同步 kill 全部 Job 成员，含后代），不被外部 taskkill 的等待期挤占单一 StopTimeout。
+	var termErr error
+	if terr := windows.TerminateJobObject(job, 1); terr != nil {
+		termErr = fmt.Errorf("TerminateJobObject: %w", terr)
+	}
+	// 退出证明：等待已捕获的自有句柄在截止前全部 signal（在 taskkill 之前做，避免被其耗时饿死）。
+	waitErr := waitProcessHandles(handles, deadline)
+	// taskkill 仅作**有界补充**（gate 契约要求 Manager 仍**调用** tree 命令）。此时树已被 Job 句柄终止；
+	// 为避免外部 taskkill 的等待期挤占单一 StopTimeout、拖延有界返回，**异步**发起（bounded 于同一 deadline），
+	// 不在收口路径同步等待。Job 终止与退出证明才是权威收口依据。
+	var killErr error
 	if pid > 0 {
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
-		// Job termination remains the fallback if taskkill fails or times out.
-		_ = KillProcessTree(ctx, pid)
-		cancel()
+		done := make(chan error, 1)
+		go func() { done <- KillProcessTree(ctx, pid); cancel() }()
+		// 仅在 Job 终止或退出证明**失败**时，才在有界余量内等待并保留 taskkill 错误（fail-closed，不吞错）。
+		if captureErr != nil || termErr != nil || waitErr != nil {
+			select {
+			case killErr = <-done:
+			case <-time.After(time.Until(deadline)):
+				killErr = errors.New("taskkill not completed within deadline")
+			}
+		}
 	}
-	return errors.Join(captureErr, terminateJob(job, deadline), waitProcessHandles(handles, deadline))
+	// 关闭 Job 句柄（KILL_ON_JOB_CLOSE 兜底）。
+	CloseJobOwnership(job)
+	return errors.Join(captureErr, termErr, waitErr, killErr)
 }
 
 func jobProcessHandles(job JobHandle) ([]windows.Handle, error) {
