@@ -4,9 +4,8 @@ package watch
 // internal/devx/process；其它平台明确返回 unsupported（可编译不代表可运行）。
 //
 // 交接顺序（任务 A2）：stop-old → start-new（构建已完成，构建期间旧继续服务）。
-// 停止链有界（F-A4-R1）：整个 stop（tree command + job 终止 + 等待）由一个 StopTimeout deadline 覆盖，
-// taskkill/tree 命令亦受该 deadline 约束（不无限卡）。ActiveAfter 仅统计仍存活的**根**，不作为“整棵树
-// 已收口”的证明；树收口以 job terminate+wait 的真实返回值/错误为据。
+// Job 终止、退出证明和等待根进程的 Wait 结果共用一个 StopTimeout deadline。
+// ActiveAfter 仅统计仍存活的根进程。
 
 import (
 	"context"
@@ -28,11 +27,10 @@ type Child struct {
 	waitErr    error
 	stdinWrite *os.File
 
-	// 停止状态同步保护：job 句柄的唯一消费点。stopMu 保护 job/stopDone/proofErr。
-	stopMu   sync.Mutex
-	job      jobHandle // 平台句柄（Windows Job；其它平台 0）。消费后清零。
-	stopDone bool      // 该 Child 的停止尝试是否已消费其 Job 句柄（只消费一次）
-	proofErr error     // 记录的该代真实退出证明结果（nil=证明成功）
+	// ProcessManager.transitionMu guards the Job and its final stop result.
+	job      jobHandle
+	stopDone bool
+	proofErr error
 }
 
 // Running 报告子进程是否仍在运行（未退出）。
@@ -59,10 +57,11 @@ type ProcessManager struct {
 	// EnvFor 可选：为新代 gen 追加环境变量（R27-A hydration 恢复注入状态文件/会话）。nil=不追加。
 	EnvFor func(gen int) []string
 
-	mu      sync.Mutex
-	current *Child
-	history []*Child
-	logf    func(format string, a ...any)
+	transitionMu sync.Mutex // Serializes shutdown and the full stop/start handoff.
+	mu           sync.Mutex
+	current      *Child
+	history      []*Child
+	logf         func(format string, a ...any)
 }
 
 // NewProcessManager 构造。
@@ -147,34 +146,24 @@ func (m *ProcessManager) start(gen int, bin string) (*Child, error) {
 	return c, nil
 }
 
-// stop 有界停止子进程及其整棵树。**整个停止链**受一个 StopTimeout deadline 约束：
-// tree 命令（taskkill）、job 终止、等待根退出都以此 deadline 为界（F-A4-R1）。
+// stop stops and reaps a child within StopTimeout. The caller holds transitionMu.
 func (m *ProcessManager) stop(c *Child) (stopped bool, waitErr error) {
 	if c == nil {
 		return true, nil
 	}
-	// 唯一消费点：在 stopMu 下判定并取走 Job 句柄；消费后清零，再次停止不操作旧句柄。
-	c.stopMu.Lock()
 	if c.stopDone {
-		prev := c.proofErr
-		werr := c.waitErr
-		c.stopMu.Unlock()
-		if prev != nil {
-			// 既有失败不得被“空句柄哨兵”转成成功（fail-closed）。
-			return false, prev
+		if c.proofErr != nil {
+			return false, c.proofErr
 		}
-		return true, werr
+		return true, c.waitErr
 	}
 	job := c.job
 	c.job = 0
-	c.stopDone = true
-	c.stopMu.Unlock()
 
 	deadline := time.Now().Add(m.timeout())
 	record := func(err error) (bool, error) {
-		c.stopMu.Lock()
 		c.proofErr = err
-		c.stopMu.Unlock()
+		c.stopDone = true
 		if err != nil {
 			return false, err
 		}
@@ -212,6 +201,9 @@ func (m *ProcessManager) Swap(ctx context.Context, gen int) error {
 	if bin == "" {
 		return fmt.Errorf("gen=%d 无二进制路径", gen)
 	}
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+
 	m.mu.Lock()
 	old := m.current
 	m.mu.Unlock()
@@ -249,6 +241,9 @@ func (m *ProcessManager) Swap(ctx context.Context, gen int) error {
 
 // Shutdown 有界停止当前子进程及其整棵树。
 func (m *ProcessManager) Shutdown() error {
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+
 	m.mu.Lock()
 	c := m.current
 	m.mu.Unlock()

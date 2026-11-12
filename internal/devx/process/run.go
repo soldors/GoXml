@@ -88,11 +88,8 @@ func RunCommandTree(ctx context.Context, exe string, args []string, dir string, 
 		defer cancel()
 		// Use a live cleanup context, not the already-cancelled execution context.
 		deadline, _ := cleanupCtx.Deadline()
-		// **用已持有的 Job 句柄**终止整棵自有工具树：TerminateAndWaitJob 以 Job 句柄同步杀所有 Job 成员
-		//（含后代）并轮询 ActiveProcesses 归零，不等外部 taskkill 的等待期——后代在取消当刻即停，不再写盘
-		//（lateWrite）；有界于同一 cleanup deadline；错误可观测（不吞）。这是本轮窄修复：取消路径优先用
-		//**已拥有的 Windows Job/进程句柄**退出，而非外部终止工具。Manager 路径的 StopJobTree（含 taskkill）
-		// 保持不变。
+		// Terminate the owned Job and verify its members exited within the
+		// cleanup deadline, using the same proof as the Watch manager.
 		jerr := TerminateAndWaitJob(job, deadline)
 		_, joined := joinCommand(cleanupCtx, waitCh)
 		if !joined {
