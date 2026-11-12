@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -61,33 +62,37 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 		return nil, ErrTooLarge
 	}
 
+	// 贯穿拨号的 context：取消/超时有界返回，不遗留拨号 goroutine。DialContext 尊重 ctx.Done。
 	d := net.Dialer{Deadline: deadline}
-	var conn net.Conn
-	// 在有界 ctx 内拨号。
-	type dialRes struct {
-		c   net.Conn
-		err error
-	}
-	ch := make(chan dialRes, 1)
-	go func() {
-		cc, ce := d.Dial("tcp", c.addr)
-		ch <- dialRes{cc, ce}
-	}()
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			return nil, r.err
+	conn, derr := d.DialContext(ctx, "tcp", c.addr)
+	if derr != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr // 取消/超时优先返回对应 ctx 错误（可 errors.Is）
 		}
-		conn = r.c
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(time.Until(deadline)):
-		return nil, context.DeadlineExceeded
+		return nil, derr
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(deadline)
 
+	// 贯穿连接后 I/O 的 context：ctx 取消时**有界关闭自有连接**，使阻塞的 Write/readUpTo 立即返回；
+	// 用 stop 通道在正常完成时回收 watcher（不遗留 goroutine）。
+	watcherStop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close() // 有界关闭自有连接
+		case <-watcherStop:
+		}
+	}()
+	// 关闭 watcher（幂等：正常路径 close 一次；defer 兜底避免泄漏）。
+	var stopOnce sync.Once
+	stopWatcher := func() { stopOnce.Do(func() { close(watcherStop) }) }
+	defer stopWatcher()
+
 	if _, werr := conn.Write(raw); werr != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		return nil, werr
 	}
 	// 半关写端，让端点 readUpTo 读到 EOF。
@@ -96,8 +101,12 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 	}
 	respRaw, rerr := readUpTo(conn, MaxResponseBytes+1)
 	if rerr != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr // 取消导致连接关闭：还原为 ctx 错误（可 errors.Is(Canceled/DeadlineExceeded)）
+		}
 		return nil, rerr
 	}
+	stopWatcher()
 	if len(respRaw) > MaxResponseBytes {
 		return nil, ErrTooLarge
 	}
@@ -126,6 +135,9 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 			return nil, ErrOwnerClosed
 		case ErrTooLarge.Error():
 			return nil, ErrTooLarge
+		case ErrMismatch.Error():
+			// 端点在错代/关联不符时以 ErrMismatch 拒绝；客户端须原样还原，不得降级为 ErrCaptureFail。
+			return nil, ErrMismatch
 		default:
 			return nil, ErrCaptureFail
 		}
@@ -137,6 +149,10 @@ func (c *Client) Capture(ctx context.Context, oldGen int) ([]byte, error) {
 	}
 	if len(resp.Payload) > MaxResponseBytes {
 		return nil, ErrTooLarge
+	}
+	// 交出 payload 前最后一次检查取消：取消已发生 => 不交出 payload，返回 ctx 错误（可 errors.Is）。
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
 	}
 	return append([]byte(nil), resp.Payload...), nil
 }
