@@ -5,6 +5,9 @@ package widgets
 // 本守卫 FAIL（翻红）。
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strings"
@@ -22,16 +25,19 @@ func TestKBSelectorGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal("读取 RUNBOOK 失败:", err)
 	}
-	runbook := string(b)
+	_, afterHeading, found := strings.Cut(string(b), "\n## 2. ")
+	if !found {
+		t.Fatal("RUNBOOK 缺少 §2")
+	}
+	section, _, _ := strings.Cut(afterHeading, "\n## ")
 
 	// 提取 §2 的 -test.run 参数
 	runRe := regexp.MustCompile(`-test\.run\s+(\S+)`)
-	matches := runRe.FindAllStringSubmatch(runbook, -1)
-	if len(matches) == 0 {
-		t.Fatal("RUNBOOK §2 缺少 -test.run 选择器")
+	matches := runRe.FindAllStringSubmatch(section, -1)
+	if len(matches) != 1 {
+		t.Fatalf("RUNBOOK §2 应有一个 -test.run 选择器，实得 %d", len(matches))
 	}
-	// 取最后一个（§2 是实际运行段），去引号
-	selector := strings.Trim(matches[len(matches)-1][1], "'\"")
+	selector := strings.Trim(matches[0][1], "'\"")
 
 	// 验证锚定形式
 	if !strings.HasPrefix(selector, "^") || !strings.HasSuffix(selector, "$") {
@@ -46,14 +52,13 @@ func TestKBSelectorGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("选择器正则编译失败: %v", err)
 	}
-	nativeTests := []string{
-		"TestDataGridKeyboardNativeFixture",
-		"TestNativeMenuClosingFrameDropsHitAreas", // R26 nativewindow（如存在）
-		"TestNativeModalClosingFrameDropsHitAreas",
+	src, err := parser.ParseFile(token.NewFileSet(), "datagrid_keyboard_native_test.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
 	}
 	hits := 0
-	for _, name := range nativeTests {
-		if anchorRe.MatchString(name) {
+	for _, decl := range src.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && anchorRe.MatchString(fn.Name.Name) {
 			hits++
 		}
 	}

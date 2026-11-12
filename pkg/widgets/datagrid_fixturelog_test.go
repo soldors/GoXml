@@ -194,25 +194,17 @@ func (p *kbProducer) dumpIfRequested(t *testing.T, name string) {
 // 选择/滚动（几何用当帧 Dp 换算，不引用上一帧缓存）。
 func TestKBFixtureLogProducerPositive(t *testing.T) {
 	p := newKBProducer(t, 10000, 960, 640, 1.0)
-	kbNav := func(name string) {
-		// 键盘因果标记：测试已知按下了导航键，经同一 emit 路径留痕。
-		p.log.emit(map[string]interface{}{"event": "keyboard-nav", "name": name})
-	}
 	p.frame() // 起始帧（resize 记录 pxPerDp=1）
 	p.focusSelf()
 	p.click(50, 24+2*24+12) // 行 2（DPI 100%，几何 rowHpx=24）
 	p.keyPress(key.NameDownArrow)
-	kbNav("↓")
 	// 100%→150% 同帧选择/滚动：改 DPI 后按 End——末行选择与滚到底在
 	// 新几何当帧完成（rowHpx=36），不得引用上一帧缓存（24）。
 	p.setDPI(1.5)
 	p.keyPress(key.NameEnd)
-	kbNav("⇟") // End
-	// 真实 emit 补齐窗口生命周期（close/run-return/exit）。
-	p.log.emit(map[string]interface{}{"event": "destroy-callback"})
-	p.log.emit(map[string]interface{}{"event": "close", "err": fmt.Sprint(error(nil))})
-	p.log.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(error(nil))})
-	p.log.emit(map[string]interface{}{"event": "exit", "runErr": "<nil>"})
+	// 在离屏用例中模拟调用点，和窗口入口共享记录函数。
+	p.log.recordDestroy()
+	p.log.recordRunResult(nil)
 	p.dumpIfRequested(t, "producer-positive.jsonl")
 
 	// 断言（手算）：DPI 1.0 帧（frame<4）rowHpx=24；End 帧（frame≥4）
@@ -247,23 +239,21 @@ func TestKBFixtureLogProducerPositive(t *testing.T) {
 		t.Fatalf("几何轨迹不完整：old=%v new=%v maxScroll=%v", sawOldGeom, sawNewGeom, sawMaxScroll)
 	}
 	// End 后末行可见（同帧滚入）。
-	if !p.view.selVisible && p.view.gridA.ScrollOffset() == 0 {
-		t.Fatal("End 后可见性/滚动未生效")
+	if !p.view.selVisible {
+		t.Fatal("End 后末行必须在同一帧可见")
 	}
 }
 
 // TestKBFixtureLogProducerPointerOnly：纯鼠标轨迹——只点击与滚轮，无任何
-// 键盘事件。judge 必须拒绝将其作为键盘证据（KEYBOARD: NOT-JUDGED）。
+// 键盘事件。结构合规，但不能作为键盘通过证据。
 func TestKBFixtureLogProducerPointerOnly(t *testing.T) {
 	p := newKBProducer(t, 10000, 960, 640, 1.0)
 	p.frame()
 	p.focusSelf()
 	p.click(50, 24+3*24+12) // 行 3（鼠标选择）
 	p.frame(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32.Pt(150, 100), Scroll: f32.Pt(0, 500)})
-	p.log.emit(map[string]interface{}{"event": "destroy-callback"})
-	p.log.emit(map[string]interface{}{"event": "close", "err": fmt.Sprint(error(nil))})
-	p.log.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(error(nil))})
-	p.log.emit(map[string]interface{}{"event": "exit", "runErr": "<nil>"})
+	p.log.recordDestroy()
+	p.log.recordRunResult(nil)
 	p.dumpIfRequested(t, "producer-pointer-only.jsonl")
 
 	// 内存断言：轨迹中确有选择与滚动（日志结构完整），但日志本身不携带
@@ -293,10 +283,8 @@ func TestKBFixtureLogProducerRunErr(t *testing.T) {
 	p.focusSelf()
 	p.click(50, 24+12)
 	runErr := fmt.Errorf("simulated native window failure")
-	p.log.emit(map[string]interface{}{"event": "destroy-callback"})
-	p.log.emit(map[string]interface{}{"event": "close", "err": fmt.Sprint(error(nil))})
-	p.log.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(runErr)})
-	p.log.emit(map[string]interface{}{"event": "exit", "runErr": fmt.Sprint(runErr)})
+	p.log.recordDestroy()
+	p.log.recordRunResult(runErr)
 	p.dumpIfRequested(t, "producer-run-error.jsonl")
 
 	sawErr := false
@@ -311,5 +299,23 @@ func TestKBFixtureLogProducerRunErr(t *testing.T) {
 	}
 	if !sawErr {
 		t.Fatal("缺 run-return 事件")
+	}
+}
+
+func TestKBFixtureLogPreservesExistingEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.jsonl")
+	const prior = "prior evidence\n"
+	if err := os.WriteFile(path, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if log, err := newFixtureLog(path); !os.IsExist(err) {
+		if log != nil {
+			log.flushAndClose()
+		}
+		t.Fatalf("existing evidence must be refused: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != prior {
+		t.Fatalf("existing evidence changed: %q (%v)", b, err)
 	}
 }

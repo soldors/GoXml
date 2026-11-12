@@ -2,7 +2,7 @@ package widgets
 
 // DataGrid 原生验收 fixture 的日志生产者与根 View（R28-B2 拆分）。
 //
-// 本文件**默认编译**（无 build tag）：native fixture 的留痕与布局逻辑
+// 本文件仅在测试中编译：native fixture 的留痕与布局逻辑
 // 与真实窗口循环分离，使「实际 Go 日志写入路径」可以在无窗口离屏回归
 // 中被真实驱动（datagrid_fixturelog_test.go）。nativewindow 标签文件
 // （datagrid_keyboard_native_test.go）只保留窗口循环与入口，并复用本
@@ -13,7 +13,7 @@ package widgets
 //
 // 几何口径（R2 修正）：sel-change/scroll 事件的 bodyHpx/rowHpx/headerHpx
 // 一律取**当帧** gtx.Dp 换算值——不引用上一帧缓存，DPI 变化当帧即为
-// 新值（无窗口回归 TestKBFixtureGeometrySameFrameDPI 守护）。
+// 新值（无窗口回归 TestKBFixtureLogProducerPositive 守护）。
 
 import (
 	"bufio"
@@ -70,14 +70,14 @@ type fixtureLog struct {
 	frameN int
 }
 
-// newFixtureLog 打开（或创建）日志文件。path 为空时返回仅内存计数的
+// newFixtureLog 创建独占日志文件。path 为空时返回仅内存计数的
 // 日志（emit 仍推进 seq/frameN，供无窗口生产者测试复用真实路径）。
 func newFixtureLog(path string) (*fixtureLog, error) {
 	l := &fixtureLog{}
 	if path == "" {
 		return l, nil
 	}
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +102,15 @@ func (l *fixtureLog) emit(m map[string]interface{}) {
 	l.bw.Write(b)
 	l.bw.WriteByte('\n')
 	l.bw.Flush()
+}
+
+func (l *fixtureLog) recordDestroy() {
+	l.emit(map[string]interface{}{"event": "destroy-callback"})
+}
+
+func (l *fixtureLog) recordRunResult(runErr error) {
+	l.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(runErr)})
+	l.emit(map[string]interface{}{"event": "exit"})
 }
 
 // flush 落盘（exit 后由调用方 Sync/Close）。

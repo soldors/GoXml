@@ -11,7 +11,7 @@
 //   - gridB：同数据、键盘禁用对照（永不消费导航键）；
 //   - editor：真实 widget.Editor（第二个可区分焦点消费者）。
 //
-// 布局与留痕在 fixtureView（datagrid_fixturelog.go，默认编译——留痕路径
+// 布局与留痕在 fixtureView（datagrid_fixture_helpers_test.go，留痕路径
 // 与无窗口生产者回归共用同一实现）。本文件只保留窗口循环与入口：
 // RunWindow（自有且永不关闭的 stop channel）+ WithOnDestroy 真实 close
 // 记录 + run-return/exit 区分（成功/错误不互相冒充；RunWindow 非 nil
@@ -23,7 +23,6 @@ package widgets
 
 import (
 	"flag"
-	"fmt"
 	"testing"
 
 	"gioui.org/unit"
@@ -44,10 +43,7 @@ func TestDataGridKeyboardNativeFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 fixture 日志失败: %v", err)
 	}
-	defer func() {
-		log.emit(map[string]interface{}{"event": "exit"})
-		log.flushAndClose()
-	}()
+	defer log.flushAndClose()
 
 	gridA := NewDataGrid(unit.Dp(24))
 	if err := gridA.SetColumns(fixtureGridColumns()); err != nil {
@@ -81,9 +77,7 @@ func TestDataGridKeyboardNativeFixture(t *testing.T) {
 	}
 	// 真实 close 经公开 WithOnDestroy 观察记录（事件循环收到
 	// DestroyEvent 时同步回调）。
-	wv, err := goxmlapp.WithOnDestroy(view, func() {
-		log.emit(map[string]interface{}{"event": "destroy-callback"})
-	})
+	wv, err := goxmlapp.WithOnDestroy(view, log.recordDestroy)
 	if err != nil {
 		t.Fatalf("WithOnDestroy: %v", err)
 	}
@@ -93,7 +87,7 @@ func TestDataGridKeyboardNativeFixture(t *testing.T) {
 		Height: unit.Dp(640),
 	}, stop)
 	// 成功返回 / 错误 / 运行方观察到的 rc 三者区分记录（不互相冒充）。
-	log.emit(map[string]interface{}{"event": "run-return", "err": fmt.Sprint(runErr)})
+	log.recordRunResult(runErr)
 	if log.frameN == 0 {
 		t.Fatal("RunWindow 未执行任何帧")
 	}

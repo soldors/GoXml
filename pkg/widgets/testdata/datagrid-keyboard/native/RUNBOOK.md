@@ -30,7 +30,7 @@ python scripts/record-command.py run --id native-grid-fixture \
 ```
 
 - containment win-job：进程对象在 Job 内，超时/失败由运行方 `taskkill /T /PID <pid> /F` 收口；
-- 每帧 flush 日志，强杀不丢已记录帧；
+- 使用不存在的独占日志路径；已存在文件会拒绝。每条事件立即 flush。
 - 操作者按下方步骤操作，结束后标题栏关闭（优雅退出，rc=0）；
 - 超时前未关闭 → 容器杀进程 → judge 以已有帧判定（缺 exit 事件 → FAIL R7，如实记录）。
 
@@ -51,16 +51,18 @@ python scripts/record-command.py run --id native-grid-fixture \
 | T10 | 最大化/还原 | resize 事件 | 几何正确 |
 | T11 | 拖动窗口角落缩放 | resize 事件序列 | |
 | T12 | gridB（禁用对照）点击选择后按键 | 无键盘反应（鼠标选择可用） | |
-| T13 | 标题栏关闭 | close → exit | rc=0 |
+| T13 | 标题栏关闭 | destroy-callback → run-return(err="<nil>") → exit | runner 实测 rc=0、无残留 |
 
 ## 4. 判定
 
 ```bash
 python pkg/widgets/testdata/datagrid-keyboard/native/judge_native_log.py <log.jsonl>
-# VERDICT: PASS（不变式 R1..R8 全过）/ FAIL（逐条列出）
+# STRUCTURAL: PASS / FAIL; KEYBOARD: MANUAL-REQUIRED
 ```
 
-人工观察项（IME 组合窗归属、视觉、卡顿主观感受）按表记录，不并入 judge。
+结构 PASS 不能作为键盘或总体 PASS。键位、连发、IME、DPI 的人工记录须与
+本次 runner 的唯一 run ID、日志路径及 SHA-256 对账；缺记录或实测退出码/收口
+证据时，不得宣称总体通过。
 
 ## 5. 终止条件
 
