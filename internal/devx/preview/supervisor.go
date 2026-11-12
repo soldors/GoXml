@@ -24,8 +24,19 @@ var (
 )
 
 // 有界回收的时限。所有等待都有上限：终止命令失败不允许 Wait 无限挂住。
+//
+// killCommandTimeout 是**外部终止命令**（绝对路径 taskkill /PID /T /F）的
+// 执行预算。R28 Preview 共享门禁诊断（preview-gate-delivery）在本机用自建
+// console helper 实测：该命令需 685–711ms；原 500ms 会在命令返回前触发
+// CommandContext 的 deadline，把 taskkill 自身杀掉，表现为 exit status 1
+// 且 CombinedOutput 为空，于是把真实可用的终止命令误报为失败，自有进程树
+// 也未被及时收口（leaf 仍写出 marker）。
+//
+// 5s 仍是**有界**预算，不是等待/凑绿：终止工具不可用时启动失败立即上报，
+// 绝不吞错；超时后仍保留精确自有 PID 的兜底 Kill 与 reapBound /
+// finalReapBound 有界回收。不得按错误文本放宽「终止命令不可用」守卫。
 const (
-	killCommandTimeout = 500 * time.Millisecond
+	killCommandTimeout = 5 * time.Second
 	reapBound          = 250 * time.Millisecond
 	finalReapBound     = 250 * time.Millisecond
 )
