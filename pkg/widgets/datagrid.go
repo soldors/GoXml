@@ -167,6 +167,12 @@ type DataGrid struct {
 	colWidthsBuf []int
 	stats        DataGridFrameStats
 
+	// R-clip 修复：最近一帧 body 裁剪边界的 Min.Y（px）。
+	// 0 表示未推入 body clip（修复前的行为）；>= headerHpx 表示表体被
+	// 裁在表头下方。同包测试用它验证实际绘制边界。
+	bodyClipMinY int
+	_bodyClipOK  bool
+
 	// 键盘单选/纵向导航（R28-B 候选，默认关闭；实现见 datagrid_keyboard.go）
 	kbEnabled  bool
 	kbPageRows int
@@ -362,6 +368,16 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	// 3. 表头（固定带，随点击几何一致：表头行不参与行命中）。
 	g.drawHeader(gtx, th, headerH, colWidths, viewport.X)
 
+	// R-clip 修复：表体裁剪到 body 区域（headerH 以下），防止滚动后
+	// 部分可见行的绘制越进固定表头区域。此 clip 在表头之后、行之前
+	// 推入，行绘制结束后弹出。
+	bodyClip := clip.Rect(image.Rectangle{
+		Min: image.Pt(0, headerH),
+		Max: image.Pt(viewport.X, viewport.Y),
+	}).Push(gtx.Ops)
+	g.bodyClipMinY = headerH
+	g._bodyClipOK = true
+
 	// 4. 访问窗口（读取身份、预热缓存）——只访问 [acc0, acc1)。
 	for i := acc0; i < acc1; i++ {
 		g.stats.First = acc0
@@ -399,6 +415,7 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		}
 		g.drawRow(gtx, th, g.rows[i], rowRect, colWidths, rowH)
 	}
+	bodyClip.Pop()
 	return layout.Dimensions{Size: viewport}
 }
 
