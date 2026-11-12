@@ -7,7 +7,6 @@ package process
 // 但 start/stop 会返回明确错误（调用方据此 fail-closed，不误以为已管理）。
 
 import (
-	"context"
 	"errors"
 	"os/exec"
 	"time"
@@ -29,4 +28,3 @@ func TerminateAndWaitJob(job JobHandle, deadline time.Time) error {
 func StopJobTree(job JobHandle, pid int, deadline time.Time) error {
 	return errTreeOwnershipUnsupported
 }
-func KillProcessTree(ctx context.Context, pid int) error { return errTreeOwnershipUnsupported }

@@ -80,7 +80,8 @@ func requireExited(t *testing.T, pid int, within time.Duration) {
 	}
 }
 
-// TestExpiredCleanupReleasesJobAndDescendantExits 过期错误路径：句柄仍被关闭、返回明确错误、真实后代退出。
+// TestExpiredCleanupReleasesJobAndDescendantExits 过期错误路径：句柄仍被关闭、返回明确错误、
+// 真实自有**根 + 后代**（就绪握手后）均退出（升级自 R1 仅写自身 PID）。
 func TestExpiredCleanupReleasesJobAndDescendantExits(t *testing.T) {
 	dir := t.TempDir()
 	job, cmd, leafPid := spawnOwnedHeld(t, dir)
@@ -88,7 +89,22 @@ func TestExpiredCleanupReleasesJobAndDescendantExits(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	leaf := waitLeafPid(t, leafPid)
+	rootPID := cmd.Process.Pid
+	leaf := waitLeafPid(t, leafPid) // 就绪握手：真实后代已写自身 PID
+	if leaf == rootPID {
+		t.Fatal("held helper must spawn a distinct descendant, not report root pid")
+	}
+	// 停前持有根与后代两个同步句柄。
+	rootH, e := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(rootPID))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer windows.CloseHandle(rootH)
+	leafH, e := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(leaf))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer windows.CloseHandle(leafH)
 
 	// 过期 deadline：TerminateAndWaitJob 必须返回明确错误（不得报告成功）。
 	err := TerminateAndWaitJob(job, time.Now().Add(-time.Second))
@@ -103,7 +119,13 @@ func TestExpiredCleanupReleasesJobAndDescendantExits(t *testing.T) {
 		CloseJobOwnership(job)
 		t.Fatalf("expired cleanup did not release the owned Job handle: err=%v", qerr)
 	}
-	// 错误路径释放（KILL_ON_JOB_CLOSE 关闭）后，真实自有后代必须退出。
+	// 错误路径释放（KILL_ON_JOB_CLOSE 关闭）后，真实根与后代均须退出：显式 WAIT_OBJECT_0。
+	if state, werr := windows.WaitForSingleObject(rootH, 5000); werr != nil || state != windows.WAIT_OBJECT_0 {
+		t.Fatalf("root not exited after error-path release: state=%d err=%v", state, werr)
+	}
+	if state, werr := windows.WaitForSingleObject(leafH, 5000); werr != nil || state != windows.WAIT_OBJECT_0 {
+		t.Fatalf("descendant not exited after error-path release: state=%d err=%v", state, werr)
+	}
 	requireExited(t, leaf, 5*time.Second)
 }
 

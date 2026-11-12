@@ -27,7 +27,12 @@ type Child struct {
 	done       chan struct{}
 	waitErr    error
 	stdinWrite *os.File
-	job        jobHandle // 平台句柄（Windows Job；其它平台 0）
+
+	// 停止状态同步保护：job 句柄的唯一消费点。stopMu 保护 job/stopDone/proofErr。
+	stopMu   sync.Mutex
+	job      jobHandle // 平台句柄（Windows Job；其它平台 0）。消费后清零。
+	stopDone bool      // 该 Child 的停止尝试是否已消费其 Job 句柄（只消费一次）
+	proofErr error     // 记录的该代真实退出证明结果（nil=证明成功）
 }
 
 // Running 报告子进程是否仍在运行（未退出）。
@@ -148,28 +153,53 @@ func (m *ProcessManager) stop(c *Child) (stopped bool, waitErr error) {
 	if c == nil {
 		return true, nil
 	}
+	// 唯一消费点：在 stopMu 下判定并取走 Job 句柄；消费后清零，再次停止不操作旧句柄。
+	c.stopMu.Lock()
+	if c.stopDone {
+		prev := c.proofErr
+		werr := c.waitErr
+		c.stopMu.Unlock()
+		if prev != nil {
+			// 既有失败不得被“空句柄哨兵”转成成功（fail-closed）。
+			return false, prev
+		}
+		return true, werr
+	}
+	job := c.job
+	c.job = 0
+	c.stopDone = true
+	c.stopMu.Unlock()
+
 	deadline := time.Now().Add(m.timeout())
-	if !c.Running() {
-		// 根已退出：仍用 job 句柄终止其后代（句柄在根退出后仍有效），有界等待。
-		if jerr := terminateAndWaitJob(c.job, deadline); jerr != nil {
-			return false, fmt.Errorf("gen=%d 根已退出，终止后代失败: %w", c.Gen, jerr)
+	record := func(err error) (bool, error) {
+		c.stopMu.Lock()
+		c.proofErr = err
+		c.stopMu.Unlock()
+		if err != nil {
+			return false, err
 		}
 		return true, c.waitErr
 	}
-	// Capture owned process handles before taskkill removes members from the job.
+	if job == 0 {
+		// 无可证明的自有 Job 句柄（不应发生：正常 start 必带 Job）：fail-closed，不谎报成功。
+		return record(fmt.Errorf("gen=%d 无自有 Job 句柄可证明退出", c.Gen))
+	}
+	// 关闭 stdin（根若在读则自然退出；不影响 Job 证明）。
 	if c.stdinWrite != nil {
 		_ = c.stdinWrite.Close()
 		c.stdinWrite = nil
 	}
-	if jerr := stopJobTree(c.job, c.PID, deadline); jerr != nil {
-		// job 终止失败：不做成功伪装；返回 false。
-		return false, fmt.Errorf("gen=%d job 终止失败: %w", c.Gen, jerr)
+	// Manager 的 Windows 自有 Job **统一用已持有的 Job 句柄收口**（TerminateAndWaitJob）：无 PID 型外部命令。
+	if jerr := terminateAndWaitJob(job, deadline); jerr != nil {
+		return record(fmt.Errorf("gen=%d job 终止/证明失败: %w", c.Gen, jerr))
 	}
+	// 记录真实证明结果（TerminateAndWaitJob 成功即 ActiveProcesses==0 且已捕获句柄 signaled）。
+	// 额外等待根 cmd.Wait 归口，bounded 于同一 deadline（不延长 StopTimeout）。
 	select {
 	case <-c.done:
-		return true, c.waitErr
+		return record(nil)
 	case <-time.After(time.Until(deadline)):
-		return false, fmt.Errorf("old child gen=%d pid=%d 未在 StopTimeout 内收口", c.Gen, c.PID)
+		return record(fmt.Errorf("old child gen=%d pid=%d 未在 StopTimeout 内收口", c.Gen, c.PID))
 	}
 }
 

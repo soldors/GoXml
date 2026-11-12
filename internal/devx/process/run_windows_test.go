@@ -26,10 +26,24 @@ func TestMain(m *testing.M) {
 		fmt.Fprint(os.Stderr, "compiler diagnostic")
 		os.Exit(7)
 	case "held":
+		// ready handshake: root spawns a REAL descendant (held-leaf) that writes its own PID, then root waits.
+		// This provides root+descendant readiness (upgraded from R1 write-own-PID-only).
+		if p := os.Getenv("GOXML_LEAF_PID"); p != "" {
+			leaf := exec.Command(os.Args[0], "-test.run=^$")
+			leaf.Env = append(os.Environ(), "GOXML_OWNED_STREAM_HELPER=held-leaf", "GOXML_LEAF_PID="+p)
+			leaf.Stdout = os.Stdout
+			leaf.Stderr = os.Stderr
+			if err := leaf.Start(); err != nil {
+				os.Exit(4)
+			}
+		}
+		time.Sleep(30 * time.Second) // owned child lifetime, never used for ordering
+		os.Exit(0)
+	case "held-leaf":
 		if p := os.Getenv("GOXML_LEAF_PID"); p != "" {
 			os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0600)
 		}
-		time.Sleep(30 * time.Second) // owned child lifetime, never used for ordering
+		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	case "pipe-root":
 		cmd := exec.Command(os.Args[0], "-test.run=^$")

@@ -6,7 +6,6 @@ package process
 // 使公共包在非 Windows 下可编译（F-A8）。
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -105,15 +104,19 @@ type jobAccounting struct {
 // TerminateAndWaitJob retains process handles before requesting termination.
 // Job accounting can reach zero before those handles are signaled.
 func TerminateAndWaitJob(job JobHandle, deadline time.Time) error {
-	return stopJob(job, 0, deadline)
+	return stopJob(job, deadline)
 }
 
-// StopJobTree captures exit witnesses before taskkill can remove job members.
-func StopJobTree(job JobHandle, pid int, deadline time.Time) error {
-	return stopJob(job, pid, deadline)
+// StopJobTree is now the **Job-only** owned-tree stop (no PID-based external command). The pid argument
+// is retained for API compatibility with callers/probes but is **ignored**: the authoritative termination
+// and exit proof use only the held Job handle (TerminateJobObject + ActiveProcesses==0 + captured handles
+// signaled). No external taskkill is ever launched, so no Job-outside PID is targeted and no external-tree
+// descendant can act after stop returns.
+func StopJobTree(job JobHandle, _ int, deadline time.Time) error {
+	return stopJob(job, deadline)
 }
 
-func stopJob(job JobHandle, pid int, deadline time.Time) error {
+func stopJob(job JobHandle, deadline time.Time) error {
 	if job == 0 {
 		return nil
 	}
@@ -132,64 +135,14 @@ func stopJob(job JobHandle, pid int, deadline time.Time) error {
 			windows.CloseHandle(h)
 		}
 	}()
-	// 权威终止：先用已持有的 Job 句柄 TerminateJobObject 同步 kill 全部 Job 成员（含后代）。
+	// 权威终止：用已持有的 Job 句柄 TerminateJobObject 同步 kill 全部 Job 成员（含后代）。**无** PID 型外部命令。
 	var termErr error
 	if terr := windows.TerminateJobObject(job, 1); terr != nil {
 		termErr = fmt.Errorf("TerminateJobObject: %w", terr)
 	}
-	// 外部 tree 命令：与退出证明**并行**发起（各自有界于同一 StopTimeout），并在**返回前收口**自己启动的命令
-	// （不留到返回后再按原 PID 动作）。并行保证慢命令/不存在目标不挤掉证明预算（证明不被 taskkill 串行阻塞），
-	// 同时 taskkill 获得从发起到取消的完整 STOP 窗口以便真正启动（entered）。命令失败可观测，不掩盖证明结果。
-	var killErr error
-	var tkDone chan error
-	if pid > 0 {
-		// 为返回后的外层 c.done 收口保留预算：tree 命令使用**较早的子截止**（deadline - doneReserve），
-		// 使其在被取消后能于外层 StopTimeout 之前被收口；并行发起保证启动窗口；证明仍用完整 deadline。
-		doneReserve := time.Until(deadline) / 4
-		if doneReserve > 300*time.Millisecond {
-			doneReserve = 300 * time.Millisecond
-		}
-		tkDeadline := deadline.Add(-doneReserve)
-		if !time.Now().Before(tkDeadline) {
-			tkDeadline = time.Now().Add(time.Until(deadline) / 2)
-		}
-		tkDone = make(chan error, 1)
-		ctx, cancel := context.WithDeadline(context.Background(), tkDeadline)
-		go func() { err := KillProcessTree(ctx, pid); cancel(); tkDone <- err }()
-	}
-	// 退出证明（权威）：同一 StopTimeout 内 (a) Job ActiveProcesses==0 且 (b) 已捕获句柄全部 signaled。
+	// 退出证明（权威）：同一 StopTimeout 内 (a) Job ActiveProcesses==0 且 (b) 已捕获句柄全部 signaled(WAIT_OBJECT_0)。
 	proofErr := waitJobEmptyAndHandles(job, handles, deadline)
-	// 返回前收口自有 tree 命令（其子截止已早于 deadline，故此处等待有界且留出 c.done 余量）。
-	if tkDone != nil {
-		select {
-		case killErr = <-tkDone:
-		case <-time.After(time.Until(deadline)):
-			killErr = errors.New("tree command not reaped within deadline")
-		}
-	}
-	// 若 Job 句柄已**证明整棵树退出**（捕获/终止/双重退出证明均成功），tree 命令仅补充：其慢/无目标/
-	// 被取消的错误**不**使 Shutdown 失败（不得误报）；但它已在返回前同步发起并收口（不留到返回后动作）。
-	// 反之若退出证明失败，tree 命令错误必须保留（fail-closed，不吞错）。
-	if captureErr == nil && termErr == nil && proofErr == nil {
-		killErr = nil
-	}
-	return errors.Join(captureErr, termErr, proofErr, killErr)
-}
-
-// runTaskkillBounded 在返回前同步运行自有 tree 命令，并收口该命令本身；只占用总余量的有界子预算
-// （<= 剩余一半），为 Job 终止与退出证明保留预算。命令被 ctx 取消后仍等待其退出（收口自有命令）。
-func runTaskkillBounded(pid int, deadline time.Time) error {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return errors.New("no budget for tree command")
-	}
-	budget := remaining / 2
-	if budget <= 0 {
-		budget = remaining
-	}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(budget))
-	defer cancel()
-	return KillProcessTree(ctx, pid)
+	return errors.Join(captureErr, termErr, proofErr)
 }
 
 // waitJobEmptyAndHandles 双重退出证明：Job ActiveProcesses==0 且已捕获句柄全部 signaled，均有界于 deadline。
@@ -293,10 +246,4 @@ func terminateJob(job JobHandle, deadline time.Time) error {
 		return fmt.Errorf("QueryInformationJobObject: %w", lastErr)
 	}
 	return fmt.Errorf("job 未在 StopTimeout 内清空（ActiveProcesses 未归零）")
-}
-
-// KillProcessTree 在**有界 ctx**内执行 taskkill /T /F（受 StopTimeout 约束，不无限卡）。
-func KillProcessTree(ctx context.Context, pid int) error {
-	cmd := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", pid))
-	return cmd.Run()
 }
