@@ -21,17 +21,38 @@ import (
 func TestTerminateJobNormalTerminatesAndCloses(t *testing.T) {
 	dir := t.TempDir()
 	job, cmd, leafPid := spawnOwnedHeld(t, dir)
+	owned := job
 	t.Cleanup(func() {
+		CloseJobOwnership(owned)
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	_ = waitLeafPid(t, leafPid) // 真实后代已就绪
-	if err := terminateJob(job, time.Now().Add(5*time.Second)); err != nil {
+	leaf := waitLeafPid(t, leafPid)
+	if leaf == cmd.Process.Pid {
+		t.Fatal("held helper must report a distinct descendant")
+	}
+	var witnesses []windows.Handle
+	for _, pid := range []int{cmd.Process.Pid, leaf} {
+		h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer windows.CloseHandle(h)
+		witnesses = append(witnesses, h)
+	}
+	err := terminateJob(job, time.Now().Add(5*time.Second))
+	owned = 0 // terminateJob consumes the handle on all paths.
+	if err != nil {
 		t.Fatalf("terminateJob normal: %v", err)
+	}
+	for _, h := range witnesses {
+		if state, err := windows.WaitForSingleObject(h, 5000); err != nil || state != windows.WAIT_OBJECT_0 {
+			t.Fatalf("owned process exit not proven: state=%d err=%v", state, err)
+		}
 	}
 	// 句柄已被 terminateJob 关闭：查询应得到 ERROR_INVALID_HANDLE。
 	var info jobAccounting
-	err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
+	err = windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
 	if !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
 		t.Fatalf("terminateJob did not close job handle: %v", err)
@@ -63,13 +84,11 @@ func TestWaitProcessHandlesEmptyAndExpired(t *testing.T) {
 		t.Fatalf("empty handles must return nil: %v", err)
 	}
 	// 一个真实存活进程的句柄 + 已过 deadline => 过期错误。
-	self := windows.CurrentProcess()
 	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, windows.GetCurrentProcessId())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer windows.CloseHandle(h)
-	_ = self
 	if err := waitProcessHandles([]windows.Handle{h}, time.Now().Add(-time.Second)); err == nil {
 		t.Fatal("expired deadline with live handle must error")
 	}
@@ -97,9 +116,9 @@ func TestAssignJobOwnershipInvalidPIDErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer CloseJobOwnership(job)
-	// 一个几乎必然不存在的 PID（超范围/已退出）触发 OpenProcess 失败。
-	if err := AssignJobOwnership(job, 0x7FFFFFF0); err == nil {
-		t.Fatal("assign to non-existent PID must error")
+	// PID 0 是系统空闲进程，OpenProcess 明确拒绝；不尝试纳入任意 PID。
+	if err := AssignJobOwnership(job, 0); !errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		t.Fatalf("PID 0 must fail with ERROR_INVALID_PARAMETER: %v", err)
 	}
 }
 
@@ -135,7 +154,7 @@ func TestExitCodeOfBranches(t *testing.T) {
 }
 
 // TestRunCommandTreeTimeoutCancelsOwnedTree 覆盖 RunCommandTree 的 ctx.Done 取消/超时分支：自有 helper 阻塞，
-// 短 timeout 触发取消清理（Job 终止 + 有界返回），断言 Cancelled + DeadlineExceeded + 有界 + 无幸存根。
+// 短 timeout 触发取消清理（Job 终止 + 有界返回），断言 Cancelled + DeadlineExceeded + 有界，并拒绝任何附加的清理错误。
 func TestRunCommandTreeTimeoutCancelsOwnedTree(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -149,6 +168,12 @@ func TestRunCommandTreeTimeoutCancelsOwnedTree(t *testing.T) {
 	}
 	if !errors.Is(r.Err, context.DeadlineExceeded) {
 		t.Fatalf("timeout must surface DeadlineExceeded: %v", r.Err)
+	}
+	if r.Err != context.DeadlineExceeded {
+		joined, ok := r.Err.(interface{ Unwrap() []error })
+		if !ok || len(joined.Unwrap()) != 1 || joined.Unwrap()[0] != context.DeadlineExceeded {
+			t.Fatalf("timeout cleanup reported an additional error: %v", r.Err)
+		}
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("timeout cleanup not bounded: %v", elapsed)
