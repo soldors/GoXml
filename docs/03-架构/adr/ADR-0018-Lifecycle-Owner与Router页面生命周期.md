@@ -92,6 +92,6 @@ R28-C 仅完成受控 Router/App 组合接线验证。真实 Gio native `Destroy
 
 1. 真实 Gio native `DestroyEvent` 发布链路验收。
 2. 窗口进程中的 native race/跨平台关闭验收。
-3. Lifecycle 任务卡中的静态资源发现、嵌入声明和生成代码引用（TASK-LIFE-001-3）。
+3. [TASK-LIFE-001-3](../../04-WBS/任务卡/TASK-LIFE-001.md) 中静态资产发现、嵌入声明与生成引用已由已发布的 Image v1 覆盖；通用资产 API、额外格式及跨包复制等扩展仍待裁决，不在本 ADR 的批准范围。
 
 因此，合同状态为 **Accepted**，而 release-level 状态仍为 **pending native acceptance**。任何将 native DestroyEvent 或跨平台 race 标记为已发布的变更都必须另行补充原生证据和决策记录。
