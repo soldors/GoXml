@@ -53,3 +53,5 @@ fixture、judge、RUNBOOK 与本日志。
   datagrid_fixturelog_test.go（三用例对齐）+ nativewindow 测试精简。
   键盘因果经 keyboard-nav 事件由生产者测试留痕（测试已知按键），judge
   据此区分纯鼠标/键盘轨迹。原生键盘/IME/DPI 仍未验证。
+
+- 72bc121 — R28-B2 fixture 拆分与生产者/消费者对齐
