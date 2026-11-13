@@ -26,7 +26,8 @@ go test -tags nativewindow -list '.*' ./pkg/widgets   # 含 TestDataGridR29Nativ
 go test -list '.*' ./pkg/widgets | grep TestDataGridR29   # 空（默认不编译原生入口）
 ```
 
-带标签构建（作者阶段已完成，SHA 见交付 raw/r1-native-fixture/binary-sha256.txt）：
+带标签构建（作者阶段已完成，SHA 见交付 raw/r2-native-fixture/binary-sha256.txt
+——普通版与 MinGW race 版各一份）：
 
 ```bash
 CGO_ENABLED=0 go test -tags nativewindow -c -o r29-native-fixture.test.exe ./pkg/widgets
@@ -69,6 +70,30 @@ STRUCTURAL PASS 要求：N1–N6 模型时间线全部一致、双轴独立、�
 可见、排序恰一次且行序翻转、选择集逐步匹配、生命周期完整且 exit 为最后
 事件。SCENARIO 恒为 MANUAL-REQUIRED（因果由操作者确认）。
 
+## 4.5 坐标与视口（R2 精确判据）
+
+click 事件携带**组件本地像素坐标**（x/y，DataGrid.LastClick 观察字段，
+与 Clicked 共享一次性消费状态）与当帧几何（offX/offXMax/colWpx/viewWpx/
+rowHpx/headerHpx）。判定器按以下公式核对精确命中列/行：
+
+    列 = (x + offX) // colWpx        （错误但仍可见的列一律拒绝）
+    行 = (y - headerHpx + offY) // rowHpx，rowID 必须与当序该行一致
+
+- 坐标是 **DataGrid 组件本地** px（gridA 带内相对坐标）；gridB 点击的
+  x/y 同样是其带内本地坐标，offX=0。
+- 离屏回放 PxPerDp=1（px=dp）；原生桌面在任意 DPI 下公式仍成立——
+  判定器使用日志自带几何，不假设换算系数。
+- click 还携带**点击当刻选择快照**（selIds/lead）：判定器要求每个选择
+  变更在下一场景步骤前以 sel-multi 留痕、退出无未留痕变更；末步点击的
+  最终选择经 click.selIds 直接可核对。
+- 宽容规则：滚轮步长差异（轴判定只看方向/单轴/钳制域）；脚本外点击若
+  未改变选择（快照=当前集）按 TOLERATED 计数，不拒绝。
+- 依赖现场观察（SCENARIO 人工确认）：操作者瞄准的行是否与本手册步骤
+  一致、原生窗口与真实输入的存在性。`--json` 输出逐项判定与 manual
+  清单。
+- 旧格式日志（click 无坐标/快照字段）在 v2 判据下**不可判定，拒绝**——
+  R1 的历史回放证据不适用，须以 R2 生产者重新生成。
+
 ## 5. 无窗口回放证据（作者阶段已完成）
 
 `TestR29FixtureReplayN1N6`（默认编译）以**同一事件脚本**经离屏
@@ -79,10 +104,15 @@ STRUCTURAL PASS 要求：N1–N6 模型时间线全部一致、双轴独立、�
 链路与日志形态；**不代表原生窗口已执行**——原生 N1–N6 由协调者在授权
 桌面复验。
 
-判定器负例覆盖（已验证拒收）：
-`neg1-wrong-col`（错列）、`neg2-wrong-axis`（错轴）、`neg3-no-sort`
-（无排序）、`neg4-wrong-selection`（错误选择集）、`neg5-early-exit`
-（早退）。
+判定器负例覆盖（v2 已验证拒收，判决书见交付 raw/r2-judge-verdicts/）：
+`neg1-wrong-visible-col`（错误但可见的列——坐标×几何精确核对拒收）、
+`neg2-wrong-axis`（错轴）、`neg3-no-sort`（无排序）、
+`neg4-wrong-selection`（错误选择集）、`neg5-early-exit`（早退）、
+`neg6-missing-last-selection`（缺末次选择快照——退出未留痕变更拒收）、
+`neg7-missing-middle-selection`（缺中段选择快照——步骤边界未留痕拒收）；
+`pos8-tolerated`（未改变选择的脚本外事件——宽容正例）。
+协调者 R2 两份旧格式反例（b-wrong-visible-col / b-missing-last-selection）
+在 v2 判据下拒收（缺坐标/快照字段，旧格式不可判定）。
 
 ## 6. 未证边界（不冒充）
 
