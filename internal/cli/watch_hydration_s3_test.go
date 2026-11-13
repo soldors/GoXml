@@ -57,7 +57,7 @@ func TestBuildHydrationHookAndEnvNoTokenInArgv(t *testing.T) {
 	root := t.TempDir()
 	var out, errb strings.Builder
 	o := watchOptions{entry: "./cmd/app", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "sch"}
-	hook, envFor, err := buildHydration(root, o, &out, &errb)
+	hook, envFor, _, err := buildHydration(root, o, &out, &errb)
 	if err != nil {
 		t.Fatalf("buildHydration: %v", err)
 	}
@@ -122,14 +122,14 @@ func TestR1HydrationReplayDefaultFailClosed(t *testing.T) {
 func TestR3HydrationReplayValidationAndInject(t *testing.T) {
 	root := t.TempDir()
 	// 非法值 -> buildHydration 返回错误（启动前拒绝）。
-	if _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "bogus"}, discardW{}, discardW{}); err == nil {
+	if _, _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "bogus"}, discardW{}, discardW{}); err == nil {
 		t.Fatal("illegal --hydration-replay must be rejected pre-start")
 	}
-	if _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "reject", hydrationReplayCap: -1}, discardW{}, discardW{}); err == nil {
+	if _, _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "reject", hydrationReplayCap: -1}, discardW{}, discardW{}); err == nil {
 		t.Fatal("negative --hydration-replay-cap must be rejected pre-start")
 	}
 	// 合法值 -> 子进程环境含 HYD_REPLAY_POLICY/CAP。
-	_, env, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "evict", hydrationReplayCap: 3}, discardW{}, discardW{})
+	_, env, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "evict", hydrationReplayCap: 3}, discardW{}, discardW{})
 	if err != nil {
 		t.Fatal(err)
 	}
