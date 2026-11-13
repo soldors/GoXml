@@ -177,3 +177,144 @@ func TestJudgeRejectsBAfterAAfterBClose(t *testing.T) {
 	tr.Markers = kept
 	assertFail(t, LogJudge(tr), "marker-order")
 }
+
+// R29 收口 S1：宿主从 map 启动各窗，原生首帧没有已批准的 A/B 固定顺序。
+// frame:B 先于 frame:A 是**合法**交错，两种顺序都必须通过；但两个首帧
+// 仍都早于关 A，A 清理完后 B 才出 frame:B-after-A，B 收尾后才 exit。
+func frameBFirst(markers []string) []string {
+	out := append([]string(nil), markers...)
+	for i := range out {
+		if out[i] == "frame:A" {
+			out[i] = "frame:B"
+		} else if out[i] == "frame:B" {
+			out[i] = "frame:A"
+		}
+	}
+	return out
+}
+
+func TestJudgeAcceptsFrameBFirstNatural(t *testing.T) {
+	tr := healthyTrace("natural")
+	tr.Markers = frameBFirst(tr.Markers)
+	assertPass(t, LogJudge(tr))
+	assertPass(t, Judge(tr))
+}
+
+func TestJudgeAcceptsFrameBFirstCancelFirst(t *testing.T) {
+	tr := healthyTrace("cancel-first")
+	tr.Markers = frameBFirst(tr.Markers)
+	assertPass(t, LogJudge(tr))
+	assertPass(t, Judge(tr))
+}
+
+// 两个首帧都必须早于关 A；把 frame:B 挪到 close:A 之后，两种合法顺序
+// 都不成立（B 首帧缺失/过晚）。
+func TestJudgeRejectsFrameBAfterCloseA(t *testing.T) {
+	tr := healthyTrace("natural")
+	var moved string
+	var kept []string
+	for _, m := range tr.Markers {
+		if m == "frame:B" {
+			moved = m
+			continue
+		}
+		kept = append(kept, m)
+		if m == "close:A" {
+			kept = append(kept, moved)
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "marker-order")
+}
+
+// 启动失败 / 过早关闭 / 缺标记负例：缺 frame:B、close:A 早于两首帧。
+func TestJudgeRejectsStartupFailureMissingFrameB(t *testing.T) {
+	tr := healthyTrace("natural")
+	var kept []string
+	for _, m := range tr.Markers {
+		if m != "frame:B" {
+			kept = append(kept, m)
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "missing-marker")
+}
+
+func TestJudgeRejectsCloseABeforeBothFrames(t *testing.T) {
+	tr := healthyTrace("natural")
+	var frameA, frameB string
+	var kept []string
+	for _, m := range tr.Markers {
+		switch m {
+		case "frame:A":
+			frameA = m
+		case "frame:B":
+			frameB = m
+		case "close:A":
+			kept = append(kept, m) // 关 A 先到
+		default:
+			kept = append(kept, m)
+		}
+	}
+	tr.Markers = append(kept, frameA, frameB)
+	assertFail(t, LogJudge(tr), "marker-order")
+}
+
+// cancel-first：A/B 各恰一次、都在关 A 之前、都只取消未卸载。
+func cancelLineIndex(markers []string, label string) int {
+	prefix := "background-cancel:" + label + " "
+	for i, line := range markers {
+		if strings.HasPrefix(line, prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestJudgeCancelFirstRequiresBothLabelledCancels(t *testing.T) {
+	// 只有 A：B 缺失必须拒。
+	tr := healthyTrace("cancel-first")
+	var kept []string
+	for _, m := range tr.Markers {
+		if !strings.HasPrefix(m, "background-cancel:B ") {
+			kept = append(kept, m)
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "missing-background-cancel")
+
+	// A 重复两次必须拒（不能靠总数=2 蒙混）。
+	tr = healthyTrace("cancel-first")
+	dup := "background-cancel:A unmounts=0 cleanup=false root=context canceled"
+	idx := cancelLineIndex(tr.Markers, "A")
+	tr.Markers = append(tr.Markers[:idx+1], append([]string{dup}, tr.Markers[idx+1:]...)...)
+	assertFail(t, LogJudge(tr), "duplicate-background-cancel")
+}
+
+// 现实现只比较**第一条** background-cancel 与 close:A；把 B 的取消行
+// 挪到 close:A 之后必须被拒（否则「第二个后台取消先落盘」前提不成立）。
+func TestJudgeCancelFirstRejectsSecondCancelAfterCloseA(t *testing.T) {
+	tr := healthyTrace("cancel-first")
+	var bLine string
+	var kept []string
+	for _, m := range tr.Markers {
+		if strings.HasPrefix(m, "background-cancel:B ") {
+			bLine = m
+			continue
+		}
+		kept = append(kept, m)
+		if m == "close:A" {
+			kept = append(kept, bLine)
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "cancel-after-close")
+}
+
+// 两窗都必须「只取消、未卸载」：B 行若已发生卸载或 cleanup，也必须拒。
+func TestJudgeCancelFirstRejectsBNotCancelOnly(t *testing.T) {
+	tr := healthyTrace("cancel-first")
+	idx := cancelLineIndex(tr.Markers, "B")
+	tr.Markers[idx] = "background-cancel:B unmounts=1 cleanup=true root=context canceled"
+	assertFail(t, LogJudge(tr), "background-cancel-not-cancel-only")
+}

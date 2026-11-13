@@ -35,12 +35,26 @@ type Verdict struct {
 
 const logJudgeScope = "日志/状态判据，不是原生 DestroyEvent 或 native race 验收结论"
 
-// ExpectedOrder 是健康的双窗轨迹（cancel-first 的后台取消行插在就绪后）。
+// ExpectedOrder 是健康的双窗轨迹之一：A 首帧先于 B 首帧。
+// 宿主从 map 启动各窗，原生首帧**没有**已批准的 A/B 固定顺序，因此
+// frame:B 先于 frame:A 是同样合法的交错（见 LegalMarkerOrders）。
+// 取消优先场景的 background-cancel 行插在两首帧之后、关 A 之前。
 var ExpectedOrder = []string{
 	"open:A", "open:B", "frame:A", "frame:B",
 	"close:A", "unmount:A", "finalize:A", "frame:B-after-A",
 	"close:B", "unmount:B", "finalize:B", "exit",
 }
+
+// expectedOrderBFirst 是另一种合法首帧顺序。两窗首帧的先后由真实
+// FrameEvent 决定，不得由判定器强加顺序；但两个首帧都必须早于关 A。
+var expectedOrderBFirst = []string{
+	"open:A", "open:B", "frame:B", "frame:A",
+	"close:A", "unmount:A", "finalize:A", "frame:B-after-A",
+	"close:B", "unmount:B", "finalize:B", "exit",
+}
+
+// LegalMarkerOrders 是全部已批准的首帧交错（仅此两种）。
+var LegalMarkerOrders = [][]string{ExpectedOrder, expectedOrderBFirst}
 
 func markerKey(line string) string {
 	switch {
@@ -90,26 +104,80 @@ func countKey(lines []string, key string) int {
 	return n
 }
 
-// LogJudge 只判日志/状态层，不含任何 runner / 人工字段。
-func LogJudge(t Trace) Verdict {
+// backgroundCancelLabel 解析 "background-cancel:<label> ..." 的窗口标签。
+// 格式由 fixture main.go 后台取消 goroutine 写盘，判定器必须与落盘行一致。
+func backgroundCancelLabel(line string) string {
+	const prefix = "background-cancel:"
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	rest := line[len(prefix):]
+	if i := strings.IndexByte(rest, ' '); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
+}
+
+// orderReasons 对**一种**合法序列检查递增顺序与各关键行恰一次。
+func orderReasons(lines []string, order []string) []string {
 	reasons := []string{}
 	add := func(code, detail string) { reasons = append(reasons, code+": "+detail) }
-
-	// 1) 必要轨迹：顺序递增、各关键行恰一次。
 	last := -1
-	for _, key := range ExpectedOrder {
-		idx := firstIndex(t.Markers, key)
+	for _, key := range order {
+		idx := firstIndex(lines, key)
 		if idx < 0 {
 			add("missing-marker", key)
 			continue
 		}
-		if countKey(t.Markers, key) != 1 {
+		if countKey(lines, key) != 1 {
 			add("duplicate-marker", key)
 		}
 		if idx <= last {
 			add("marker-order", fmt.Sprintf("%s at %d is not after previous at %d", key, idx, last))
 		}
 		last = idx
+	}
+	return reasons
+}
+
+// LogJudge 只判日志/状态层，不含任何 runner / 人工字段。
+func LogJudge(t Trace) Verdict {
+	reasons := []string{}
+	add := func(code, detail string) { reasons = append(reasons, code+": "+detail) }
+
+	// 1) 必要轨迹：两种合法首帧顺序任一成立即可（顺序递增、各关键行
+	//    恰一次）。两种都不成立时报告原因最少的那一种。
+	best := orderReasons(t.Markers, LegalMarkerOrders[0])
+	for _, order := range LegalMarkerOrders[1:] {
+		if r := orderReasons(t.Markers, order); len(r) < len(best) {
+			best = r
+		}
+	}
+	reasons = append(reasons, best...)
+
+	// 1b) 与具体序列无关的独立守卫：两个首帧都早于关 A；A 清理完成
+	//     （finalize:A）之后 B 才出 frame:B-after-A，且早于 B 收尾
+	//     （close:B）；B 收尾（finalize:B）之后才允许 exit。
+	closeA := firstIndex(t.Markers, "close:A")
+	for _, key := range []string{"frame:A", "frame:B"} {
+		idx := firstIndex(t.Markers, key)
+		if idx >= 0 && closeA >= 0 && idx > closeA {
+			add("frame-after-close-A", fmt.Sprintf("%s at %d after close:A at %d", key, idx, closeA))
+		}
+	}
+	finalizeA := firstIndex(t.Markers, "finalize:A")
+	afterA := firstIndex(t.Markers, "frame:B-after-A")
+	closeB := firstIndex(t.Markers, "close:B")
+	finalizeB := firstIndex(t.Markers, "finalize:B")
+	exitIdx := firstIndex(t.Markers, "exit")
+	if afterA >= 0 && finalizeA >= 0 && afterA < finalizeA {
+		add("b-frame-before-a-cleanup", "frame:B-after-A recorded before finalize:A")
+	}
+	if afterA >= 0 && closeB >= 0 && afterA > closeB {
+		add("b-frame-after-b-close", "frame:B-after-A recorded after close:B")
+	}
+	if exitIdx >= 0 && finalizeB >= 0 && exitIdx < finalizeB {
+		add("exit-before-b-finalize", "exit recorded before finalize:B")
 	}
 
 	// 2) 异常红证：早退、串写/串停、重复清理一律不可逆拒绝。
@@ -147,22 +215,46 @@ func LogJudge(t Trace) Verdict {
 		}
 	}
 
-	// 5) 场景专属：后台取消只取消，且必须先于关窗。
+	// 5) 场景专属：cancel-first 的后台取消按**窗口标签**逐条核验。
+	//    A/B 各恰一次、都在关 A 之前、都只取消未卸载（unmounts=0 /
+	//    cleanup=false / root=context canceled）；不得只比较第一条。
 	cancels := countKey(t.Markers, "background-cancel")
 	switch t.Scenario {
 	case "cancel-first":
-		if cancels != 2 {
-			add("missing-background-cancel", fmt.Sprintf("count=%d want 2", cancels))
-		}
-		for _, line := range t.Markers {
-			if markerKey(line) == "background-cancel" &&
-				(!strings.Contains(line, "unmounts=0") || !strings.Contains(line, "cleanup=false")) {
+		byLabel := map[string][]int{}
+		for i, line := range t.Markers {
+			if markerKey(line) != "background-cancel" {
+				continue
+			}
+			label := backgroundCancelLabel(line)
+			byLabel[label] = append(byLabel[label], i)
+			if !strings.Contains(line, "unmounts=0") || !strings.Contains(line, "cleanup=false") {
 				add("background-cancel-not-cancel-only", line)
 			}
+			if !strings.Contains(line, "root=context canceled") {
+				add("background-cancel-root", line)
+			}
 		}
-		closeA := firstIndex(t.Markers, "close:A")
-		if idx := firstIndex(t.Markers, "background-cancel"); idx >= 0 && closeA >= 0 && idx > closeA {
-			add("cancel-after-close", "background cancel must precede title-bar close")
+		if cancels == 0 {
+			add("missing-background-cancel", "no background cancel markers")
+		}
+		for _, label := range []string{"A", "B"} {
+			idxs := byLabel[label]
+			if len(idxs) == 0 {
+				add("missing-background-cancel", label)
+			} else if len(idxs) > 1 {
+				add("duplicate-background-cancel", label)
+			}
+		}
+		for label, idxs := range byLabel {
+			if label != "A" && label != "B" {
+				add("unexpected-background-cancel-label", label)
+			}
+			for _, idx := range idxs {
+				if closeA >= 0 && idx > closeA {
+					add("cancel-after-close", fmt.Sprintf("%s at %d after close:A at %d", label, idx, closeA))
+				}
+			}
 		}
 	default:
 		if cancels != 0 {
