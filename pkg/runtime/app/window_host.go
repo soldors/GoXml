@@ -133,6 +133,13 @@ type WindowHost struct {
 	finishOnce  sync.Once
 	runVerdict  chan struct{} // R4：启动结果（成功/拒绝）发布点，恰关闭一次
 	verdictOnce sync.Once
+	// R5：启动尝试的结果快照（nil=成功）。它由 publishRunVerdict 在关闭
+	// runVerdict 的同一临界区写入，与窗口生命周期状态（Drained/Exiting）
+	// **脱钩**：等待者唤醒后只读这个快照，不再按当前宿主状态推断结果。
+	runErr error
+	// R5：finished 关闭瞬间冻结的不可变终态。signalFinished 在 close 之前
+	// 一次性复制 h.result；之后任何收口/拒绝写入都不得再改变 Wait 的返回。
+	terminal HostResult
 }
 
 // NewWindowHost 构造空宿主；不调用 Main、不创建平台窗口、不进入 Event 源。
@@ -190,11 +197,18 @@ func (h *WindowHost) Open(label string, view View, th *material.Theme, cfg Confi
 // 同宿主重复 Run 幂等返回 nil，不重复启动、不重复调用 Main、不增加
 // gioMain.calls。所有权被拒时 reject() 取消所有已注册窗口（Done 关闭、
 // Err 可判别、无 Event/后端调用），Wait() 立即返回 Rejected=true。
-// publishRunVerdict 发布启动结果，恰关闭一次。**发布点不等待 Gio Main
-// 返回**：胜者在完成所有权判定并启动事件泵后立即发布，再调用 Main
-// （生产 Main 永不返回，等待者不能依赖它的返回）。
-func (h *WindowHost) publishRunVerdict() {
-	h.verdictOnce.Do(func() { close(h.runVerdict) })
+// publishRunVerdict 发布**启动尝试的结果**，恰关闭一次。R5：err 快照与
+// channel 关闭在同一 h.mu 临界区内完成，等待者 <-runVerdict 后持锁读
+// runErr，看到的必然是发布时的结果，不受随后窗口销毁/ExitAll 影响。
+// **发布点不等待 Gio Main 返回**：胜者在完成所有权判定并启动事件泵后
+// 立即发布，再调用 Main（生产 Main 永不返回，等待者不能依赖它的返回）。
+func (h *WindowHost) publishRunVerdict(err error) {
+	h.verdictOnce.Do(func() {
+		h.mu.Lock()
+		h.runErr = err
+		close(h.runVerdict)
+		h.mu.Unlock()
+	})
 }
 
 // Run 的顺序（R3 收敛、R4 收敛并发结果）：宿主状态检查 → 进程级 Main
@@ -220,16 +234,12 @@ func (h *WindowHost) Run() error {
 		verdict := h.runVerdict
 		h.mu.Unlock()
 		<-verdict // 等待胜者的结果发布；发布点先于 Gio Main 返回
+		// R5：返回**同一启动尝试**的结果快照，而不是按当前宿主状态推断。
+		// 发布后即使发生快速销毁（hostDrained）或 ExitAll（hostExiting），
+		// 等待者仍收到与胜者相同的启动结果。
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		switch h.state {
-		case hostRunning:
-			return nil
-		case hostRejected:
-			return h.result.Err
-		default: // hostDrained / hostExiting：启动后又被取消或收口
-			return errHostNotAcceptingRun
-		}
+		return h.runErr
 	case hostRejected:
 		err := h.result.Err
 		h.mu.Unlock()
@@ -249,7 +259,7 @@ func (h *WindowHost) Run() error {
 	h.mu.Lock()
 	if h.state != hostStarting { // 并发下状态被改变：不启动事件泵
 		h.mu.Unlock()
-		h.publishRunVerdict()
+		h.publishRunVerdict(errHostNotAcceptingRun)
 		return errHostNotAcceptingRun
 	}
 	h.state = hostRunning
@@ -267,7 +277,7 @@ func (h *WindowHost) Run() error {
 		// hostRunning 以便同宿主重复 Run 幂等返回 nil（R1 已验语义）。
 		h.signalFinished(true)
 	}
-	h.publishRunVerdict() // 成功的线性化点：先发布，再进入 Main
+	h.publishRunVerdict(nil) // 成功的线性化点：先发布，再进入 Main
 	gioMain.once.Do(mainFunc)
 	return nil
 }
@@ -298,7 +308,7 @@ func (h *WindowHost) reject(err error) {
 		wh.finish()
 	}
 	h.signalFinished(true)
-	h.publishRunVerdict() // 拒绝的线性化点：等待者立即看到同一拒绝结果
+	h.publishRunVerdict(err) // 拒绝的线性化点：等待者立即看到同一拒绝结果
 }
 
 // Active 返回当前仍登记（未收口/未取消/未被拒）的窗口数。
@@ -309,12 +319,15 @@ func (h *WindowHost) Active() int {
 }
 
 // Wait 阻塞到宿主收口（窗口全部自然关闭、显式退出、Run 被拒或零窗）。
+// R5：返回 finished 关闭瞬间冻结的**不可变终态**。收口之后才发生的
+// 所有权判定/拒绝会继续写 h.result（供 Run 与句柄观察），但绝不改写
+// Wait 的结果；重复 Wait 也返回同一份冻结值。
 func (h *WindowHost) Wait() HostResult {
 	<-h.finished
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	res := h.result
-	res.Errors = append([]error(nil), h.result.Errors...)
+	res := h.terminal
+	res.Errors = append([]error(nil), h.terminal.Errors...)
 	return res
 }
 
@@ -384,14 +397,19 @@ func (h *WindowHost) ExitAll(code int) {
 	}
 }
 
+// signalFinished 只放行一次。R5：在关闭 finished **之前**于同一临界区内
+// 冻结终态快照（含 Errors 深拷贝）；close 之后 h.result 的任何后续写入
+// 都不再影响 Wait。
 func (h *WindowHost) signalFinished(drained bool) {
 	h.finishOnce.Do(func() {
 		h.mu.Lock()
 		if drained {
 			h.result.Drained = true
 		}
-		h.mu.Unlock()
+		h.terminal = h.result
+		h.terminal.Errors = append([]error(nil), h.result.Errors...)
 		close(h.finished)
+		h.mu.Unlock()
 	})
 }
 
