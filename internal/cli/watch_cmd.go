@@ -229,6 +229,16 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 	if strings.TrimSpace(appID) == "" {
 		appID = strings.TrimPrefix(o.entry, "./")
 	}
+	// 启动前校验 replay 配置（空=默认 reject；非法值在启动前拒绝）。
+	if o.hydrationReplay != "" && o.hydrationReplay != "reject" && o.hydrationReplay != "evict" {
+		return nil, nil, fmt.Errorf("非法 --hydration-replay=%q（仅 reject|evict）", o.hydrationReplay)
+	}
+	if o.hydrationReplay == "" {
+		o.hydrationReplay = "reject"
+	}
+	if o.hydrationReplayCap < 0 {
+		return nil, nil, fmt.Errorf("非法 --hydration-replay-cap=%d（须 >=0）", o.hydrationReplayCap)
+	}
 	sess, serr := hc.NewSession(hc.SessionConfig{
 		ProjectDir: root, SessionID: o.hydrationSession, AppID: appID,
 		Schema: rstSchema(o.hydrationSchema), Token: tok, CaptureTimeout: hc.DefaultCaptureTimeout,
@@ -243,6 +253,7 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 			"HYD_PROJECT=" + root, "HYD_SESSION=" + o.hydrationSession,
 			"HYD_APP=" + appID, "HYD_SCHEMA=" + o.hydrationSchema, "HYD_TOKEN=" + tok,
 			fmt.Sprintf("HYD_GEN=%d", gen),
+			"HYD_REPLAY_POLICY=" + o.hydrationReplay, fmt.Sprintf("HYD_REPLAY_CAP=%d", o.hydrationReplayCap),
 		}
 		if gen >= 2 {
 			e = append(e, "HYD_MODE=restore", "HYD_STATE="+statePath)

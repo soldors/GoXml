@@ -87,7 +87,16 @@ func main() {
 	valuesFile := envOr2("HYD_VALUES", "APP_VALUES", "")
 	reportFile := envOr2("HYD_REPORT", "APP_REPORT", "")
 
-	sess, err := hc.NewSession(hc.SessionConfig{ProjectDir: proj, SessionID: session, AppID: appID, Schema: rst.Schema(schema), Token: token})
+	replayPolicy := hc.ReplayRejectOnFull
+	if envOr2("HYD_REPLAY_POLICY", "APP_REPLAY_POLICY", "reject") == "evict" {
+		replayPolicy = hc.ReplayEvictOldest
+	}
+	replayCap := 0
+	if v := envOr2("HYD_REPLAY_CAP", "APP_REPLAY_CAP", ""); v != "" {
+		fmt.Sscanf(v, "%d", &replayCap)
+	}
+	sess, err := hc.NewSession(hc.SessionConfig{ProjectDir: proj, SessionID: session, AppID: appID, Schema: rst.Schema(schema), Token: token,
+		ReplayPolicy: replayPolicy, ReplayCap: replayCap})
 	if err != nil {
 		fmt.Printf("APP_ERROR new session: %v\n", err)
 		return

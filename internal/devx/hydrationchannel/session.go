@@ -15,8 +15,10 @@ package hydrationchannel
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -51,6 +53,10 @@ type Session struct {
 	ownerID string
 	// publishedGen 本实例最近一次发布发现记录的 serving 代次（0=未发布）。
 	publishedGen int
+	// runID 实例级命名空间后缀（由 token 派生，同一运行的三代共享；不同运行隔离状态文件）。
+	runID string
+	// legacyStore 指向 R28 兼容路径 <session>.state（仅用于只读回退，不删除）。
+	legacyStore *devxh.Store
 }
 
 // NewSession 构造会话（校验维度、创建状态目录归属）。
@@ -58,16 +64,18 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	if cfg.ProjectDir == "" || cfg.SessionID == "" || cfg.AppID == "" || cfg.Schema == "" || cfg.Token == "" {
 		return nil, fmt.Errorf("%w: projectDir/session/app/schema/token 必填", ErrBadRequest)
 	}
-	store, err := devxh.NewStore(cfg.ProjectDir, cfg.SessionID)
+	runID := runIDFromToken(cfg.Token)
+	store, err := devxh.NewStoreWithRun(cfg.ProjectDir, cfg.SessionID, runID)
 	if err != nil {
 		return nil, err
 	}
+	legacy, _ := devxh.NewStore(cfg.ProjectDir, cfg.SessionID)
 	ct := cfg.CaptureTimeout
 	if ct <= 0 {
 		ct = DefaultCaptureTimeout
 	}
 	proto := &devxh.Protocol{Store: store, Schema: cfg.Schema, AppID: cfg.AppID, CaptureTimeout: ct}
-	return &Session{cfg: cfg, store: store, proto: proto, ownerID: newOwnerID()}, nil
+	return &Session{cfg: cfg, store: store, proto: proto, ownerID: newOwnerID(), runID: runID, legacyStore: legacy}, nil
 }
 
 // Store 返回本会话状态存储（诊断/测试）。
@@ -163,11 +171,13 @@ func (s *Session) writePortfile(addr string, gen int) error {
 	// 目标存在性/归属检查（发布前）。
 	if b, rerr := readBoundedFile(target); rerr == nil {
 		var rec portRecord
-		if json.Unmarshal(b, &rec) != nil || rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID || rec.Schema != string(s.cfg.Schema) {
-			return fmt.Errorf("拒绝覆盖不属于本会话的发现记录（保留外来字节）")
+		// 视为“本会话合法发现记录”需：session/app/schema 匹配 **且** 含 ownerId 与 generation(>=1)。
+		// 缺失 ownerId/gen 的同会话记录属于**外来/旧格式**，拒绝覆盖（保留原字节）。
+		if json.Unmarshal(b, &rec) != nil || rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID ||
+			rec.Schema != string(s.cfg.Schema) || rec.OwnerID == "" || rec.Gen < 1 {
+			return fmt.Errorf("拒绝覆盖不属于本会话（或缺 ownerId/gen）的发现记录（保留外来字节）")
 		}
-		// 同名会话但属于**其他实例**的记录：允许接管（新实例发布），但不得破坏外来字节语义；
-		// 仅当记录是本会话合法记录时继续（旧实例已在 Stop/Close 后不再持有；此处接管写入本实例 ownerID）。
+		// 本会话另一实例的合法记录：允许接管（新实例发布），写入本实例 ownerID（旧实例已 Stop/Close）。
 	} else if !os.IsNotExist(rerr) {
 		return rerr // 真实 I/O 错误（非不存在）如实上抛
 	}
@@ -211,6 +221,10 @@ func (s *Session) ReadPortInfo() (portRecord, bool, error) {
 	if rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID || rec.Schema != string(s.cfg.Schema) || rec.Addr == "" {
 		return portRecord{}, false, nil
 	}
+	// 缺失 ownerId 或 generation 的“匹配记录”视为**外来**（不接管、不删；R28 旧发现格式需迁移）。
+	if rec.OwnerID == "" || rec.Gen < 1 {
+		return portRecord{}, false, nil
+	}
 	return rec, true, nil
 }
 
@@ -239,7 +253,19 @@ func (s *Session) Restore(ctx context.Context, minGen int, owner OwnerRunner, ap
 	if err != nil {
 		return false, err
 	}
-	return ap.RestoreOnOwner(ctx, minGen)
+	applied, rerr := ap.RestoreOnOwner(ctx, minGen)
+	if applied || rerr == nil {
+		return applied, rerr
+	}
+	// 实例级命名空间无状态时回退读取 R28 旧格式 <session>.state（只读兼容；不迁移不删除）。
+	if s.legacyStore != nil && errors.Is(rerr, devxh.ErrNoState) {
+		legacyProto := &devxh.Protocol{Store: s.legacyStore, Schema: s.cfg.Schema, AppID: s.cfg.AppID, CaptureTimeout: s.proto.CaptureTimeout}
+		lap, lerr := NewApplier(legacyProto, owner, apply)
+		if lerr == nil {
+			return lap.RestoreOnOwner(ctx, minGen)
+		}
+	}
+	return applied, rerr
 }
 
 // Close 删除本会话状态文件与 portfile，但**仅在证明当前会话拥有该文件时**：
@@ -273,7 +299,7 @@ func (s *Session) Close() error {
 // storeOwning 判断状态文件是否为**本会话**拥有的合法状态（用于 Close 删除前的所有权证明）。
 // 只读判定，不改动文件（保留错误路径原字节与 mtime）。
 func (s *Session) storeOwning() bool {
-	raw, err := os.ReadFile(s.store.Path())
+	raw, err := os.ReadFile(s.store.Path()) // 仅本实例命名空间路径，绝不读 legacy/他人路径判定删除
 	if err != nil {
 		return false
 	}
@@ -291,4 +317,11 @@ func newOwnerID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+// runIDFromToken 由会话 token 派生**非机密**实例命名空间后缀（同一运行三代同 token => 同 runID）。
+// 仅取 sha256 前 8 字节，不可逆推 token；不用于鉴权、不写日志。
+func runIDFromToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:8])
 }

@@ -117,3 +117,28 @@ func TestR1HydrationReplayDefaultFailClosed(t *testing.T) {
 		t.Fatal("evict must map to evict policy")
 	}
 }
+
+// R29-A R3：非法 replay 值在启动前拒绝；合法值经 env 注入真实应用端点。
+func TestR3HydrationReplayValidationAndInject(t *testing.T) {
+	root := t.TempDir()
+	// 非法值 -> buildHydration 返回错误（启动前拒绝）。
+	if _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "bogus"}, discardW{}, discardW{}); err == nil {
+		t.Fatal("illegal --hydration-replay must be rejected pre-start")
+	}
+	if _, _, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "reject", hydrationReplayCap: -1}, discardW{}, discardW{}); err == nil {
+		t.Fatal("negative --hydration-replay-cap must be rejected pre-start")
+	}
+	// 合法值 -> 子进程环境含 HYD_REPLAY_POLICY/CAP。
+	_, env, err := buildHydration(root, watchOptions{entry: "./c", hydration: true, hydrationSession: "s", hydrationApp: "a", hydrationSchema: "v1", hydrationReplay: "evict", hydrationReplayCap: 3}, discardW{}, discardW{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env(2), " ")
+	if !strings.Contains(joined, "HYD_REPLAY_POLICY=evict") || !strings.Contains(joined, "HYD_REPLAY_CAP=3") {
+		t.Fatalf("child env must carry replay policy/cap: %s", joined)
+	}
+}
+
+type discardW struct{}
+
+func (discardW) Write(b []byte) (int, error) { return len(b), nil }
