@@ -141,6 +141,10 @@ type DataGrid struct {
 
 	scrollOff int
 
+	// S1 横向滚动（候逋，显式 opt-in）
+	hScrollEnabled bool
+	hScrollOff     int
+
 	// 按压状态（跨帧；与 scrimState 同款约束）
 	pressed    bool
 	pid        pointer.ID
@@ -277,6 +281,21 @@ func (g *DataGrid) Clicked() (rowID string, col int, ok bool) {
 // ScrollOffset 返回当前滚动偏移（px，诊断用）。
 func (g *DataGrid) ScrollOffset() int { return g.scrollOff }
 
+// EnableHorizontalScroll 显式开启横向滚动（S1 候逋，默认关闭）。
+func (g *DataGrid) EnableHorizontalScroll() { g.hScrollEnabled = true }
+
+// DisableHorizontalScroll 显式关闭横向滚动并归零偏移。
+func (g *DataGrid) DisableHorizontalScroll() {
+	g.hScrollEnabled = false
+	g.hScrollOff = 0
+}
+
+// HorizontalScrollEnabled 报告横向滚动是否开启。
+func (g *DataGrid) HorizontalScrollEnabled() bool { return g.hScrollEnabled }
+
+// HScrollOffset 返回当前横向滚动偏移（px，诊断用）。
+func (g *DataGrid) HScrollOffset() int { return g.hScrollOff }
+
 // LastFrame 返回最近一帧访问/绘制白盒披露。返回值只读到下一次 Layout。
 func (g *DataGrid) LastFrame() DataGridFrameStats { return g.stats }
 
@@ -322,8 +341,21 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	}
 	g.stats.ScrollOffset = g.scrollOff
 
+	// S1 横向偏移计算与钳制。
+	totalColW := colTotalWidth(colWidths)
+	hMaxOff := totalColW - viewport.X
+	if hMaxOff < 0 || !g.hScrollEnabled {
+		hMaxOff = 0
+	}
+	if g.hScrollOff > hMaxOff {
+		g.hScrollOff = hMaxOff
+	}
+	if g.hScrollOff < 0 {
+		g.hScrollOff = 0
+	}
+
 	// 1. 事件区与事件消费（先消费后绘制，Gio 惯用法）。
-	g.handleEvents(gtx, viewport, rowH, headerH, bodyH, maxOff, colWidths)
+	g.handleEvents(gtx, viewport, rowH, headerH, bodyH, maxOff, hMaxOff, colWidths)
 	// 1b. 键盘导航（候选，默认关闭=直接返回）：在本帧可见窗口计算之前
 	// 消费按键，使键盘引起的滚动当帧生效。
 	g.handleKeyboard(gtx, viewport, rowH, headerH, bodyH, maxOff)
@@ -360,7 +392,7 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 	defer gridClip.Pop()
 
 	// 3. 表头（固定带，随点击几何一致：表头行不参与行命中）。
-	g.drawHeader(gtx, th, headerH, colWidths, viewport.X)
+	g.drawHeader(gtx, th, headerH, g.hScrollOff, colWidths, viewport.X)
 
 	// 4. 访问窗口（读取身份、预热缓存）——只访问 [acc0, acc1)。
 	for i := acc0; i < acc1; i++ {
@@ -392,9 +424,14 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 		if g.Cell != nil {
 			x := 0
 			for c := range g.cols {
+				cellX := x - g.hScrollOff
 				cellRect := image.Rectangle{
-					Min: image.Pt(x, top),
-					Max: image.Pt(min(x+colWidths[c], rowRect.Max.X), top+rowH),
+					Min: image.Pt(cellX, top),
+					Max: image.Pt(min(cellX+colWidths[c], rowRect.Max.X), top+rowH),
+				}
+				if cellRect.Max.X <= 0 {
+					x += colWidths[c]
+					continue
 				}
 				if cellRect.Min.X >= rowRect.Max.X {
 					break
@@ -404,7 +441,7 @@ func (g *DataGrid) Layout(gtx layout.Context, th *material.Theme) layout.Dimensi
 			}
 			continue
 		}
-		g.drawRow(gtx, th, g.rows[i], rowRect, colWidths, rowH)
+		g.drawRow(gtx, th, g.rows[i], rowRect, g.hScrollOff, colWidths, rowH)
 	}
 	bodyClip.Pop()
 	return layout.Dimensions{Size: viewport}
@@ -431,15 +468,19 @@ func colTotalWidth(widths []int) int {
 }
 
 // drawHeader 绘制固定表头带（不随滚动；点击几何中表头不产生行事件）。
-func (g *DataGrid) drawHeader(gtx layout.Context, th *material.Theme, headerH int, colWidths []int, viewportW int) {
+func (g *DataGrid) drawHeader(gtx layout.Context, th *material.Theme, headerH, hScrollOff int, colWidths []int, viewportW int) {
 	hdrClip := clip.Rect(image.Rectangle{Max: image.Pt(min(colTotalWidth(colWidths), viewportW), headerH)}).Push(gtx.Ops)
 	defer hdrClip.Pop()
 	paint.FillShape(gtx.Ops, dgColHeaderBg, clip.Rect(image.Rectangle{Max: image.Pt(min(colTotalWidth(colWidths), viewportW), headerH)}).Op())
 	x := 0
 	for c := range g.cols {
-		cellRect := image.Rectangle{Min: image.Pt(x, 0), Max: image.Pt(x+colWidths[c], headerH)}
+		cellX := x - hScrollOff
+		if cellX+colWidths[c] <= 0 || cellX >= viewportW {
+			x += colWidths[c]
+			continue
+		}
 		e := g.textEntry(gtx, th, dgTextKey{rowID: "", col: c, w: colWidths[c], h: headerH}, g.cols[c].Title, colWidths[c], headerH)
-		trans := op.Offset(image.Pt(cellRect.Min.X, 0)).Push(gtx.Ops)
+		trans := op.Offset(image.Pt(cellX, 0)).Push(gtx.Ops)
 		e.call.Add(gtx.Ops)
 		trans.Pop()
 		x += colWidths[c]
@@ -447,7 +488,7 @@ func (g *DataGrid) drawHeader(gtx layout.Context, th *material.Theme, headerH in
 }
 
 // drawRow 绘制一行：缓存宏按列回放（稳定帧零录制）。
-func (g *DataGrid) drawRow(gtx layout.Context, th *material.Theme, row DataGridRow, rowRect image.Rectangle, colWidths []int, rowH int) {
+func (g *DataGrid) drawRow(gtx layout.Context, th *material.Theme, row DataGridRow, rowRect image.Rectangle, hScrollOff int, colWidths []int, rowH int) {
 	rowClip := clip.Rect(rowRect).Push(gtx.Ops)
 	defer rowClip.Pop()
 	bg := dgColRowBg
@@ -457,11 +498,16 @@ func (g *DataGrid) drawRow(gtx layout.Context, th *material.Theme, row DataGridR
 	paint.FillShape(gtx.Ops, bg, clip.Rect(rowRect).Op())
 	x := 0
 	for c := range g.cols {
-		if x >= rowRect.Max.X {
+		cellX := x - hScrollOff
+		if cellX+colWidths[c] <= 0 {
+			x += colWidths[c]
+			continue
+		}
+		if cellX >= rowRect.Max.X {
 			break
 		}
 		e := g.textEntry(gtx, th, dgTextKey{rowID: row.ID, col: c, w: colWidths[c], h: rowH}, dgCellText(row, c), colWidths[c], rowH)
-		trans := op.Offset(image.Pt(x, rowRect.Min.Y)).Push(gtx.Ops)
+		trans := op.Offset(image.Pt(cellX, rowRect.Min.Y)).Push(gtx.Ops)
 		e.call.Add(gtx.Ops)
 		trans.Pop()
 		x += colWidths[c]
@@ -521,14 +567,20 @@ func (g *DataGrid) recordCell(gtx layout.Context, th *material.Theme, text strin
 }
 
 // handleEvents 消费整格事件区：按压/释放（跨帧、身份判定）、取消、滚轮。
-func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, headerH, bodyH, maxOff int, colWidths []int) {
+func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, headerH, bodyH, maxOff, hMaxOff int, colWidths []int) {
 	defer clip.Rect(image.Rectangle{Max: viewport}).Push(gtx.Ops).Pop()
 	event.Op(gtx.Ops, &g.tag)
+	scrollYRange := pointer.ScrollRange{Min: -maxOff, Max: maxOff}
+	scrollXRange := pointer.ScrollRange{}
+	if g.hScrollEnabled && hMaxOff > 0 {
+		scrollXRange = pointer.ScrollRange{Min: -hMaxOff, Max: hMaxOff}
+	}
 	for {
 		ev, ok := gtx.Source.Event(pointer.Filter{
 			Target:  &g.tag,
 			Kinds:   pointer.Press | pointer.Release | pointer.Cancel | pointer.Scroll,
-			ScrollY: pointer.ScrollRange{Min: -maxOff, Max: maxOff},
+			ScrollY: scrollYRange,
+			ScrollX: scrollXRange,
 		})
 		if !ok {
 			break
@@ -542,7 +594,7 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 			if e.Buttons&pointer.ButtonPrimary != 0 {
 				g.pressed = true
 				g.pid = e.PointerID
-				g.pressRowID, g.pressCol, g.pressValid = g.cellAt(e.Position, viewport, rowH, headerH, colWidths)
+				g.pressRowID, g.pressCol, g.pressValid = g.cellAt(e.Position, viewport, rowH, headerH, g.hScrollOff, colWidths)
 				if g.kbEnabled {
 					// 点击聚焦（候选）：主键按压在网格内任意位置（含表头/
 					// 空白带）都请求键盘焦点——使「初始无选择」可达。
@@ -551,7 +603,7 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 			}
 		case pointer.Release:
 			if g.pressed && g.pid == e.PointerID {
-				rowID, col, ok := g.cellAt(e.Position, viewport, rowH, headerH, colWidths)
+				rowID, col, ok := g.cellAt(e.Position, viewport, rowH, headerH, g.hScrollOff, colWidths)
 				// 身份判定：释放时单元格身份必须与按压时一致（滚动/重排
 				// 后同位置是另一行——不串）。
 				if ok && g.pressValid && rowID == g.pressRowID && col == g.pressCol {
@@ -563,7 +615,16 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 		case pointer.Cancel:
 			g.pressed = false
 		case pointer.Scroll:
-			g.scrollOff += int(e.Scroll.Y) // 原生约定：正向下（见 R26 native 回归）
+			g.scrollOff += int(e.Scroll.Y)
+			if g.hScrollEnabled {
+				g.hScrollOff += int(e.Scroll.X)
+				if g.hScrollOff > hMaxOff {
+					g.hScrollOff = hMaxOff
+				}
+				if g.hScrollOff < 0 {
+					g.hScrollOff = 0
+				}
+			} // 原生约定：正向下（见 R26 native 回归）
 			if g.scrollOff > maxOff {
 				g.scrollOff = maxOff
 			}
@@ -580,7 +641,7 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 // 时进入的处理者、其位置可落在本帧视口之外——先按本帧 viewport/body
 // 浮点比较拒绝越界（含 -0.1 这类截断后会折进界内的小数），再整数换算。
 // 表头带、视口外（越出数据范围）、超出总列宽都不命中。
-func (g *DataGrid) cellAt(pos f32.Point, viewport image.Point, rowH, headerH int, colWidths []int) (rowID string, col int, ok bool) {
+func (g *DataGrid) cellAt(pos f32.Point, viewport image.Point, rowH, headerH, hScrollOff int, colWidths []int) (rowID string, col int, ok bool) {
 	if pos.X < 0 || pos.Y < 0 || pos.X >= float32(viewport.X) || pos.Y >= float32(viewport.Y) {
 		return "", 0, false
 	}
@@ -592,7 +653,7 @@ func (g *DataGrid) cellAt(pos f32.Point, viewport image.Point, rowH, headerH int
 	if row < 0 || row >= len(g.rows) {
 		return "", 0, false
 	}
-	x := int(pos.X)
+	x := int(pos.X) + hScrollOff
 	if x < 0 || x >= colTotalWidth(colWidths) {
 		return "", 0, false
 	}
