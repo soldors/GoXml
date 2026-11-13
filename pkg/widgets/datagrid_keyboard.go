@@ -119,12 +119,17 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 		return
 	}
 
+	// Shift 放行仅在多选模式声明：Gio 过滤器要求事件修饰键落在
+	// Required|Optional 之内——单选模式声明 Optional 会把 Shift+方向键
+	// 一并消费（R1 反例：仅开键盘导航时 Shift+Down 改变选择，外部
+	// 事件消费者收不到）。单选模式保持 R28 精确过滤器（仅无修饰键）。
+	var shiftOpt key.Modifiers
+	if g.multiSelEnabled {
+		shiftOpt = key.ModShift
+	}
 	for _, name := range dgNavKeys {
 		for {
-			// Optional 放行 Shift：多选模式下 Shift+方向键是扩展选择；
-			// Gio 过滤器要求事件修饰键落在 Required|Optional 之内，不
-			// 声明则 Shift+方向键不匹配（Required=0 且无 Optional）。
-			ev, ok := gtx.Source.Event(key.Filter{Focus: &g.tag, Name: name, Optional: key.ModShift})
+			ev, ok := gtx.Source.Event(key.Filter{Focus: &g.tag, Name: name, Optional: shiftOpt})
 			if !ok {
 				break
 			}
@@ -175,6 +180,7 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 			default:
 				continue
 			}
+			extend := e.Modifiers&key.ModShift != 0
 			// 首尾钳制：越界移动在本行原地保持（不重滚、不换行）。
 			if newIdx < 0 {
 				newIdx = 0
@@ -183,11 +189,17 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 				newIdx = n - 1
 			}
 			if newIdx == sel {
+				// 首尾钳制：单选=无操作且不重滚（R28 语义不变）；多选
+				// 普通导航仍收拢为当前锚行（R1 反例：两行选择在边界
+				// Up 后必须收拢；不重滚、不伪造 Clicked）。
+				if g.multiSelEnabled && !extend {
+					g.commitKeyboardSelection(sel, false)
+				}
 				continue
 			}
 			// 按 RowID 提交选择（不伪造鼠标点击事件）；多选模式下由
 			// commitKeyboardSelection 维护选择集与锚点。
-			g.commitKeyboardSelection(newIdx, e.Modifiers&key.ModShift != 0)
+			g.commitKeyboardSelection(newIdx, extend)
 			// scroll-into-view（本帧生效；空 body 明确不滚动）。
 			if bodyH > 0 {
 				top := newIdx * rowH
