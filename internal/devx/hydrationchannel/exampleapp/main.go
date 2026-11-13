@@ -145,10 +145,10 @@ func main() {
 
 	// 每一发布代都具备“下一次捕获”能力：起端点提供服务（Capture 在 owner 串行点读 cur，servingGen=本代）。
 	// gen>=2 先完成恢复再起端点，使下一代可发现本代端点。
-	_, eperr := sess.NewOldGenEndpoint(owner, func(_ context.Context) ([]byte, int, error) {
+	_, eperr := sess.NewEndpointForGen(owner, func(_ context.Context) ([]byte, int, error) {
 		b, _ := json.Marshal(cur)
 		return b, gen, nil
-	}, 4)
+	}, 4, gen)
 	if eperr != nil {
 		fmt.Printf("APP_ENDPOINT_ERROR %v\n", eperr)
 		return

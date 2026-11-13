@@ -14,8 +14,11 @@ package hydrationchannel
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -44,6 +47,10 @@ type Session struct {
 	cfg   SessionConfig
 	store *devxh.Store
 	proto *devxh.Protocol
+	// ownerID 唯一标识**本运行实例**（随机，非鉴权 token；用于区分同名会话的不同实例与发现记录归属）。
+	ownerID string
+	// publishedGen 本实例最近一次发布发现记录的 serving 代次（0=未发布）。
+	publishedGen int
 }
 
 // NewSession 构造会话（校验维度、创建状态目录归属）。
@@ -60,7 +67,7 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		ct = DefaultCaptureTimeout
 	}
 	proto := &devxh.Protocol{Store: store, Schema: cfg.Schema, AppID: cfg.AppID, CaptureTimeout: ct}
-	return &Session{cfg: cfg, store: store, proto: proto}, nil
+	return &Session{cfg: cfg, store: store, proto: proto, ownerID: newOwnerID()}, nil
 }
 
 // Store 返回本会话状态存储（诊断/测试）。
@@ -77,6 +84,15 @@ func (s *Session) portfilePath() string {
 // NewOldGenEndpoint **旧代**：起一个绑定本会话的端点在 owner 串行点捕获 DTO，并把 {addr} 写 portfile。
 // 返回端点（调用方负责在旧代生命周期内持有；Close 时 Stop）。portfile 不含 token。
 func (s *Session) NewOldGenEndpoint(owner OwnerRunner, capture CaptureFunc, maxInflight int) (*Endpoint, error) {
+	return s.newEndpointGen(owner, capture, maxInflight, 1)
+}
+
+// NewEndpointForGen 发布指定 serving 代次的端点（每代具备下一次捕获能力时使用 gen>=2）。
+func (s *Session) NewEndpointForGen(owner OwnerRunner, capture CaptureFunc, maxInflight, gen int) (*Endpoint, error) {
+	return s.newEndpointGen(owner, capture, maxInflight, gen)
+}
+
+func (s *Session) newEndpointGen(owner OwnerRunner, capture CaptureFunc, maxInflight, gen int) (*Endpoint, error) {
 	ep, err := NewEndpoint(owner, capture, s.cfg.SessionID, s.cfg.AppID, string(s.cfg.Schema), s.cfg.Token, maxInflight)
 	if err != nil {
 		return nil, err
@@ -88,39 +104,120 @@ func (s *Session) NewOldGenEndpoint(owner OwnerRunner, capture CaptureFunc, maxI
 	if err != nil {
 		return nil, err
 	}
-	if werr := s.writePortfile(addr); werr != nil {
+	if werr := s.writePortfile(addr, gen); werr != nil {
 		_ = ep.Stop()
 		return nil, werr
 	}
 	return ep, nil
 }
 
-func (s *Session) writePortfile(addr string) error {
+// portRecord 是发现记录（不含 token）。ownerID 区分同名会话的不同运行实例，gen 为服务代次。
+type portRecord struct {
+	OwnerID string `json:"ownerId"`
+	Gen     int    `json:"gen"`
+	Addr    string `json:"addr"`
+	Session string `json:"session"`
+	App     string `json:"app"`
+	Schema  string `json:"schema"`
+}
+
+// maxDiscoveryBytes 限制发现/临时文件读取（防超大/畸形文件）。
+const maxDiscoveryBytes = 64 << 10
+
+// readBoundedFile 读取至多 maxDiscoveryBytes；返回真实 I/O 错误（除不存在）。
+func readBoundedFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, 0, 1024)
+	tmp := make([]byte, 1024)
+	for len(buf) <= maxDiscoveryBytes {
+		n, rerr := f.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				break
+			}
+			return nil, rerr
+		}
+	}
+	if len(buf) > maxDiscoveryBytes {
+		return nil, fmt.Errorf("discovery file exceeds %d bytes", maxDiscoveryBytes)
+	}
+	return buf, nil
+}
+
+// writePortfile 发布发现记录，共享所有权边界：
+//   - 使用**独占命名**临时文件 <port>.<ownerID>.<nonce>.tmp（O_EXCL），仅清理本方临时文件。
+//   - 目标已存在且**不属于本实例**（外来字节/坏 JSON/其他 live 实例记录）=> 拒绝覆盖，保留原字节，返回错误。
+//   - 目标不存在或属于本实例 => 原子 rename 发布（携带 ownerID+gen）。
+func (s *Session) writePortfile(addr string, gen int) error {
 	if err := os.MkdirAll(s.store.Dir(), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.Marshal(map[string]string{"addr": addr, "session": s.cfg.SessionID, "app": s.cfg.AppID, "schema": string(s.cfg.Schema)})
-	tmp := s.portfilePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	target := s.portfilePath()
+	// 目标存在性/归属检查（发布前）。
+	if b, rerr := readBoundedFile(target); rerr == nil {
+		var rec portRecord
+		if json.Unmarshal(b, &rec) != nil || rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID || rec.Schema != string(s.cfg.Schema) {
+			return fmt.Errorf("拒绝覆盖不属于本会话的发现记录（保留外来字节）")
+		}
+		// 同名会话但属于**其他实例**的记录：允许接管（新实例发布），但不得破坏外来字节语义；
+		// 仅当记录是本会话合法记录时继续（旧实例已在 Stop/Close 后不再持有；此处接管写入本实例 ownerID）。
+	} else if !os.IsNotExist(rerr) {
+		return rerr // 真实 I/O 错误（非不存在）如实上抛
+	}
+	rec := portRecord{OwnerID: s.ownerID, Gen: gen, Addr: addr, Session: s.cfg.SessionID, App: s.cfg.AppID, Schema: string(s.cfg.Schema)}
+	b, _ := json.Marshal(rec)
+	tmp := fmt.Sprintf("%s.%s.%s.tmp", target, s.ownerID, newOwnerID())
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.portfilePath())
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp) // 只清理本方临时文件
+		if werr != nil {
+			return werr
+		}
+		return cerr
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	s.publishedGen = gen
+	return nil
+}
+
+// ReadPortInfo 读取本会话发现记录（有界）；返回 (record, error)。ok=false 表示无记录或会话不匹配。
+func (s *Session) ReadPortInfo() (portRecord, bool, error) {
+	b, err := readBoundedFile(s.portfilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return portRecord{}, false, nil
+		}
+		return portRecord{}, false, err
+	}
+	var rec portRecord
+	if json.Unmarshal(b, &rec) != nil {
+		return portRecord{}, false, nil // 坏/外来 JSON => 不匹配（保留）
+	}
+	if rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID || rec.Schema != string(s.cfg.Schema) || rec.Addr == "" {
+		return portRecord{}, false, nil
+	}
+	return rec, true, nil
 }
 
 // ReadPort returns (addr, true) 若本会话 portfile 存在且会话匹配（父端发现旧代端点；不含 token）。
 func (s *Session) ReadPort() (string, bool) {
-	b, err := os.ReadFile(s.portfilePath())
-	if err != nil {
-		return "", false
-	}
-	var m map[string]string
-	if json.Unmarshal(b, &m) != nil {
-		return "", false
-	}
-	if m["session"] != s.cfg.SessionID || m["app"] != s.cfg.AppID || m["schema"] != string(s.cfg.Schema) {
-		return "", false
-	}
-	return m["addr"], m["addr"] != ""
+	rec, ok, _ := s.ReadPortInfo()
+	return rec.Addr, ok
 }
 
 // NewClientFromPort 父端：据 portfile 构造 Client（token 由父端另行持有，不来自文件）。
@@ -158,9 +255,16 @@ func (s *Session) Close() error {
 			firstErr = err
 		}
 	}
-	if _, ok := s.ReadPort(); ok {
+	// 发现记录：仅当它属于**本实例**（ownerID 匹配）才删除；否则保留（旧代释放不得删新代记录）。
+	if rec, ok, rerr := s.ReadPortInfo(); rerr == nil && ok && rec.OwnerID == s.ownerID {
 		if err := os.Remove(s.portfilePath()); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
+		}
+	}
+	// 只清理**本方**临时文件（<port>.<ownerID>.*.tmp），不触碰他人临时文件。
+	if matches, gerr := filepath.Glob(fmt.Sprintf("%s.%s.*.tmp", s.portfilePath(), s.ownerID)); gerr == nil {
+		for _, m := range matches {
+			_ = os.Remove(m)
 		}
 	}
 	return firstErr
@@ -178,4 +282,13 @@ func (s *Session) storeOwning() bool {
 		return false // 非本会话合法状态（坏文件/他人/外来字节）=> 不拥有，保留。
 	}
 	return true
+}
+
+// newOwnerID 生成随机不透明实例标识（非鉴权 token；不写日志）。
+func newOwnerID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
