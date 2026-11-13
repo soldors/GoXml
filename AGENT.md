@@ -92,7 +92,7 @@ goxml/
 │   ├── lifecycle/         # [已有·opt-in] Context 驱动的 OnMount/OnUnmount Owner 生命周期核心；默认关闭，Windows 单窗两种原生关闭已验
 │   └── hydration/         # [已有·开发态 opt-in] 显式 DTO 状态暂存与恢复；默认关闭，发布级边界待验收
 ├── pkg/platform/          # [部分已有] font/ 已有；托盘、菜单、异步弹窗、剪贴板仍规划
-├── pkg/widgets/           # [候选已有] ContextMenu/Modal/DataGrid；DataGrid 键盘导航默认关闭，原生发布门禁未齐
+├── pkg/widgets/           # [候选已有] ContextMenu/Modal/DataGrid；DataGrid 键盘导航默认关闭，Windows 原生限定验收通过
 ├── internal/devx/         # [候选已有] watch/watchadapter、preview、process，Windows 接线验收中
 ├── cmd/goxml/             # [已有] generate；Windows watch/静态 preview 为 R26 隔离候选
 └── docs/                  # [工程文档库] ADR、WBS 任务卡、交接包、踩坑记录
