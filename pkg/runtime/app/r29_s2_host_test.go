@@ -263,17 +263,36 @@ func TestS2OpenFailuresAndDuplicateCloseAreBounded(t *testing.T) {
 	if _, err := host.Open("A", view, th, Config{Title: "DUP"}); err == nil {
 		t.Fatal("重复 label 应被拒绝")
 	}
-	// 重复关窗：一次 ActionClose；再塞一个重复 DestroyEvent 也不重复卸载。
-	ha.Close()
-	ha.Close()
-	fakes["A"].events <- gioapp.DestroyEvent{}
+	hb, err := host.Open("DUP", view, th, Config{Title: "DUP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// R1 语义：驱动就绪前 Close 只排队，首个 Event 返回后至多一次交付。
+	fakes["A"].frame()
+	s2WaitFrames(t, ha, 1)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = ha.Close() }()
+	}
+	wg.Wait()
 	s2WaitDone(t, ha)
 	if fakes["A"].closes.Load() != 1 {
-		t.Fatalf("重复 Close 应只请求一次关闭，实得 %d", fakes["A"].closes.Load())
+		t.Fatalf("连续/并发 Close 应只交付一次关闭，实得 %d", fakes["A"].closes.Load())
+	}
+
+	// 另一窗口：已进入 DestroyEvent 时禁止后端调用（重复 Destroy 也不重复清理）。
+	fakes["DUP"].events <- gioapp.DestroyEvent{}
+	fakes["DUP"].events <- gioapp.DestroyEvent{}
+	_ = hb.Close()
+	_ = hb.Close()
+	s2WaitDone(t, hb)
+	if fakes["DUP"].closes.Load() != 0 {
+		t.Fatalf("DestroyEvent 已到达后不得再触后端，实得 %d", fakes["DUP"].closes.Load())
 	}
 	res := host.Wait()
-	if res.Closed != 1 || !res.Drained || len(res.Errors) != 0 {
-		t.Fatalf("单窗收口结果异常: %+v", res)
+	if res.Closed != 2 || !res.Drained || len(res.Errors) != 0 {
+		t.Fatalf("两窗收口结果异常: %+v", res)
 	}
 }
 

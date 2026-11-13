@@ -1,45 +1,84 @@
 package app
 
-// R29-C S2：显式多窗口宿主**候选**（未批准合同，等待协调者验收）。
+// R29-C R1：显式多窗口宿主**候选**（未批准合同，等待协调者验收）。
 //
 // 设计红线（ADR-0018 与 R28 单窗进程入口保持不变）：
-//   - Gio 的 app.Main() 只由宿主调用一次；每个窗口在自己独立的 goroutine
-//     里驱动 Event()。窗口事件循环 goroutine 就是该窗口的 UI owner 串行点：
-//     Layout、WithOnDestroy 回调、Router.LifecycleFinalize 都在这里发生。
-//   - 宿主**不**持有、不调用、不推断任何窗口的 Router/Owner；每个窗口由
-//     调用方用 WithOnDestroy(view, finalize) 自行绑定自己的 Router。
-//   - 关闭一个窗口只清该窗口；宿主不主动 os.Exit。最后一窗自然关闭 =
-//     drained；调用方显式 ExitAll = explicit；两者在 HostResult 里可区分。
-//   - 旧 Run / RunWith / RunWindow* / RunSingleWindowProcess 一字不改：
-//     本文件只新增 API，不修改既有全局变量与入口。
+//   - Gio 的 app.Main() 是**进程级一次性**所有权：包内全局只认领一次，
+//     第二个 WindowHost.Run() 明确拒绝；旧单窗入口与 Host 混用不受支持。
+//   - 每个窗口在自己独立的事件泵里驱动 Event()。窗口 loop goroutine
+//     就是该窗口的 UI owner 串行点：Layout、WithOnDestroy 回调、
+//     Router.LifecycleFinalize 都在这里发生。
+//   - R27 首个 Event 驱动就绪边界：**首次 Event() 返回之后**才允许向
+//     后端 Perform(ActionClose)；提前的 Close/ExitAll 只排队，就绪后
+//     由该窗 loop 至多一次交付。若首次或随后已进入 DestroyEvent，
+//     禁止任何后端调用。
+//   - 宿主不持有、不调用、不推断任何窗口的 Router/Owner；不主动
+//     os.Exit。最后一窗自然关闭 = drained；调用方显式 ExitAll = explicit。
+//   - 旧 Run / RunWith / RunWindow* / RunSingleWindowProcess 的公开 API
+//     与行为逐字不变（本文件不改它们的定义）。
 //
-// 平台线程规则：Gio v0.10.3 的 Main 必须在主系统线程调用且生产不返回；
-// Open 可以在 Main 之前注册窗口，窗口 goroutine 在首次 Event() 时等驱动。
-// Linux/macOS 需要 CGO=1（平台矩阵见交付 S4）。
+// 平台线程规则：Main 必须在主系统线程调用一次且生产不返回；
+// Host.Run() 因此在生产形态下不返回，Host.Wait() 必须由调用方在
+// 另一 goroutine 使用。Linux/macOS 需要 CGO=1（交付 S4 平台矩阵）。
 
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
 	gioapp "gioui.org/app"
+	"gioui.org/io/event"
 	"gioui.org/io/system"
 	"gioui.org/op"
 	"gioui.org/widget/material"
 )
 
-// hostState 是宿主的三种可观察状态。
+// ErrGioMainAlreadyOwned 表示 Gio Main 的进程级所有权已被其它宿主或
+// 旧单窗入口占用；第二个 WindowHost.Run() 明确拒绝，不偷偷再调 Main。
+var ErrGioMainAlreadyOwned = errors.New("app: Gio Main is already owned")
+
+// gioMain 是**包级**进程所有权状态（不是每个 Host 一份 Once）。
+// calls 记录经由生产 mainFunc 包装的 Main 调用次数，用于识别旧入口混用。
+var gioMain = struct {
+	mu    sync.Mutex
+	owner string
+	calls int
+	once  sync.Once
+}{}
+
+var nextHostID atomic.Uint64
+
+func init() {
+	// 只包一层计数，不改变 Main 的行为；旧入口仍直接调用 mainFunc。
+	base := mainFunc
+	mainFunc = func() {
+		gioMain.mu.Lock()
+		gioMain.calls++
+		gioMain.mu.Unlock()
+		base()
+	}
+}
+
+// resetGioMainForTest 只供包内受控测试隔离全局进程所有权状态。
+func resetGioMainForTest() {
+	gioMain.mu.Lock()
+	defer gioMain.mu.Unlock()
+	gioMain.owner = ""
+	gioMain.calls = 0
+	gioMain.once = sync.Once{}
+}
+
 type hostState uint8
 
 const (
-	hostRunning hostState = iota // 至少还可以打开窗口
-	hostExiting                  // 调用方已显式 ExitAll，正在收口
-	hostDrained                  // 所有窗口已关闭（自然或显式收口完成）
+	hostRunning hostState = iota
+	hostExiting
+	hostDrained
 )
 
 // hostWindowFactory 是包内窗口句柄装配点（与 mainFunc 同构，生产从不改写）。
-// 默认构造真实 *gioapp.Window；默认无窗口测试集合把它换成纯内存受控窗口。
 var hostWindowFactory = func(cfg Config) windowEvents { return newWindow(cfg) }
 
 // HostResult 是宿主收口结果。Explicit 区分「调用方显式退出」与
@@ -55,18 +94,19 @@ type HostResult struct {
 // WindowHost 显式管理一组独立窗口实例（候选 API）。
 type WindowHost struct {
 	mu         sync.Mutex
+	id         string
 	windows    map[*WindowHandle]struct{}
 	labels     map[string]struct{}
 	state      hostState
 	result     HostResult
 	finished   chan struct{}
 	finishOnce sync.Once
-	mainOnce   sync.Once
 }
 
 // NewWindowHost 构造空宿主；不调用 Main、不创建平台窗口。
 func NewWindowHost() *WindowHost {
 	return &WindowHost{
+		id:       strconv.FormatUint(nextHostID.Add(1), 10),
 		windows:  make(map[*WindowHandle]struct{}),
 		labels:   make(map[string]struct{}),
 		finished: make(chan struct{}),
@@ -75,8 +115,6 @@ func NewWindowHost() *WindowHost {
 
 // Open 注册并启动一个独立窗口实例。label 必须非空且唯一；view / th 必须
 // 非空。校验失败返回 error，宿主不记账，已打开的窗口不受影响。
-//
-// 线程：可从任意 goroutine 调用，但生产形态一般在主线程 Run() 之前完成。
 func (h *WindowHost) Open(label string, view View, th *material.Theme, cfg Config) (*WindowHandle, error) {
 	if label == "" {
 		return nil, errors.New("app: WindowHost.Open requires a non-empty label")
@@ -99,28 +137,42 @@ func (h *WindowHost) Open(label string, view View, th *material.Theme, cfg Confi
 	}
 	w := hostWindowFactory(cfg.withDefaults())
 	wh := &WindowHandle{
-		host:  h,
-		label: label,
-		w:     w,
-		view:  view,
-		th:    th,
-		done:  make(chan struct{}),
+		host:        h,
+		label:       label,
+		w:           w,
+		view:        view,
+		th:          th,
+		done:        make(chan struct{}),
+		closeNotify: make(chan struct{}, 1),
 	}
 	h.windows[wh] = struct{}{}
 	h.labels[label] = struct{}{}
 	h.mu.Unlock()
 
-	// 每个窗口一条独立事件泵；回调与 Layout 都在该 goroutine（UI owner）。
 	go h.loopWindow(wh)
 	return wh, nil
 }
 
-// Run 在主系统线程调用一次 Gio Main（生产永不返回）。
+// Run 尝试取得**进程级** Gio Main 所有权并调用一次 Main。
 //
-// 与单窗入口的区别：Main 只调用一次，且**不**由窗口关闭触发进程退出；
-// 调用方在自己的 goroutine 用 Wait() 取得收口结果，再决定是否做进程级动作。
-func (h *WindowHost) Run() {
-	h.mainOnce.Do(mainFunc)
+// 生产：Main 永不返回，本函数也不返回；调用方必须在另一 goroutine 用
+// Wait() 取得窗口收口结果。受控注入 Main 返回时本函数返回 nil。
+// 若已有其它 Host 认领，或旧单窗入口已经调用过 Main，返回
+// ErrGioMainAlreadyOwned，绝不重复调用 Main（不扩大退出政策）。
+func (h *WindowHost) Run() error {
+	gioMain.mu.Lock()
+	if gioMain.owner == "" && gioMain.calls == 0 {
+		gioMain.owner = h.id
+	}
+	owns := gioMain.owner == h.id
+	calls := gioMain.calls
+	owner := gioMain.owner
+	gioMain.mu.Unlock()
+	if !owns {
+		return fmt.Errorf("%w: owner=%q mainCalls=%d host=%q", ErrGioMainAlreadyOwned, owner, calls, h.id)
+	}
+	gioMain.once.Do(mainFunc)
+	return nil
 }
 
 // Active 返回当前仍登记（未收口）的窗口数。
@@ -130,8 +182,9 @@ func (h *WindowHost) Active() int {
 	return len(h.windows)
 }
 
-// Wait 阻塞到所有窗口收口（最后一窗自然关闭或显式 ExitAll 完成），
-// 返回可判别的 HostResult。生产形态可在后台 goroutine 调用。
+// Wait 阻塞到所有窗口收口（最后一窗自然关闭或显式 ExitAll 完成）。
+// 与 Run 相互独立：生产 Main 不返回时，Wait 在后台 goroutine 观察窗口，
+// 不参与进程级退出决定。
 func (h *WindowHost) Wait() HostResult {
 	<-h.finished
 	h.mu.Lock()
@@ -141,10 +194,8 @@ func (h *WindowHost) Wait() HostResult {
 	return res
 }
 
-// ExitAll 是**调用方显式退出**：幂等地向所有未关闭窗口发出一次
-// ActionClose，等待各窗口自行完成清理（清理由各窗口的 UI owner 回调负责，
-// 宿主不代做 Finalize、不杀 goroutine、不 os.Exit）。
-// 已 drained 或已显式退出时为空操作，不会改写已有结果。
+// ExitAll 是**调用方显式退出**：幂等向所有未关闭窗口排队一次关闭请求，
+// 等待各窗口自行完成清理；不代做 Finalize、不杀 goroutine、不 os.Exit。
 func (h *WindowHost) ExitAll(code int) {
 	h.mu.Lock()
 	if h.state != hostRunning {
@@ -161,7 +212,7 @@ func (h *WindowHost) ExitAll(code int) {
 	h.mu.Unlock()
 
 	for _, wh := range pending {
-		wh.Close()
+		_ = wh.Close()
 	}
 	if len(pending) == 0 {
 		h.signalFinished(true)
@@ -179,7 +230,6 @@ func (h *WindowHost) signalFinished(drained bool) {
 	})
 }
 
-// onWindowClosed 由窗口事件泵收尾调用：记账、汇错、判断是否最后一窗。
 func (h *WindowHost) onWindowClosed(wh *WindowHandle) {
 	h.mu.Lock()
 	delete(h.windows, wh)
@@ -189,66 +239,94 @@ func (h *WindowHost) onWindowClosed(wh *WindowHandle) {
 		h.result.Errors = append(h.result.Errors, fmt.Errorf("app: window %q: %w", wh.label, err))
 	}
 	remaining := len(h.windows)
-	state := h.state
-	if remaining == 0 && state == hostRunning {
+	if remaining == 0 && h.state == hostRunning {
 		h.state = hostDrained
 	}
 	h.mu.Unlock()
 
 	close(wh.done)
 	if remaining == 0 {
-		// 自然最后一窗（state==hostDrained）或显式 ExitAll 收口完成都算 drained。
 		h.signalFinished(true)
 	}
 }
 
+// loopWindow 是单个窗口的事件循环。事件读取放到 pump goroutine，使
+// loop 能在等待事件的同时接收关闭请求；**所有后端调用都由 loop 串行
+// 执行**，因此 DestroyEvent 一旦到达就绝不会再发出关闭请求。
 func (h *WindowHost) loopWindow(wh *WindowHandle) {
 	defer h.onWindowClosed(wh)
+	events := make(chan event.Event, 1)
+	go func() {
+		for {
+			e := wh.w.Event()
+			if _, ok := e.(gioapp.DestroyEvent); ok {
+				wh.destroySeen.Store(true) // 后端已交出销毁事件：禁止后续调用
+			}
+			select {
+			case events <- e:
+			case <-wh.done:
+				return
+			}
+			if _, ok := e.(gioapp.DestroyEvent); ok {
+				return
+			}
+		}
+	}()
+
 	var ops op.Ops
 	for {
-		e := wh.w.Event()
-		switch e := e.(type) {
-		case gioapp.DestroyEvent:
-			// 只回调一次：重复关窗 / 重复 Destroy 不重复卸载。
-			wh.destroyOnce.Do(func() {
-				wh.setErr(windowExitError(e.Err))
-				notifyViewDestroyed(wh.view)
-			})
-			return
-		case gioapp.FrameEvent:
-			gtx := gioapp.NewContext(&ops, e)
-			wh.view.Layout(gtx, wh.th)
-			e.Frame(gtx.Ops)
-			wh.frames.Add(1)
+		select {
+		case <-wh.closeNotify:
+			wh.flushClose()
+		case e := <-events:
+			// R27 边界：首个 Event() 返回（pump 已读到事件）才标记驱动就绪。
+			wh.driverReady.Store(true)
+			switch e := e.(type) {
+			case gioapp.DestroyEvent:
+				wh.destroyed.Store(true)
+				wh.destroyOnce.Do(func() {
+					wh.setErr(windowExitError(e.Err))
+					notifyViewDestroyed(wh.view)
+				})
+				return
+			case gioapp.FrameEvent:
+				gtx := gioapp.NewContext(&ops, e)
+				wh.view.Layout(gtx, wh.th)
+				e.Frame(gtx.Ops)
+				wh.frames.Add(1)
+			}
+			// 首事件就绪后立刻结算排队的关闭请求（至多一次）。
+			wh.flushClose()
 		}
 	}
 }
 
 // WindowHandle 是一个独立窗口实例的句柄。
 type WindowHandle struct {
-	host        *WindowHost
-	label       string
-	w           windowEvents
-	view        View
-	th          *material.Theme
-	mu          sync.Mutex
-	err         error
-	closeOnce   sync.Once
-	destroyOnce sync.Once
-	frames      atomic.Int64
-	done        chan struct{}
+	host           *WindowHost
+	label          string
+	w              windowEvents
+	view           View
+	th             *material.Theme
+	mu             sync.Mutex
+	err            error
+	destroyOnce    sync.Once
+	frames         atomic.Int64
+	done           chan struct{}
+	closeNotify    chan struct{}
+	driverReady    atomic.Bool
+	destroySeen    atomic.Bool
+	destroyed      atomic.Bool
+	closePending   atomic.Bool
+	closeDelivered atomic.Bool
 }
 
-// Label 返回窗口标签。
-func (wh *WindowHandle) Label() string { return wh.label }
-
-// Done 在该窗口事件泵收口（DestroyEvent 回调完成）后关闭。
+func (wh *WindowHandle) Label() string         { return wh.label }
 func (wh *WindowHandle) Done() <-chan struct{} { return wh.done }
+func (wh *WindowHandle) Frames() int64         { return wh.frames.Load() }
+func (wh *WindowHandle) DriverReady() bool     { return wh.driverReady.Load() }
+func (wh *WindowHandle) CloseDelivered() bool  { return wh.closeDelivered.Load() }
 
-// Frames 返回该窗口已经处理过的 FrameEvent 数（健康对照用）。
-func (wh *WindowHandle) Frames() int64 { return wh.frames.Load() }
-
-// Err 返回该窗口 DestroyEvent 交出的错误（正常关闭为 nil）。
 func (wh *WindowHandle) Err() error {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
@@ -261,15 +339,36 @@ func (wh *WindowHandle) setErr(err error) {
 	wh.err = err
 }
 
-// Close 幂等请求关闭**本窗口**：一次 ActionClose + Invalidate。
-// 真正清理由该窗口事件泵里的 DestroyEvent 回调完成，不阻塞、不跨窗口。
+// Close 只**排队**一次关闭请求，绝不直接调用后端。
+// 若已进入 DestroyEvent（首次/随后），直接返回，后端调用次数为 0。
+// 真正交付由该窗 loop 在驱动就绪后完成，至多一次。
 func (wh *WindowHandle) Close() error {
-	wh.closeOnce.Do(func() {
-		wh.w.Perform(system.ActionClose)
-		wh.w.Invalidate()
-	})
+	if wh.destroyed.Load() || wh.destroySeen.Load() {
+		return nil
+	}
+	if wh.closePending.CompareAndSwap(false, true) {
+		select {
+		case wh.closeNotify <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
-// 编译期确认生产窗口句柄满足宿主使用的窗口接口。
+// flushClose 只能由该窗 loop goroutine 调用：R27 就绪门闩 + 销毁门闩 +
+// 至多一次交付。Perform 与 DestroyEvent 在同一串行点，无跨 goroutine 竞争。
+func (wh *WindowHandle) flushClose() {
+	if !wh.driverReady.Load() || !wh.closePending.Load() {
+		return
+	}
+	if wh.destroyed.Load() || wh.destroySeen.Load() {
+		return
+	}
+	if !wh.closeDelivered.CompareAndSwap(false, true) {
+		return
+	}
+	wh.w.Perform(system.ActionClose)
+	wh.w.Invalidate()
+}
+
 var _ windowEvents = (*gioapp.Window)(nil)
