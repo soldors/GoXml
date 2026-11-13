@@ -165,6 +165,8 @@ type DataGrid struct {
 	clickedCol int
 	clickedOK  bool
 	clickPos   image.Point // 最近一次有效点击的组件本地像素坐标（R2 判据）
+	clickOffX  int         // 命中当刻的横向偏移（cellAt 实际使用的值；R3 判据）
+	clickOffY  int         // 命中当刻的纵向偏移
 
 	// 绘制宏缓存（LRU 有界）
 	texts map[dgTextKey]*dgTextEntry
@@ -313,14 +315,16 @@ func (g *DataGrid) Clicked() (rowID string, col int, ok bool) {
 	return rowID, col, ok
 }
 
-// LastClick 返回最近一次有效点击的完整观察：稳定 RowID、列号与组件本地
-// 像素坐标（命中判据的独立观察字段），与 Clicked 共享同一一次性消费状态。
-// 供外部按当帧列宽/偏移核对精确命中列（R2 判据；候选 API）。
-func (g *DataGrid) LastClick() (rowID string, col int, pos image.Point, ok bool) {
+// lastClick 返回最近一次有效点击的完整观察：稳定 RowID、列号、组件本地
+// 像素坐标与**命中当刻**偏移（cellAt 实际使用的值），与 Clicked 共享同一
+// 一次性消费状态。夹具与组件同包——观察留在包内（R3 收口：不设公开
+// API，Clicked 兼容不变）。
+func (g *DataGrid) lastClick() (rowID string, col int, pos image.Point, hitOffX, hitOffY int, ok bool) {
 	rowID, col, ok = g.clickedID, g.clickedCol, g.clickedOK
 	pos = g.clickPos
+	hitOffX, hitOffY = g.clickOffX, g.clickOffY
 	g.clickedID, g.clickedCol, g.clickedOK = "", 0, false
-	return rowID, col, pos, ok
+	return rowID, col, pos, hitOffX, hitOffY, ok
 }
 
 // ScrollOffset 返回当前滚动偏移（px，诊断用）。
@@ -658,6 +662,7 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 				if ok && g.pressValid && rowID == g.pressRowID && col == g.pressCol {
 					g.clickedID, g.clickedCol, g.clickedOK = rowID, col, true
 					g.clickPos = image.Pt(int(e.Position.X), int(e.Position.Y))
+					g.clickOffX, g.clickOffY = g.hScrollOff, g.scrollOff
 					g.selID, g.selOK = rowID, true
 					if g.multiSelEnabled {
 						g.commitPointerSelection(rowID, e.Modifiers)

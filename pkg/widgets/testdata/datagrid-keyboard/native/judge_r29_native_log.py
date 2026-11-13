@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""R29-B R2 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v2。
+"""R29-B R3 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v3。
 
 用法:
   python judge_r29_native_log.py <log.jsonl> [--json -|路径]
@@ -9,7 +9,18 @@
   STRUCTURAL: PASS/FAIL — 模型化场景时间线与不变式判定
   SCENARIO:   始终 MANUAL-REQUIRED — 「操作者按场景意图做了」的因果确认
 
-R2 精确判据（本版新增）：
+R3 域校验与几何一致性（本版新增；先于行列推导）：
+  视口四边 R14d x ∈ [0, viewWpx)（右边界 x==viewWpx 无效——像素域半开
+           区间）；y ∈ [headerHpx, headerHpx+bodyHpx)（行点击不可能落在
+           表头或表体之外）。
+  偏移域   R14e offX ∈ [0, offXMax]、offY ∈ [0, offYMax]（命中当刻值）。
+  命中几何 R14f click 的 offX/offY 为**命中当刻**值（cellAt 实际使用），
+           必须等于轴时间线在本点击之前的运行值，或同帧 axis 事件的值
+           （同帧滚动/缩放时二者可不同——不得混用不同时间的几何）。
+  gridB    R17 gridB 单选身份：click.selIds 必为 [被点行]、lead=被点行；
+           selB-change.to 必须等于模型；变更必须在下一场景步骤前留痕。
+
+沿 R2 精确判据：
   精确列   R14a click.col 必须等于按**当帧真实几何与本地指针坐标**计算的
            列：(x + offX) // colWpx。错误但仍可见的列一律拒绝（R1 的
            「可见性」判据不足——可见列≠命中列）。
@@ -96,6 +107,13 @@ def main():
         print("STRUCTURAL: FAIL — 空日志或日志项不是对象")
         return 1
 
+    # 预扫描：axis 事件按帧索引（同帧点击的轴事件在 click 之后才出现，
+    # 命中当刻几何一致性需要整帧视角）。
+    axis_by_frame = {}
+    for ev0 in events:
+        if ev0.get("event") == "axis" and isinstance(ev0.get("frame"), int):
+            axis_by_frame[ev0["frame"]] = (ev0.get("offX"), ev0.get("offY"))
+
     fails = []
     items = []      # 结构化逐项结果
     manual = []     # 依赖现场观察的项（SCENARIO）
@@ -123,6 +141,10 @@ def main():
     selb_seen = ""
     row_aim_variance = []
     n_exact_col = n_exact_row = n_snapshot = 0
+    n_domain = n_domain_ok = 0
+    axis_run_x = axis_run_y = None   # 轴时间线运行值（本点击之前）
+    selb_model = ""                  # gridB 单选身份（恒等序）
+    selb_pending = False
 
     # gridA 点击步骤（与 RUNBOOK-R29 脚本一一对应）：(rowIdx, action)。
     steps_a = [
@@ -172,6 +194,7 @@ def main():
                 axis_x_plus += 1
             if dy > 0:
                 axis_y_plus += 1
+            axis_run_x, axis_run_y = offX, offY
 
         elif kind == "click":
             grid = ev.get("grid")
@@ -179,8 +202,10 @@ def main():
             x, y = ev.get("x"), ev.get("y")
             colWpx, viewWpx = ev.get("colWpx"), ev.get("viewWpx")
             rowHpx, headerHpx = ev.get("rowHpx"), ev.get("headerHpx")
+            bodyHpx = ev.get("bodyHpx")
             offX, offY = ev.get("offX"), ev.get("offY")
             sel_ids, lead = ev.get("selIds"), ev.get("lead")
+            click_frame = ev.get("frame")
             if not SEL_RE.match(str(row_id)):
                 item("R14-rowid", False, "seq=%d 非法 RowID %r" % (seq, row_id))
                 continue
@@ -192,6 +217,45 @@ def main():
                     and isinstance(viewWpx, int) and viewWpx > 0):
                 item("R16a-snapshot", False, "seq=%d click 缺选择快照或几何（旧格式不可判定，拒绝）" % seq)
                 continue
+
+            # —— R3 域校验（先于行列推导；不合法坐标不进入推导）——
+            if not (0 <= x < viewWpx):
+                item("R14d-domain-x", False,
+                     "seq=%d 点击坐标越界 x=%d 不在 [0,%d)（右边界/视口外像素域）"
+                     % (seq, x, viewWpx))
+            if not (isinstance(bodyHpx, int) and bodyHpx > 0):
+                item("R14d-fields", False, "seq=%d click 缺 bodyHpx" % seq)
+            elif not (headerHpx <= y < headerHpx + bodyHpx):
+                item("R14d-domain-y", False,
+                     "seq=%d 点击纵坐标越界 y=%d 不在 [header=%d, header+body=%d)（表头/表体四边）"
+                     % (seq, y, headerHpx, headerHpx + bodyHpx))
+            offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
+            if not (isinstance(offXMax, int) and offXMax >= 0 and isinstance(offYMax, int) and offYMax >= 0):
+                item("R14e-fields", False, "seq=%d click 缺 offXMax/offYMax" % seq)
+            elif not (0 <= offX <= offXMax and 0 <= offY <= offYMax):
+                item("R14e-domain-off", False,
+                     "seq=%d 偏移越域 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
+            # 命中当刻几何 × 轴时间线（仅 gridA——轴事件只来自 gridA；
+            # gridB 无横向滚动，offX 恒 0，由偏移域校验覆盖）：允许
+            # {本点击前运行值} 加 {同帧 axis 值}。
+            if grid == "A":
+                allowed_x = {axis_run_x} if axis_run_x is not None else set()
+                allowed_y = {axis_run_y} if axis_run_y is not None else set()
+                if click_frame in axis_by_frame:
+                    allowed_x.add(axis_by_frame[click_frame][0])
+                    allowed_y.add(axis_by_frame[click_frame][1])
+                if allowed_x and offX not in allowed_x:
+                    item("R14f-hit-geom", False,
+                         "seq=%d 命中当刻 offX=%d 与轴时间线不一致（允许值 %s）"
+                         % (seq, offX, sorted(v for v in allowed_x if v is not None)))
+                if allowed_y and offY not in allowed_y:
+                    item("R14f-hit-geom", False,
+                         "seq=%d 命中当刻 offY=%d 与轴时间线不一致（允许值 %s）"
+                         % (seq, offY, sorted(v for v in allowed_y if v is not None)))
+            n_domain += 1
+            tail = [i["id"] for i in items[-8:]]
+            if not any(i.startswith(("R14d", "R14e", "R14f")) for i in tail):
+                n_domain_ok += 1
 
             # 精确列：坐标 × 当帧几何（错误但仍可见的列在此被拒）。
             col_calc = (x + offX) // colWpx
@@ -265,7 +329,16 @@ def main():
                     item("R16a-gap", False,
                          "seq=%d 上一步选择变更未留痕（缺 sel-multi）" % seq)
                 steps_b.pop(0)
-                # gridB 恒等序；行映射与列判据同 gridA。
+                # R17 gridB 单选身份：点击后选择集必为 [被点行]、lead=被点行。
+                if sel_ids != [row_id]:
+                    item("R17-gridb-snapshot", False,
+                         "seq=%d gridB 选择快照 %r 与被点行 %r 矛盾（单选身份）"
+                         % (seq, sel_ids, row_id))
+                if lead != row_id:
+                    item("R17-gridb-lead", False,
+                         "seq=%d gridB lead %r 与被点行 %r 矛盾" % (seq, lead, row_id))
+                selb_model = row_id
+                selb_pending = True
 
         elif kind == "sel-multi":
             ids, count, lead = ev.get("ids"), ev.get("count"), ev.get("lead")
@@ -297,8 +370,14 @@ def main():
                          "seq=%d 多余选择快照 %r（当刻模型无未留痕变更——错序）" % (seq, ids))
 
         elif kind == "selB-change":
-            if ev.get("to"):
-                selb_seen = ev.get("to")
+            to = ev.get("to")
+            if to:
+                selb_seen = to
+            if to != selb_model:
+                item("R17-gridb-timeline", False,
+                     "seq=%d selB-change.to=%r 与 gridB 模型 %r 矛盾" % (seq, to, selb_model))
+            else:
+                selb_pending = False
 
         elif kind == "sort":
             seen_sort += 1
@@ -346,6 +425,8 @@ def main():
         item("R16-selB", False, "gridB 选择快照缺失（N6 对照阶段）")
     elif selb_seen != order_id(0, False):
         item("R16-selB", False, "gridB 最终选择 %r ≠ %r" % (selb_seen, order_id(0, False)))
+    if selb_pending:
+        item("R17-gridb-timeline", False, "gridB 点击后的选择变更未留痕（缺 selB-change）")
     if pending_change or (last_seen is not None
                           and [order_id(i, sorted_desc) for i in sorted(set_a)] != last_seen):
         item("R16a-final", False,
@@ -400,8 +481,12 @@ def main():
                 stage("N4-N5-snapshot", not any(f.startswith("R16a") for f in fails),
                       "选择快照关联 %d 次（click.selIds 与 sel-multi 留痕一致）" % n_snapshot),
                 stage("N6-dual-editor", selb_seen == order_id(0, False)
-                      and edit_chars == 2 and focus_editor_before_edit,
-                      "gridB 对照选择 %r；Editor 焦点交接与输入计数" % selb_seen),
+                      and edit_chars == 2 and focus_editor_before_edit
+                      and not any(f.startswith("R17") for f in fails),
+                      "gridB 对照单选身份（快照+selB 时间线一致，最终 %r）；Editor 焦点交接与输入计数" % selb_seen),
+                stage("R3-domain", n_domain > 0
+                      and not any(f.startswith(("R14d", "R14e", "R14f")) for f in fails),
+                      "域校验 %d 次（视口四边/偏移域/命中当刻几何×轴时间线）" % n_domain),
                 stage("lifecycle", lifecycle == ["destroy-callback", "run-return", "exit"]
                       and events[-1].get("event") == "exit",
                       "destroy-callback → run-return → exit，exit 末位"),
@@ -417,6 +502,8 @@ def main():
                 "exact_col_checks": n_exact_col,
                 "exact_row_checks": n_exact_row,
                 "snapshot_checks": n_snapshot,
+                "domain_checks": n_domain,
+                "domain_clean": n_domain_ok,
                 "fails": len(fails),
             },
         }

@@ -130,11 +130,12 @@ func r29OrderSample(rows []DataGridRow, n int) []string {
 	return out
 }
 
-func r29EmitClick(l *fixtureLog, grid string, g *DataGrid, offX, offXMax, offY, offYMax, colWpx, viewWpx, rowHpx, headerHpx int, focus string) {
-	// LastClick 与 Clicked 共享一次性消费状态：附带组件本地像素坐标与
-	// 点击当刻的选择快照（selIds/lead）——判定器据以核对精确命中列/
-	// 行并把选择快照与场景阶段关联（R2 判据）。
-	if id, col, pos, ok := g.LastClick(); ok {
+func r29EmitClick(l *fixtureLog, grid string, g *DataGrid, offX, offXMax, offY, offYMax, colWpx, viewWpx, rowHpx, headerHpx, bodyHpx int, focus string) {
+	// lastClick 与 Clicked 共享一次性消费状态：附带组件本地像素坐标、
+	// **命中当刻**偏移（cellAt 实际使用的值——同帧滚动/缩放时不与帧尾
+	// 几何混淆）与点击当刻的选择快照（selIds/lead）。判定器据以先做域
+	// 校验再推导行列，并把选择快照与场景阶段关联（R3 判据）。
+	if id, col, pos, hitOffX, hitOffY, ok := g.lastClick(); ok {
 		ids := g.SelectedRowIDs()
 		if ids == nil {
 			ids = []string{}
@@ -146,8 +147,8 @@ func r29EmitClick(l *fixtureLog, grid string, g *DataGrid, offX, offXMax, offY, 
 		l.emit(map[string]interface{}{
 			"event": "click", "grid": grid, "rowID": id, "col": col,
 			"x": pos.X, "y": pos.Y,
-			"offX": offX, "offXMax": offXMax, "offY": offY, "offYMax": offYMax,
-			"colWpx": colWpx, "viewWpx": viewWpx, "rowHpx": rowHpx, "headerHpx": headerHpx,
+			"offX": hitOffX, "offXMax": offXMax, "offY": hitOffY, "offYMax": offYMax,
+			"colWpx": colWpx, "viewWpx": viewWpx, "rowHpx": rowHpx, "headerHpx": headerHpx, "bodyHpx": bodyHpx,
 			"selIds": ids, "lead": lead, "focus": focus,
 		})
 	}
@@ -221,11 +222,11 @@ func (v *fixtureR29View) Layout(gtx layout.Context, th *material.Theme) layout.D
 		offYMax = 0
 	}
 
-	// 点击消费（一次性读取）→ click 事件（judge R2 判据：坐标×几何核对
-	// 精确列/行；点击当刻选择快照随事件留痕）。
+	// 点击消费（一次性读取）→ click 事件（judge R3 判据：域校验先行，
+	// 命中当刻几何×坐标核对精确列/行；点击当刻选择快照随事件留痕）。
 	bodyBpx := r29BandB - gtx.Dp(unit.Dp(24))
-	r29EmitClick(v.log, "A", v.gridA, offX, offXMax, offY, offYMax, colWpx, w, rowHpx, headerHpx, focus)
-	r29EmitClick(v.log, "B", v.gridB, 0, 0, v.gridB.ScrollOffset(), len(v.gridB.rows)*rowHpx-bodyBpx, colWpx, w, rowHpx, headerHpx, focus)
+	r29EmitClick(v.log, "A", v.gridA, offX, offXMax, offY, offYMax, colWpx, w, rowHpx, headerHpx, bodyHpx, focus)
+	r29EmitClick(v.log, "B", v.gridB, 0, 0, v.gridB.ScrollOffset(), len(v.gridB.rows)*rowHpx-bodyBpx, colWpx, w, rowHpx, headerHpx, bodyBpx, focus)
 
 	// gridB 选择留痕（对照带；R28 selB-change 同款形态）。
 	selB, selBOK := v.gridB.SelectedRowID()
@@ -335,21 +336,26 @@ func r29StringSliceEqual(a, b []string) bool {
 // r29Replay 用离屏 Router 驱动 fixtureR29View 执行 N1–N6 事件脚本。
 // 事件几何与原生阶段同构（PxPerDp=1）。
 type r29Replay struct {
-	r      input.Router
-	ops    op.Ops
-	view   *fixtureR29View
-	w, h   int
-	frames int
+	r        input.Router
+	ops      op.Ops
+	view     *fixtureR29View
+	w, h     int
+	frames   int
+	metricPx float32 // 当帧 DPI（默认 1；同帧缩放验证时改写）
 }
 
 func (p *r29Replay) frame(events ...event.Event) {
 	p.frames++
 	p.r.Queue(events...)
+	px := p.metricPx
+	if px == 0 {
+		px = 1
+	}
 	p.ops.Reset()
 	gtx := layout.Context{
 		Ops:         &p.ops,
 		Source:      p.r.Source(),
-		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Metric:      unit.Metric{PxPerDp: px, PxPerSp: px},
 		Constraints: layout.Exact(image.Pt(p.w, p.h)),
 	}
 	p.view.Layout(gtx, p.view.th)
@@ -438,6 +444,32 @@ func TestR29FixtureReplayN1N6(t *testing.T) {
 	p.frame(key.EditEvent{Range: key.Range{}, Text: "ab"})
 	p.frame()
 	p.clickMods(600, 24+5*24+12, 0)
+
+	// N7 几何一致性验证尾（不改变选择的宽容点击）：同帧滚动+点击、
+	// 同帧 DPI 缩放+点击——click 携带命中当刻偏移与当帧几何，判定器
+	// 验证其与轴时间线/域的一致性（R3：不同时间的几何不得混用）。
+	// 同帧 wheel X +30 与点击（点击落在 ROW-09994 行内）：点击快照
+	// 仍是 [ROW-09994]（无变更 → 宽容计数）。
+	p.r.Queue(
+		pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32.Pt(600, 150), Scroll: f32.Pt(30, 0)},
+		pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(600, 156)},
+		pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: f32.Pt(600, 156)},
+	)
+	p.ops.Reset()
+	gtx := layout.Context{Ops: &p.ops, Source: p.r.Source(), Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Constraints: layout.Exact(image.Pt(p.w, p.h))}
+	p.view.Layout(gtx, p.view.th)
+	p.r.Frame(&p.ops)
+	// 同帧 DPI 1.5 + 点击（几何整体换算：rowHpx=36、headerHpx=36、
+	// colWpx=450；点击第 5 行中部）。
+	p.metricPx = 1.5
+	p.r.Queue(
+		pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(800, 234)},
+		pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: f32.Pt(800, 234)},
+	)
+	p.ops.Reset()
+	gtx = layout.Context{Ops: &p.ops, Source: p.r.Source(), Metric: unit.Metric{PxPerDp: 1.5, PxPerSp: 1.5}, Constraints: layout.Exact(image.Pt(p.w, p.h))}
+	p.view.Layout(gtx, p.view.th)
+	p.r.Frame(&p.ops)
 
 	// 合成优雅关闭（同一生产者函数；证明 judge 链路，不代表原生已执行）。
 	log.recordDestroy()
