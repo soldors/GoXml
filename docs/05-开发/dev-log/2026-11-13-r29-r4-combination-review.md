@@ -1,0 +1,5 @@
+# R29 R4 隔离组合复核
+
+- R28 发布基线为 d20714dd0d2801fea76a60a2ed6ed9059c43cec2。
+- R4 隔离组合包含 4cf7f9252ec3ae696fb2b70abed331a9c2e6142b、937b394db3362d440223fc3de8b243cb67fb2d85 与 207ec9bcf56d8e6c53ccecbf0b1616116da2d5b1，分别合入 Hydration、DataGrid 和 WindowHost。
+- 交付冻结为 f40c7c772af821efd8de2f83ce033bb5c6749be4、c82370895c21aeb685ef624ac63e802d7b0c2c1f、6f3253548724615047479e9f60f81ec6f8786bc7。组合仅用于复核。原生证据、API 裁决和主库合入另行登记。
