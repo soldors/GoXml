@@ -30,7 +30,28 @@ import (
 type Store struct {
 	projectDir string
 	sessionID  string
+	// runID 可选：实例级命名空间后缀（同一逻辑会话的**不同运行实例**状态文件隔离）。
+	// 为空时保持 R28 兼容路径 <sessionID>.state；非空为 <sessionID>.<runID>.state。
+	// Envelope/Expect 的 SessionID 仍为逻辑 sessionID（runID 只影响物理文件，不改变协议语义）。
+	runID string
 }
+
+// NewStoreWithRun 构造带**实例级命名空间**的存储：物理路径 <sessionID>.<runID>.state，逻辑会话仍为 sessionID。
+// 用于同一逻辑会话的不同运行实例互不覆盖/误删状态，同时协议 Envelope.SessionID 不变（兼容）。
+func NewStoreWithRun(projectDir, sessionID, runID string) (*Store, error) {
+	st, err := NewStore(projectDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.ContainsAny(runID, `/\:*?"<>|`) || runID == "." || runID == ".." {
+		return nil, errors.New("hydration: 非法 runID")
+	}
+	st.runID = runID
+	return st, nil
+}
+
+// RunID 返回实例命名空间后缀（空=未启用）。
+func (s *Store) RunID() string { return s.runID }
 
 // NewStore 构造存储。<projectDir>/.goxml/hydration 为状态目录。
 func NewStore(projectDir, sessionID string) (*Store, error) {
@@ -51,7 +72,11 @@ func (s *Store) Dir() string {
 
 // Path 返回本会话状态文件路径。
 func (s *Store) Path() string {
-	return filepath.Join(s.Dir(), s.sessionID+".state")
+	name := s.sessionID + ".state"
+	if s.runID != "" {
+		name = s.sessionID + "." + s.runID + ".state"
+	}
+	return filepath.Join(s.Dir(), name)
 }
 
 // SessionID 返回会话标识。

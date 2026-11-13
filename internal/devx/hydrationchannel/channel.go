@@ -48,6 +48,8 @@ var (
 	ErrMismatch     = errors.New("hydrationchannel: 响应关联不符（reqID/session/gen）")
 	ErrCaptureFail  = errors.New("hydrationchannel: 应用侧捕获失败")
 	ErrBusy         = errors.New("hydrationchannel: 端点在途请求已达上限（busy）")
+	// ErrReplayWindowFull：ReplayRejectOnFull 策略下 nonce 窗口已满，拒绝新请求（与重复请求 ErrReplay 区分）。
+	ErrReplayWindowFull = errors.New("hydrationchannel: nonce 防重放窗口已满（拒绝新请求）")
 )
 
 // captureRequest 是客户端→端点的一次快照请求（显式 JSON）。

@@ -110,29 +110,30 @@ func TestEndpointBindsLoopbackOnly(t *testing.T) {
 	}
 }
 
-// nonce 状态增长：**已登记风险**——Endpoint 的防重放 `seen` 集随请求单调增长，批准合同未定上限。
-// 本测试记录该风险（非修复）：不同 nonce 的多次请求使内部集合增长。是否加界属协议/预算变更，需负责人裁决。
-func TestEndpointNonceStateGrowsRiskEvidence(t *testing.T) {
-	ep := startEndpoint(t, &syncOwner{}, func(context.Context) ([]byte, int, error) { return []byte(`{}`), 1, nil },
-		"s", "a", "v1", "tok")
+// R29-A S1：nonce 防重放窗口**有界**（此前为无上限增长风险；本轮以有界候选修复）。
+// 断言不同 nonce 累计请求后窗口占用**不超过容量**（bounded），不再单调无界增长。
+func TestEndpointNonceWindowBounded(t *testing.T) {
+	const cap = 8
+	ep, err := NewEndpoint(&syncOwner{}, func(context.Context) ([]byte, int, error) { return []byte(`{}`), 1, nil },
+		"s", "a", "v1", "tok", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep.SetReplayBounds(cap, ReplayEvictOldest)
+	if _, err := ep.Start(); err != nil {
+		t.Fatal(err)
+	}
 	defer ep.Stop()
-	ep.mu.Lock()
-	before := len(ep.seen)
-	ep.mu.Unlock()
-	const n = 32
+	const n = 64
 	for i := 0; i < n; i++ {
 		req := captureRequest{Version: ProtocolVersion, Token: "tok", Session: "s", App: "a", Schema: "v1",
-			ServingGen: 1, ReqID: "q", Nonce: "nonce-" + itoa(i)}
+			ServingGen: 1, ReqID: "q-" + itoa(i), Nonce: "nonce-" + itoa(i)}
 		raw, _ := json.Marshal(&req)
 		_ = dialSend(t, ep.Addr(), raw)
 	}
-	ep.mu.Lock()
-	after := len(ep.seen)
-	ep.mu.Unlock()
-	if after-before != n {
-		t.Fatalf("nonce seen-set expected to grow by %d (risk evidence), got %d", n, after-before)
+	if got := ep.ReplaySize(); got > cap {
+		t.Fatalf("replay window must stay bounded (<=%d), got %d", cap, got)
 	}
-	// 记录：seen-set 无上限 = 风险，需负责人裁决是否加界（本测试不改变行为）。
 }
 
 func itoa(i int) string {
