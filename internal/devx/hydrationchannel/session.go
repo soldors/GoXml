@@ -145,14 +145,37 @@ func (s *Session) Restore(ctx context.Context, minGen int, owner OwnerRunner, ap
 	return ap.RestoreOnOwner(ctx, minGen)
 }
 
-// Close 删除本会话状态文件与 portfile（**仅本会话路径**，不触碰他人文件）。
+// Close 删除本会话状态文件与 portfile，但**仅在证明当前会话拥有该文件时**：
+//   - 状态文件：必须能被本会话 Expect（schema/app/session）完整校验通过（即确为本会话写入的合法状态）；
+//     校验失败（坏文件/他会话/外来字节）=> **保留原字节与 mtime**，不删除。
+//   - portfile：内容 session/app/schema 必须与本会话一致，才删除；否则保留。
+//
+// 返回首个真实错误（不存在不算错误）；所有权不成立时不报错、保留文件。
 func (s *Session) Close() error {
 	var firstErr error
-	if err := os.Remove(s.store.Path()); err != nil && !os.IsNotExist(err) {
-		firstErr = err
+	if s.storeOwning() {
+		if err := os.Remove(s.store.Path()); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if err := os.Remove(s.portfilePath()); err != nil && !os.IsNotExist(err) && firstErr == nil {
-		firstErr = err
+	if _, ok := s.ReadPort(); ok {
+		if err := os.Remove(s.portfilePath()); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
+}
+
+// storeOwning 判断状态文件是否为**本会话**拥有的合法状态（用于 Close 删除前的所有权证明）。
+// 只读判定，不改动文件（保留错误路径原字节与 mtime）。
+func (s *Session) storeOwning() bool {
+	raw, err := os.ReadFile(s.store.Path())
+	if err != nil {
+		return false
+	}
+	exp := rst.Expect{Schema: s.cfg.Schema, AppID: s.cfg.AppID, SessionID: s.cfg.SessionID, MinGeneration: 0}
+	if _, derr := rst.DecodeAndVerify(raw, exp); derr != nil {
+		return false // 非本会话合法状态（坏文件/他人/外来字节）=> 不拥有，保留。
+	}
+	return true
 }

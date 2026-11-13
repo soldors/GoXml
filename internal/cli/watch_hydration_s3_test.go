@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	hc "github.com/goxml/goxml/internal/devx/hydrationchannel"
 	"github.com/goxml/goxml/internal/devx/watch"
 )
 
@@ -95,5 +96,24 @@ func TestWatchConfigHydrationWiringPoint(t *testing.T) {
 	cfg := watch.Config{ProjectDir: "/x", Hydration: &h}
 	if cfg.Hydration == nil {
 		t.Fatal("watch.Config.Hydration must be a valid wiring point")
+	}
+}
+
+// R29-A R1：默认 fail-closed（满额拒绝）——replayPolicyOf 默认 reject；evict 显式选择。
+func hcRejectOnFull() hc.ReplayPolicy { return hc.ReplayRejectOnFull }
+
+func TestR1HydrationReplayDefaultFailClosed(t *testing.T) {
+	o, err := parseWatch([]string{"./m", "--entry", "./cmd/app", "--hydration"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.hydrationReplay != "reject" {
+		t.Fatalf("default hydration-replay must be reject (fail-closed), got %q", o.hydrationReplay)
+	}
+	if replayPolicyOf(o.hydrationReplay) != hcRejectOnFull() {
+		t.Fatal("default policy must map to ReplayRejectOnFull")
+	}
+	if replayPolicyOf("evict") == hcRejectOnFull() {
+		t.Fatal("evict must map to evict policy")
 	}
 }

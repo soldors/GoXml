@@ -43,16 +43,19 @@ type watchOptions struct {
 	args        []string
 	excludes    devStringList
 	// Hydration opt-in（候选；默认关闭）。
-	hydration        bool
-	hydrationSession string
-	hydrationApp     string
-	hydrationSchema  string
+	hydration          bool
+	hydrationSession   string
+	hydrationApp       string
+	hydrationSchema    string
+	hydrationReplay    string // reject(默认,fail-closed) | evict
+	hydrationReplayCap int
 }
 
 func parseWatch(args []string) (watchOptions, error) {
 	var o watchOptions
 	pos, opts, tail, err := splitDevArgs(args, map[string]bool{"exclude-dir": true, "entry": true, "poll-ms": true, "build-timeout-seconds": true,
-		"hydration": false, "hydration-session": true, "hydration-app": true, "hydration-schema": true})
+		"hydration": false, "hydration-session": true, "hydration-app": true, "hydration-schema": true,
+		"hydration-replay": true, "hydration-replay-cap": true})
 	if err != nil {
 		return o, err
 	}
@@ -66,6 +69,8 @@ func parseWatch(args []string) (watchOptions, error) {
 	fs.StringVar(&o.hydrationSession, "hydration-session", "watch", "")
 	fs.StringVar(&o.hydrationApp, "hydration-app", "", "")
 	fs.StringVar(&o.hydrationSchema, "hydration-schema", "watch.v1", "")
+	fs.StringVar(&o.hydrationReplay, "hydration-replay", "reject", "")
+	fs.IntVar(&o.hydrationReplayCap, "hydration-replay-cap", 0, "")
 	if err = fs.Parse(opts); err != nil {
 		return o, err
 	}
@@ -227,6 +232,7 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 	sess, serr := hc.NewSession(hc.SessionConfig{
 		ProjectDir: root, SessionID: o.hydrationSession, AppID: appID,
 		Schema: rstSchema(o.hydrationSchema), Token: tok, CaptureTimeout: hc.DefaultCaptureTimeout,
+		ReplayPolicy: replayPolicyOf(o.hydrationReplay), ReplayCap: o.hydrationReplayCap,
 	})
 	if serr != nil {
 		return nil, nil, serr
@@ -266,3 +272,11 @@ func newSessionToken() (string, error) {
 }
 
 func rstSchema(s string) rst.Schema { return rst.Schema(s) }
+
+// replayPolicyOf 映射 CLI 选择到 nonce 满额策略：默认 "reject"（fail-closed 满额拒绝）；"evict" 窗口淘汰。
+func replayPolicyOf(s string) hc.ReplayPolicy {
+	if s == "evict" {
+		return hc.ReplayEvictOldest
+	}
+	return hc.ReplayRejectOnFull
+}

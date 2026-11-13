@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	hc "github.com/goxml/goxml/internal/devx/hydrationchannel"
+	hc "github.com/goxml/goxml/pkg/hydrationapp"
 	rst "github.com/goxml/goxml/pkg/runtime/hydration"
 )
 
@@ -65,16 +65,27 @@ func envOr(k, d string) string {
 	return d
 }
 
+// envOr2 首选键 HYD_*，回落 APP_*，再默认（双读收敛协议、向后兼容）。
+func envOr2(k1, k2, d string) string {
+	if v := os.Getenv(k1); v != "" {
+		return v
+	}
+	if v := os.Getenv(k2); v != "" {
+		return v
+	}
+	return d
+}
+
 func main() {
-	proj := envOr("APP_PROJECT", ".")
-	session := envOr("APP_SESSION", "sess-1")
-	appID := envOr("APP_APPID", "app-1")
-	schema := envOr("APP_SCHEMA", "demo.v1")
-	token := envOr("APP_TOKEN", "tok")
+	proj := envOr2("HYD_PROJECT", "APP_PROJECT", ".")
+	session := envOr2("HYD_SESSION", "APP_SESSION", "sess-1")
+	appID := envOr2("HYD_APP", "APP_APPID", "app-1")
+	schema := envOr2("HYD_SCHEMA", "APP_SCHEMA", "demo.v1")
+	token := envOr2("HYD_TOKEN", "APP_TOKEN", "tok")
 	gen := 1
-	fmt.Sscanf(envOr("APP_GEN", "1"), "%d", &gen)
-	valuesFile := envOr("APP_VALUES", "")
-	reportFile := envOr("APP_REPORT", "")
+	fmt.Sscanf(envOr2("HYD_GEN", "APP_GEN", "1"), "%d", &gen)
+	valuesFile := envOr2("HYD_VALUES", "APP_VALUES", "")
+	reportFile := envOr2("HYD_REPORT", "APP_REPORT", "")
 
 	sess, err := hc.NewSession(hc.SessionConfig{ProjectDir: proj, SessionID: session, AppID: appID, Schema: rst.Schema(schema), Token: token})
 	if err != nil {
@@ -102,6 +113,16 @@ func main() {
 			restored = true
 		}
 	}
+	// 旧代初值：优先 HYD_VALUES 文件；否则 HYD_SEED/APP_SEED 指定非默认 Count（用于跨代精确 DTO 断言）。
+	if gen == 1 && valuesFile == "" {
+		if seed := envOr2("HYD_SEED", "APP_SEED", ""); seed != "" {
+			var n int
+			if _, e := fmt.Sscanf(seed, "%d", &n); e == nil {
+				cur.Count = n
+				cur.NonDefault = "seed-" + seed
+			}
+		}
+	}
 	// 旧代：设置非默认初值。
 	if gen == 1 && valuesFile != "" {
 		if b, e := os.ReadFile(valuesFile); e == nil {
@@ -122,16 +143,15 @@ func main() {
 		_ = os.Rename(tmp, reportFile)
 	}
 
-	// 旧代：起端点提供服务（Capture 在 owner 串行点读 cur）。
-	if gen == 1 {
-		_, eperr := sess.NewOldGenEndpoint(owner, func(_ context.Context) ([]byte, int, error) {
-			b, _ := json.Marshal(cur)
-			return b, gen, nil
-		}, 4)
-		if eperr != nil {
-			fmt.Printf("APP_ENDPOINT_ERROR %v\n", eperr)
-			return
-		}
+	// 每一发布代都具备“下一次捕获”能力：起端点提供服务（Capture 在 owner 串行点读 cur，servingGen=本代）。
+	// gen>=2 先完成恢复再起端点，使下一代可发现本代端点。
+	_, eperr := sess.NewOldGenEndpoint(owner, func(_ context.Context) ([]byte, int, error) {
+		b, _ := json.Marshal(cur)
+		return b, gen, nil
+	}, 4)
+	if eperr != nil {
+		fmt.Printf("APP_ENDPOINT_ERROR %v\n", eperr)
+		return
 	}
 	time.Sleep(60 * time.Second) // 有界存活（受控上限）
 }
