@@ -26,5 +26,16 @@
   排序保留、缩短失效、空表与关闭）。
 - 回归口径：`go test ./pkg/widgets/ -count=1` 94 PASS / 0 FAIL / 0 SKIP；
   `go build ./...` 全树通过；`go vet ./pkg/widgets/` 干净。
-- 候选边界：S1–S3 均为默认关闭、显式 opt-in 的候选语义，未批准不入
+- **S4 组合验证与性能**（本提交）：三 opt-in 叠加语义一致性
+  （横向滚动后命中列解析、排序保留选择集与横向偏移、缩短清空三态）；
+  双实例多选焦点隔离（Ctrl/Shift 互不串扰）；Editor 焦点交接下多选集
+  保持（Editor 收文本、网格停消费、点击回归后语义恢复）；
+  `TestDGStableLayoutZeroAllocs` 新增组合阶段断言（全部 opt-in 叠加后
+  空闲稳定帧 0 allocs/op + 0 B/op + 访问窗口有界）。基准（本机
+  微基准，正式 benchtime）：combo-enabled-idle 10k/100k ≈ 5.9–6.3µs/op
+  0 allocs；sort-rows-update 10k ≈ 0.53ms/op（38 allocs）、100k ≈
+  15.2ms/op（262 allocs）——排序为显式更新阶段一次性成本，不影响帧率。
+- 回归口径（S4 后）：`go test ./pkg/widgets/ -count=1` 97 PASS /
+  0 FAIL / 0 SKIP；`go build ./...` 全树通过。
+- 候选边界：S1–S4 均为默认关闭、显式 opt-in 的候选语义，未批准不入
   规范；原生窗口下的实机连发/IME/DPI 验收仍待协调者组织。

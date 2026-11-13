@@ -194,6 +194,39 @@ func BenchmarkDataGrid(b *testing.B) {
 				}
 			}
 		})
+		b.Run(dgScaleName(rows)+"/sort-rows-update", func(b *testing.B) {
+			// R29-B S2：显式排序成本（稳定排序 + 索引重建 + 缓存清理，
+			// 一次 O(N log N) 比较 + O(N) 重建；不触发绘制）。
+			g, _ := dgBenchGrid(b, rows)
+			g.EnableKeyboardNav(DataGridKeyboardConfig{})
+			rev := func(a, b DataGridRow) bool { return a.ID > b.ID }
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				g.SortRows(rev)
+			}
+		})
+		b.Run(dgScaleName(rows)+"/combo-enabled-idle", func(b *testing.B) {
+			// R29-B S4：全部交互 opt-in（横向滚动 + 键盘 + 多选）叠加的
+			// 空闲稳定帧（layout-only 口径）：0 allocs/op 由
+			// TestDGStableLayoutZeroAllocs 以组合阶段断言，本基准给数值。
+			g, hb := dgBenchGrid(b, rows)
+			g.EnableHorizontalScroll()
+			g.EnableKeyboardNav(DataGridKeyboardConfig{})
+			g.EnableMultiSelect()
+			for i := 0; i < 50; i++ {
+				hb.frame()
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				hb.ops.Reset()
+				g.Layout(hb.gtx, hb.th)
+			}
+			b.StopTimer()
+			st := g.LastFrame()
+			b.Logf("accessed rows/frame=%d drawn=%d", len(st.Accessed), len(st.Drawn))
+		})
 	}
 }
 
@@ -258,6 +291,32 @@ func TestDGStableLayoutZeroAllocs(t *testing.T) {
 	}
 	if bytes := res2.AllocedBytesPerOp(); bytes != 0 {
 		t.Fatalf("键盘开启空闲帧必须 0 B/op，得到 %d（存在隔帧隐性分配）", bytes)
+	}
+
+	// R29-B S4：全部交互 opt-in（横向滚动 + 键盘导航 + 多选）叠加后的
+	// 空闲稳定帧——组合开关不得引入隐性分配或几何退化。
+	g.EnableHorizontalScroll()
+	g.EnableMultiSelect()
+	for i := 0; i < 100; i++ {
+		frame()
+	}
+	res3 := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			ops.Reset()
+			gtx.Ops = &ops
+			g.Layout(gtx, th)
+		}
+	})
+	if allocs := res3.AllocsPerOp(); allocs != 0 {
+		t.Fatalf("组合 opt-in 空闲帧必须 0 allocs/op，得到 %d", allocs)
+	}
+	if bytes := res3.AllocedBytesPerOp(); bytes != 0 {
+		t.Fatalf("组合 opt-in 空闲帧必须 0 B/op，得到 %d（存在隔帧隐性分配）", bytes)
+	}
+	st := g.LastFrame()
+	if len(st.Accessed) > 200 || len(st.Drawn) > 100 {
+		t.Fatalf("组合 opt-in 访问窗口有界性退化：acc=%d drawn=%d", len(st.Accessed), len(st.Drawn))
 	}
 }
 
