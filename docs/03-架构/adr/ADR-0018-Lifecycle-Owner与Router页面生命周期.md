@@ -58,7 +58,9 @@ _ = wrapped
 
 该接线的约束是：DestroyEvent 回调最多触发一次，`LifecycleFinalize` 本身保持幂等；它不隐式代替 `Router.Shutdown`。若宿主合同要求同时取消 Router 根 Context，应由宿主显式编排 `Shutdown` 与 `LifecycleFinalize`，不可依赖回调副作用猜测顺序。
 
-R28-C 仅完成受控 Router/App 组合接线验证。真实 Gio native `DestroyEvent` 生命周期与 native race 尚未在窗口进程中验收，因此不能据此宣称发布级关闭保证。
+R28-C 已完成受控组合验证及 Windows/amd64 单窗原生关窗验证。Codex 经授权在真实窗口点击标题栏 X。`natural` 场景的 Router 根在 Finalize 前后均活跃。`shutdown-first` 场景在关窗前已取消、尚未卸载，且 `ready-to-close` 已落盘。两场景都进入生产 `DestroyEvent`，页面 Context 先于卸载取消，卸载恰好一次，Observer 在清理后运行。两次进程均实测退出码 0，无 DATA RACE 或残留进程。
+
+原生运行来自 `19c86a1486506e9453c9cae79de74075712a0c26`，race 二进制 SHA-256 为 `31b71e3e6f389d696c9edcbb58a4661c8c0fa403c458e1f39bc2b154b888a771`。run ID 分别为 `native-natural-20261112-151925-a155bf8f` 和 `native-shutdown-first-20261112-151402-9163db46`。截至代码候选 `35b61b5`，Lifecycle fixture 及其依赖源码和模块输入未变，可沿用这两次运行的证据。
 
 ## 公共 API 与兼容边界
 
@@ -88,10 +90,10 @@ R28-C 仅完成受控 Router/App 组合接线验证。真实 Gio native `Destroy
 
 ## 未完成项与发布判断
 
-本 ADR 的 Owner/Router opt-in 合同为已批准，且受控组合顺序已验证。以下事项仍明确未完成：
+Owner/Router opt-in 合同为 **Accepted**。受控组合和上述 Windows 单窗两场景已验证。剩余验证包括：
 
-1. 真实 Gio native `DestroyEvent` 发布链路验收。
-2. 窗口进程中的 native race/跨平台关闭验收。
+1. Linux/macOS 原生关闭和窗口进程 race。
+2. 多窗口关闭、DPI/IME 专项和整应用性能。
 3. [TASK-LIFE-001-3](../../04-WBS/任务卡/TASK-LIFE-001.md) 中静态资产发现、嵌入声明与生成引用已由已发布的 Image v1 覆盖；通用资产 API、额外格式及跨包复制等扩展仍待裁决，不在本 ADR 的批准范围。
 
-因此，合同状态为 **Accepted**，而 release-level 状态仍为 **pending native acceptance**。任何将 native DestroyEvent 或跨平台 race 标记为已发布的变更都必须另行补充原生证据和决策记录。
+本 ADR 的 Windows 原生结论限于上述两条单窗关闭路径。发布状态以协调者的发布记录及 Git 引用为准。

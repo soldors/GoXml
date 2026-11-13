@@ -19,7 +19,7 @@
 
 R28-B 的 C-DG10..C-DG16 基础语义已批准：键盘功能保持显式 opt-in、默认关闭；支持 Up/Down/Home/End/PageUp/PageDown 的稳定 RowID 单选与纵向滚入可见区；`PageRows<=0` 采用当前可见行数；空 body 可更新选择但不滚动；Editor 获得焦点后网格停止消费按键；键盘不伪造 `Clicked()`。
 
-本裁决不关闭 TASK-WIDGET-001-3 整卡。原生键盘连发、键位映射、IME、DPI 与发布级窗口验收仍未完成；编辑、多选、排序/过滤、横向滚动、Tab 焦点环和键盘激活事件明确排除。正式语义见 [ADR-0017](../../03-架构/adr/ADR-0017-DataGrid键盘导航语义.md) 与 [DataGrid 键盘语义表](../../../pkg/widgets/testdata/datagrid-keyboard/keyboard-semantics.md)。
+TASK-WIDGET-001-3 仍为部分完成。Windows 桌面已观察到离散导航、Editor 焦点隔离和标题栏关闭，固定表头修复已在 `35b61b5` 完成像素回归和 150% 缩放桌面复验。物理键连发、其它键位映射、IME 组合提交和 DPI 切换待验。编辑、多选、排序/过滤、横向滚动、Tab 焦点环和键盘激活事件在本次批准范围之外。正式语义见 [ADR-0017](../../03-架构/adr/ADR-0017-DataGrid键盘导航语义.md) 与 [DataGrid 键盘语义表](../../../pkg/widgets/testdata/datagrid-keyboard/keyboard-semantics.md)。
 
 ## 2026-11-09 R27 批准范围
 
