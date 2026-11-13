@@ -123,23 +123,26 @@ type HostResult struct {
 
 // WindowHost 显式管理一组独立窗口实例（候选 API）。
 type WindowHost struct {
-	mu         sync.Mutex
-	id         string
-	windows    map[*WindowHandle]struct{}
-	labels     map[string]struct{}
-	state      hostState
-	result     HostResult
-	finished   chan struct{}
-	finishOnce sync.Once
+	mu          sync.Mutex
+	id          string
+	windows     map[*WindowHandle]struct{}
+	labels      map[string]struct{}
+	state       hostState
+	result      HostResult
+	finished    chan struct{}
+	finishOnce  sync.Once
+	runVerdict  chan struct{} // R4：启动结果（成功/拒绝）发布点，恰关闭一次
+	verdictOnce sync.Once
 }
 
 // NewWindowHost 构造空宿主；不调用 Main、不创建平台窗口、不进入 Event 源。
 func NewWindowHost() *WindowHost {
 	return &WindowHost{
-		id:       strconv.FormatUint(nextHostID.Add(1), 10),
-		windows:  make(map[*WindowHandle]struct{}),
-		labels:   make(map[string]struct{}),
-		finished: make(chan struct{}),
+		id:         strconv.FormatUint(nextHostID.Add(1), 10),
+		windows:    make(map[*WindowHandle]struct{}),
+		labels:     make(map[string]struct{}),
+		finished:   make(chan struct{}),
+		runVerdict: make(chan struct{}),
 	}
 }
 
@@ -187,12 +190,46 @@ func (h *WindowHost) Open(label string, view View, th *material.Theme, cfg Confi
 // 同宿主重复 Run 幂等返回 nil，不重复启动、不重复调用 Main、不增加
 // gioMain.calls。所有权被拒时 reject() 取消所有已注册窗口（Done 关闭、
 // Err 可判别、无 Event/后端调用），Wait() 立即返回 Rejected=true。
+// publishRunVerdict 发布启动结果，恰关闭一次。**发布点不等待 Gio Main
+// 返回**：胜者在完成所有权判定并启动事件泵后立即发布，再调用 Main
+// （生产 Main 永不返回，等待者不能依赖它的返回）。
+func (h *WindowHost) publishRunVerdict() {
+	h.verdictOnce.Do(func() { close(h.runVerdict) })
+}
+
+// Run 的顺序（R3 收敛、R4 收敛并发结果）：宿主状态检查 → 进程级 Main
+// 所有权判定 → 启动已注册窗口的事件泵 → 发布启动结果 → 调用一次 Main。
+//
+// 同一宿主并发 Run 的线性化语义（R4）：
+//   - 第一个 Run 是「胜者」：它做所有权判定，并在判定完成后发布结果。
+//   - 其它并发 Run 是「等待者」：在状态 hostStarting 时**等待结果发布**，
+//     不再提前返回 nil；发布后按同一结果返回（成功 nil / 被拒同一 error）。
+//   - hostRunning（成功已发布）→ 幂等 nil；hostRejected → 同一拒绝错误；
+//     hostDrained/hostExiting（取消/收口）→ errHostNotAcceptingRun。
+//
+// 生产：Main 永不返回，本函数也不返回；Wait() 由另一 goroutine 观察窗口。
+// 同宿主重复 Run 幂等返回 nil，不重复启动、不重复调用 Main、不增加
+// gioMain.calls。
 func (h *WindowHost) Run() error {
 	h.mu.Lock()
 	switch h.state {
-	case hostRunning, hostStarting:
+	case hostRunning:
 		h.mu.Unlock()
 		return nil
+	case hostStarting:
+		verdict := h.runVerdict
+		h.mu.Unlock()
+		<-verdict // 等待胜者的结果发布；发布点先于 Gio Main 返回
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		switch h.state {
+		case hostRunning:
+			return nil
+		case hostRejected:
+			return h.result.Err
+		default: // hostDrained / hostExiting：启动后又被取消或收口
+			return errHostNotAcceptingRun
+		}
 	case hostRejected:
 		err := h.result.Err
 		h.mu.Unlock()
@@ -212,6 +249,7 @@ func (h *WindowHost) Run() error {
 	h.mu.Lock()
 	if h.state != hostStarting { // 并发下状态被改变：不启动事件泵
 		h.mu.Unlock()
+		h.publishRunVerdict()
 		return errHostNotAcceptingRun
 	}
 	h.state = hostRunning
@@ -229,6 +267,7 @@ func (h *WindowHost) Run() error {
 		// hostRunning 以便同宿主重复 Run 幂等返回 nil（R1 已验语义）。
 		h.signalFinished(true)
 	}
+	h.publishRunVerdict() // 成功的线性化点：先发布，再进入 Main
 	gioMain.once.Do(mainFunc)
 	return nil
 }
@@ -259,6 +298,7 @@ func (h *WindowHost) reject(err error) {
 		wh.finish()
 	}
 	h.signalFinished(true)
+	h.publishRunVerdict() // 拒绝的线性化点：等待者立即看到同一拒绝结果
 }
 
 // Active 返回当前仍登记（未收口/未取消/未被拒）的窗口数。
