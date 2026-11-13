@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""R29-B R1 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器。
+"""R29-B R2 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v2。
 
-用法: python judge_r29_native_log.py <r29-fixture-log.jsonl>
+用法:
+  python judge_r29_native_log.py <log.jsonl> [--json -|路径]
 
-与 R28 judge_native_log.py 同构的双判定：
+双判定（与 R28 judge_native_log.py 同构）：
   STRUCTURAL: PASS/FAIL — 模型化场景时间线与不变式判定
-  SCENARIO:   始终 MANUAL-REQUIRED — 日志不能自动判定「人按场景做了」
-              的因果（原生阶段由操作者确认）
+  SCENARIO:   始终 MANUAL-REQUIRED — 「操作者按场景意图做了」的因果确认
 
-STRUCTURAL 拒绝（任务要求）：
-  错列       R14 click.col 必须是该帧 offX/viewWpx/colWpx 几何下可见列
-  错轴       R13 axis 每事件仅单轴变化；N1 须同时出现 Y+ 与 X+；
-             域钳制 0≤off≤max
-  无排序     R15 sort 恰一次；after-head != before-head；头尾样本多重集
-             相等；after-head 按 RowID 严格降序（反序脚本）
-  错误选择集 R16 每个 sel-multi 必须与选择模型逐步一致（plain 收拢/
-             Ctrl 切换/Shift 锚点范围；点击 RowID 与 lead 都按模型在
-             当序下推导）——任一点不符即 FAIL
-  早退       R7 destroy-callback → run-return → exit 顺序且 exit 为
-             最后事件；R12 run-return.err 非 "<nil>" 即 FAIL
+R2 精确判据（本版新增）：
+  精确列   R14a click.col 必须等于按**当帧真实几何与本地指针坐标**计算的
+           列：(x + offX) // colWpx。错误但仍可见的列一律拒绝（R1 的
+           「可见性」判据不足——可见列≠命中列）。
+  精确行   R14b click.rowID 必须等于按 (y - headerHpx + offY) // rowHpx
+           与当序推导的行（命中映射一致性）。
+  快照关联 R16a click 自带点击当刻选择快照（selIds/lead），必须与选择
+           模型逐步一致；每个选择变更必须在其后、下一个场景步骤前以
+           sel-multi 留痕；退出时不得有未留痕变更（缺失/错序均拒绝）。
+           末步点击的最终选择可核对。
+  宽容     平台滚轮步长差异（轴判定只看方向/单轴/钳制域）与**未改变
+           选择的真实事件**（脚本外 click 且快照=当前集 → 容忍并计数）。
+  依赖现场 SCENARIO 人工确认项见 manual 清单（操作者瞄准的行、原生
+           窗口存在性等）。
 
-数据模型（与 RUNBOOK-R29 脚本一一对应；ROW-%05d，n=10000）：
-  排序前 order[i]=ROW-i；P 反序后 order[i]=ROW-(9999-i)。
-  Home（初始无选择）选中第 0 行并成为锚点（R28 语义）。
-  lead=键盘锚点：plain/Ctrl 点击移动锚点（可在集合外——Ctrl 切换撤销
-  后锚点行已被取消选择），Shift 点击锚点不动。
+其余不变式沿 R1：R0 seq 严格递增；R7 生命周期三事件且 exit 末位；
+R12 run-return.err 非 "<nil>" 拒；R13 轴独立（单事件单轴 + 双轴覆盖 +
+钳制域）；R15 排序恰一次且行序翻转；R5b edit-delta 归属 Editor。
+旧格式日志（click 无坐标/快照字段）按缺字段拒绝——判据升级后旧日志
+不再可判定。
 """
 import json
 from pathlib import Path
@@ -42,7 +45,12 @@ def order_id(i, sorted_desc):
 
 
 def model_click(set_a, anchor_a, lead_a, idx, action):
-    """按选择模型处理一次 gridA 点击，返回 (新集合, 锚点, lead)。"""
+    """按选择模型处理一次 gridA 点击，返回 (新集合, 锚点, lead)。
+
+    锚点（selAnchor）与 lead（selID）语义与实现一致：plain/Ctrl 移动
+    锚点与 lead（lead 可在集合外——Ctrl 切换撤销）；Shift 重算区间、
+    锚点不动、lead 移动到被点行。
+    """
     new_set = list(set_a)
     if action == "plain":
         new_set = [idx]
@@ -64,18 +72,22 @@ def model_click(set_a, anchor_a, lead_a, idx, action):
         else:
             lo, hi = sorted((anchor_a, idx))
             new_set = list(range(lo, hi + 1))
-            # 锚点（selAnchor，Shift 扩展起点）不动；lead（selID，键盘
-            # 锚点）移动到被点行——实现语义，两值在此分叉。
             lead_a = idx
     return new_set, anchor_a, lead_a
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: python judge_r29_native_log.py <log.jsonl>")
+    argv = sys.argv[1:]
+    json_out = None
+    if "--json" in argv:
+        i = argv.index("--json")
+        json_out = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+    if len(argv) != 1:
+        print("usage: python judge_r29_native_log.py <log.jsonl> [--json -|路径]")
         return 1
     try:
-        raw = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+        raw = Path(argv[0]).read_text(encoding="utf-8").strip()
         events = [json.loads(line) for line in raw.splitlines()]
     except (OSError, ValueError) as err:
         print("STRUCTURAL: FAIL — 日志不可读: %s" % err)
@@ -85,9 +97,20 @@ def main():
         return 1
 
     fails = []
+    items = []      # 结构化逐项结果
+    manual = []     # 依赖现场观察的项（SCENARIO）
+
+    def item(iid, ok, detail):
+        items.append({"id": iid, "status": "pass" if ok else "fail", "detail": detail})
+        if not ok:
+            fails.append("%s: %s" % (iid, detail))
+
     sorted_desc = False
-    set_a, anchor_a, lead_a = [], None, None  # gridA 选择模型（行索引）
-    steps_b = [(0, "plain")]                  # gridB 对照（恒等序）
+    set_a, anchor_a, lead_a = [], None, None
+    last_seen = None        # 最近一次留痕的 gridA 选择快照（列表）
+    pending_change = False  # 模型集与 last_seen 不一致，等待 sel-multi 留痕
+    home_pending = True
+    steps_b = [(0, "plain")]
     seen_sort = 0
     axis_y_plus = axis_x_plus = 0
     focus_editor_before_edit = False
@@ -95,8 +118,10 @@ def main():
     lifecycle = []
     last_seq = 0
     step_idx = 0
-    home_pending = True
     clicked_a = 0
+    tolerated_noop = 0
+    selb_seen = ""
+    row_aim_variance = []
 
     # gridA 点击步骤（与 RUNBOOK-R29 脚本一一对应）：(rowIdx, action)。
     steps_a = [
@@ -126,7 +151,7 @@ def main():
         elif kind == "run-return":
             lifecycle.append("run-return")
             if ev.get("err") != "<nil>":
-                fails.append("R12 seq=%d: run-return.err=%r（fixture 运行失败）" % (seq, ev.get("err")))
+                item("R12-run-return", False, "seq=%d run-return.err=%r（fixture 运行失败）" % (seq, ev.get("err")))
         elif kind == "exit":
             lifecycle.append("exit")
 
@@ -135,13 +160,13 @@ def main():
             offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
             prevX, prevY = ev.get("prevX"), ev.get("prevY")
             if not all(isinstance(v, int) for v in (offX, offY, offXMax, offYMax, prevX, prevY)):
-                fails.append("R13 seq=%d: axis 缺偏移整数域" % seq)
+                item("R13-axis-fields", False, "seq=%d axis 缺偏移整数域" % seq)
                 continue
             if offX < 0 or offX > offXMax or offY < 0 or offY > offYMax:
-                fails.append("R13 seq=%d: 偏移越界 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
+                item("R13-axis-clamp", False, "seq=%d 偏移越界 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
             dx, dy = offX - prevX, offY - prevY
             if dx != 0 and dy != 0:
-                fails.append("R13 seq=%d: 单事件双轴变化 dx=%d dy=%d（错轴）" % (seq, dx, dy))
+                item("R13-axis-single", False, "seq=%d 单事件双轴变化 dx=%d dy=%d（错轴）" % (seq, dx, dy))
             if dx > 0:
                 axis_x_plus += 1
             if dy > 0:
@@ -150,86 +175,144 @@ def main():
         elif kind == "click":
             grid = ev.get("grid")
             row_id, col = ev.get("rowID"), ev.get("col")
-            if not SEL_RE.match(str(row_id)):
-                fails.append("R14 seq=%d: 非法 RowID %r" % (seq, row_id))
-                continue
+            x, y = ev.get("x"), ev.get("y")
             colWpx, viewWpx = ev.get("colWpx"), ev.get("viewWpx")
-            offX = ev.get("offX")
-            if not all(isinstance(v, int) and v > 0 for v in (colWpx, viewWpx)):
-                fails.append("R14 seq=%d: click 缺几何（colWpx/viewWpx）" % seq)
+            rowHpx, headerHpx = ev.get("rowHpx"), ev.get("headerHpx")
+            offX, offY = ev.get("offX"), ev.get("offY")
+            sel_ids, lead = ev.get("selIds"), ev.get("lead")
+            if not SEL_RE.match(str(row_id)):
+                item("R14-rowid", False, "seq=%d 非法 RowID %r" % (seq, row_id))
                 continue
-            if not isinstance(col, int) or col < 0 or col >= NCOLS:
-                fails.append("R14 seq=%d: 列号越界 col=%r" % (seq, col))
+            if not (isinstance(x, int) and isinstance(y, int)):
+                # 旧格式日志（无本地坐标）：判据升级后不可判定 → 拒绝。
+                item("R14a-coords", False, "seq=%d click 缺本地坐标 x/y（旧格式不可判定，拒绝）" % seq)
                 continue
-            # 错列判别：col 必须是 offX 视口下的可见列。
-            if not (col * colWpx < offX + viewWpx and (col + 1) * colWpx > offX):
-                fails.append("R14 seq=%d: 错列 col=%d 在 offX=%d 下不可见（colWpx=%d viewWpx=%d）"
-                             % (seq, col, offX, colWpx, viewWpx))
+            if not (isinstance(sel_ids, list) and isinstance(colWpx, int) and colWpx > 0
+                    and isinstance(viewWpx, int) and viewWpx > 0):
+                item("R16a-snapshot", False, "seq=%d click 缺选择快照或几何（旧格式不可判定，拒绝）" % seq)
+                continue
+
+            # 精确列：坐标 × 当帧几何（错误但仍可见的列在此被拒）。
+            col_calc = (x + offX) // colWpx
+            if col != col_calc:
+                item("R14a-exact-col", False,
+                     "seq=%d 错列 col=%d ≠ 坐标推算 %d（x=%d offX=%d colWpx=%d；两列可能均可见）"
+                     % (seq, col, col_calc, x, offX, colWpx))
+            elif not (0 <= col < NCOLS):
+                item("R14a-exact-col", False, "seq=%d col=%d 越界" % (seq, col))
+            # 精确行：命中映射一致性（gridA 用当序——可能已排序；
+            # gridB 恒等序，从不排序）。
+            row_calc = None
+            if isinstance(rowHpx, int) and rowHpx > 0 and isinstance(headerHpx, int):
+                row_calc = (y - headerHpx + offY) // rowHpx
+                expect_row = order_id(row_calc, sorted_desc and grid == "A")
+                if not (0 <= row_calc < N_ROWS):
+                    item("R14b-exact-row", False, "seq=%d 行越界 row=%d" % (seq, row_calc))
+                elif row_id != expect_row:
+                    item("R14b-exact-row", False,
+                         "seq=%d 错行 rowID=%r ≠ 坐标推算 %r（y=%d offY=%d rowHpx=%d）"
+                         % (seq, row_id, expect_row, y, offY, rowHpx))
+            else:
+                item("R14b-fields", False, "seq=%d click 缺 rowHpx/headerHpx" % seq)
+
             if grid == "A":
                 if step_idx >= len(steps_a):
-                    fails.append("R16 seq=%d: gridA 点击超出场景步骤（多余输入）" % seq)
+                    # 脚本外点击：未改变选择的真实事件 → 容忍；改变选择 → 拒。
+                    if sel_ids == (last_seen if last_seen is not None else []):
+                        tolerated_noop += 1
+                    else:
+                        item("R16-steps", False,
+                             "seq=%d gridA 点击超出场景步骤且改变了选择 %r（脚本外）" % (seq, sel_ids))
                     continue
+                # 场景阶段边界：上一步的选择变更必须在下一步开始前留痕
+                # （缺失中段快照在此被拒——不只看退出收口）。
+                if pending_change:
+                    item("R16a-gap", False,
+                         "seq=%d 上一步选择变更未留痕（模型 %r vs 最后快照 %r——缺 sel-multi）"
+                         % (seq, [order_id(i, sorted_desc) for i in sorted(set_a)], last_seen))
                 row_idx, action = steps_a[step_idx]
-                expect_id = order_id(row_idx, sorted_desc)
-                if row_id != expect_id:
-                    fails.append("R16 seq=%d: 错行 click.rowID=%r ≠ 模型 %r（步骤 %d 行 %d %s）"
-                                 % (seq, row_id, expect_id, step_idx + 1, row_idx, action))
                 set_a, anchor_a, lead_a = model_click(set_a, anchor_a, lead_a, row_idx, action)
                 clicked_a += 1
+                # 快照关联：点击当刻选择必须与模型一致。
+                expect_ids = [order_id(i, sorted_desc) for i in sorted(set_a)]
+                if sel_ids != expect_ids:
+                    item("R16a-snapshot", False,
+                         "seq=%d 错误选择集（click 快照）%r ≠ 模型 %r（步骤 %d 行 %d %s）"
+                         % (seq, sel_ids, expect_ids, step_idx + 1, row_idx, action))
+                expect_lead = order_id(lead_a, sorted_desc) if lead_a is not None else ""
+                if lead != expect_lead:
+                    item("R16a-lead", False,
+                         "seq=%d lead %r ≠ 模型 %r（步骤 %d）" % (seq, lead, expect_lead, step_idx + 1))
+                if row_calc is not None and row_calc != row_idx:
+                    # 瞄准行偏离脚本：SCENARIO 人工项（选择快照兜底——集合
+                    # 不一致已在上方拒绝）。
+                    row_aim_variance.append("步骤 %d：脚本行 %d，实点行 %d"
+                                            % (step_idx + 1, row_idx, row_calc))
+                step_idx += 1
+                if last_seen is None or expect_ids != last_seen:
+                    pending_change = True
             elif grid == "B":
                 if not steps_b:
-                    fails.append("R16 seq=%d: gridB 点击超出场景步骤" % seq)
+                    item("R16-steps-b", False, "seq=%d gridB 点击超出场景步骤" % seq)
                     continue
-                row_idx, _ = steps_b.pop(0)
-                expect_id = order_id(row_idx, False)
-                if row_id != expect_id:
-                    fails.append("R16 seq=%d: gridB 错行 %r ≠ %r" % (seq, row_id, expect_id))
+                if pending_change:
+                    item("R16a-gap", False,
+                         "seq=%d 上一步选择变更未留痕（缺 sel-multi）" % seq)
+                steps_b.pop(0)
+                # gridB 恒等序；行映射与列判据同 gridA。
 
         elif kind == "sel-multi":
             ids, count, lead = ev.get("ids"), ev.get("count"), ev.get("lead")
             if not isinstance(ids, list) or any(not SEL_RE.match(str(i)) for i in ids):
-                fails.append("R16 seq=%d: sel-multi 非法 RowID 集 %r" % (seq, ids))
+                item("R16-ids", False, "seq=%d sel-multi 非法 RowID 集 %r" % (seq, ids))
                 continue
             if len(set(ids)) != len(ids) or count != len(ids):
-                fails.append("R16 seq=%d: 选择集重复或 count 不符 ids=%r count=%r" % (seq, ids, count))
+                item("R16-count", False, "seq=%d 选择集重复或 count 不符 ids=%r count=%r" % (seq, ids, count))
                 continue
             if home_pending:
-                # Home（初始无选择）选中第 0 行：场景首个 sel-multi。
+                # Home（初始无选择）选中第 0 行：场景首个选择快照。
                 expect = [order_id(0, sorted_desc)]
+                if ids != expect:
+                    item("R16-home", False, "seq=%d Home 初始选择 %r ≠ %r" % (seq, ids, expect))
                 home_pending = False
                 set_a, anchor_a, lead_a = [0], 0, 0
+                last_seen = list(expect)
+                pending_change = False
             else:
-                if step_idx > len(steps_a):
-                    expect = None
-                else:
+                if pending_change:
                     expect = [order_id(i, sorted_desc) for i in sorted(set_a)]
-                    step_idx += 1
-            if expect is None or ids != expect:
-                fails.append("R16 seq=%d: 错误选择集 ids=%r ≠ 模型 %r（步骤 %d）"
-                             % (seq, ids, expect, step_idx))
-            if lead != order_id(lead_a, sorted_desc):
-                fails.append("R16 seq=%d: lead %r ≠ 模型锚点 %r"
-                             % (seq, lead, order_id(lead_a, sorted_desc) if lead_a is not None else None))
+                    if ids != expect:
+                        item("R16-sel-multi", False,
+                             "seq=%d 留痕快照 %r ≠ 模型 %r（错序或错误选择集）" % (seq, ids, expect))
+                    last_seen = list(expect)
+                    pending_change = False
+                else:
+                    item("R16-sel-multi-order", False,
+                         "seq=%d 多余选择快照 %r（当刻模型无未留痕变更——错序）" % (seq, ids))
+
+        elif kind == "selB-change":
+            if ev.get("to"):
+                selb_seen = ev.get("to")
 
         elif kind == "sort":
             seen_sort += 1
             if seen_sort > 1:
-                fails.append("R15 seq=%d: 多余 sort 事件（脚本恰一次）" % seq)
+                item("R15-count", False, "seq=%d 多余 sort 事件（脚本恰一次）" % seq)
                 continue
             bh, bt = ev.get("before-head"), ev.get("before-tail")
             ah, at = ev.get("after-head"), ev.get("after-tail")
             n = ev.get("n")
             if n != N_ROWS:
-                fails.append("R15 seq=%d: 排序行数 %r ≠ %d" % (seq, n, N_ROWS))
+                item("R15-n", False, "seq=%d 排序行数 %r ≠ %d" % (seq, n, N_ROWS))
             if not all(isinstance(x, list) and x for x in (bh, bt, ah, at)):
-                fails.append("R15 seq=%d: sort 缺行序样本" % seq)
+                item("R15-fields", False, "seq=%d sort 缺行序样本" % seq)
                 continue
             if ah == bh:
-                fails.append("R15 seq=%d: 排序后行序未变（无排序）" % seq)
+                item("R15-changed", False, "seq=%d 排序后行序未变（无排序）" % seq)
             if sorted(bh + bt) != sorted(ah + at):
-                fails.append("R15 seq=%d: 头尾样本多重集不等（排序改变数据集）" % seq)
+                item("R15-multiset", False, "seq=%d 头尾样本多重集不等（排序改变数据集）" % seq)
             if any(ah[i] <= ah[i + 1] for i in range(len(ah) - 1)):
-                fails.append("R15 seq=%d: after-head 非严格降序（脚本为反序）" % seq)
+                item("R15-desc", False, "seq=%d after-head 非严格降序（脚本为反序）" % seq)
             sorted_desc = True
 
         elif kind == "focus-change":
@@ -238,43 +321,81 @@ def main():
 
         elif kind == "edit-delta":
             if focus != "editor":
-                fails.append("R5b seq=%d: edit-delta focus=%r ≠ editor" % (seq, focus))
+                item("R5b-focus", False, "seq=%d edit-delta focus=%r ≠ editor" % (seq, focus))
             else:
                 edit_chars += ev.get("chars", 0)
 
         elif kind == "sel-change":
             if focus == "gridA" and ev.get("to") and not ev.get("visible"):
-                fails.append("R2b seq=%d: gridA 持焦选择当帧不可见 to=%r" % (seq, ev.get("to")))
+                item("R2b-visible", False, "seq=%d gridA 持焦选择当帧不可见 to=%r" % (seq, ev.get("to")))
 
-    # 场景完整性。
+    # 场景完整性与留痕收口。
     if home_pending:
-        fails.append("R16: 缺 Home 初始选择（offY=0 精确回顶路径）")
+        item("R16-home", False, "缺 Home 初始选择（offY=0 精确回顶路径）")
     if clicked_a != len(steps_a):
-        fails.append("R16: gridA 点击步骤未走完（%d/%d）" % (min(clicked_a, len(steps_a)), len(steps_a)))
+        item("R16-steps", False, "gridA 点击步骤未走完（%d/%d）" % (min(clicked_a, len(steps_a)), len(steps_a)))
     if steps_b:
-        fails.append("R16: gridB 对照步骤未执行")
+        item("R16-steps-b", False, "gridB 对照步骤未执行")
+    if not selb_seen:
+        item("R16-selB", False, "gridB 选择快照缺失（N6 对照阶段）")
+    elif selb_seen != order_id(0, False):
+        item("R16-selB", False, "gridB 最终选择 %r ≠ %r" % (selb_seen, order_id(0, False)))
+    if pending_change or (last_seen is not None
+                          and [order_id(i, sorted_desc) for i in sorted(set_a)] != last_seen):
+        item("R16a-final", False,
+             "退出时存在未留痕的选择变更：模型 %r vs 最后留痕 %r（缺失末次选择快照）"
+             % ([order_id(i, sorted_desc) for i in sorted(set_a)], last_seen))
     if not axis_y_plus or not axis_x_plus:
-        fails.append("R13: N1 未同时出现 Y+ 与 X+ 步进（错轴）")
+        item("R13-coverage", False, "N1 未同时出现 Y+ 与 X+ 步进（错轴）")
     if seen_sort != 1:
-        fails.append("R15: sort 事件 %d 次 ≠ 1（无排序）" % seen_sort)
+        item("R15-count", False, "sort 事件 %d 次 ≠ 1（无排序）" % seen_sort)
     if edit_chars != 2:
-        fails.append("R5b: Editor 输入字符数 %d ≠ 2（脚本两字符；文本不入日志）" % edit_chars)
+        item("R5b-chars", False, "Editor 输入字符数 %d ≠ 2（脚本两字符；文本不入日志）" % edit_chars)
     if not focus_editor_before_edit:
-        fails.append("R5b: Editor 输入前无 focus-change editor")
+        item("R5b-focus", False, "Editor 输入前无 focus-change editor")
     if lifecycle != ["destroy-callback", "run-return", "exit"]:
-        fails.append("R7: 生命周期序列 %r ≠ [destroy-callback, run-return, exit]" % lifecycle)
+        item("R7-lifecycle", False, "生命周期序列 %r ≠ [destroy-callback, run-return, exit]" % lifecycle)
     if events[-1].get("event") != "exit":
-        fails.append("R7: exit 不是最后事件（早退）")
+        item("R7-exit-last", False, "exit 不是最后事件（早退）")
 
-    if fails:
-        print("STRUCTURAL: FAIL")
-        for f in fails:
-            print("  - %s" % f)
-        print("SCENARIO: MANUAL-REQUIRED — 结构判定不含因果确认")
-        return 1
-    print("STRUCTURAL: PASS — N1–N6 模型时间线、双轴、命中列、排序与选择集全部一致")
-    print("SCENARIO: MANUAL-REQUIRED — 原生阶段需操作者按 RUNBOOK-R29 确认")
-    return 0
+    manual.append("操作者瞄准行与脚本步骤的对应（结构判据由坐标命中映射+选择快照兜底）")
+    manual.append("原生窗口真实存在、滚轮/修饰键为真实输入")
+    if row_aim_variance:
+        manual.extend(row_aim_variance)
+
+    verdict = "PASS" if not fails else "FAIL"
+    print("STRUCTURAL: %s — %s" % (
+        verdict,
+        "N1–N6 模型时间线、精确命中列/行（坐标×几何）、排序与选择快照留痕全部一致"
+        if verdict == "PASS" else "存在 %d 项结构不符（见逐项结果）" % len(fails)))
+    print("SCENARIO: MANUAL-REQUIRED — %d 项依赖现场确认" % len(manual))
+    if tolerated_noop:
+        print("TOLERATED: %d 个未改变选择的脚本外事件（按宽容规则计数）" % tolerated_noop)
+    for f in fails:
+        print("  - %s" % f)
+
+    if json_out:
+        doc = {
+            "verdict": verdict,
+            "structural": verdict,
+            "scenario": "MANUAL-REQUIRED",
+            "items": items,
+            "manual": manual,
+            "counters": {
+                "gridA_clicks": clicked_a,
+                "steps_expected": len(steps_a),
+                "tolerated_noop": tolerated_noop,
+                "sort_events": seen_sort,
+                "edit_chars": edit_chars,
+                "fails": len(fails),
+            },
+        }
+        text = json.dumps(doc, ensure_ascii=False, indent=1)
+        if json_out == "-":
+            sys.stdout.write(text + "\n")
+        else:
+            Path(json_out).write_text(text + "\n", encoding="utf-8")
+    return 0 if verdict == "PASS" else 1
 
 
 if __name__ == "__main__":

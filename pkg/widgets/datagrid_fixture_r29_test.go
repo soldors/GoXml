@@ -80,6 +80,7 @@ type fixtureR29View struct {
 	lastW        int
 	lastH        int
 	lastDpi      float32
+	lastSelB     string
 }
 
 func newFixtureR29View(log *fixtureLog, rows int) *fixtureR29View {
@@ -129,12 +130,25 @@ func r29OrderSample(rows []DataGridRow, n int) []string {
 	return out
 }
 
-func r29EmitClick(l *fixtureLog, grid string, g *DataGrid, offX, offXMax, offY, offYMax, colWpx, viewWpx int, focus string) {
-	if id, col, ok := g.Clicked(); ok {
+func r29EmitClick(l *fixtureLog, grid string, g *DataGrid, offX, offXMax, offY, offYMax, colWpx, viewWpx, rowHpx, headerHpx int, focus string) {
+	// LastClick 与 Clicked 共享一次性消费状态：附带组件本地像素坐标与
+	// 点击当刻的选择快照（selIds/lead）——判定器据以核对精确命中列/
+	// 行并把选择快照与场景阶段关联（R2 判据）。
+	if id, col, pos, ok := g.LastClick(); ok {
+		ids := g.SelectedRowIDs()
+		if ids == nil {
+			ids = []string{}
+		}
+		lead := ""
+		if s, ok := g.SelectedRowID(); ok {
+			lead = s
+		}
 		l.emit(map[string]interface{}{
 			"event": "click", "grid": grid, "rowID": id, "col": col,
+			"x": pos.X, "y": pos.Y,
 			"offX": offX, "offXMax": offXMax, "offY": offY, "offYMax": offYMax,
-			"colWpx": colWpx, "viewWpx": viewWpx, "focus": focus,
+			"colWpx": colWpx, "viewWpx": viewWpx, "rowHpx": rowHpx, "headerHpx": headerHpx,
+			"selIds": ids, "lead": lead, "focus": focus,
 		})
 	}
 }
@@ -207,9 +221,22 @@ func (v *fixtureR29View) Layout(gtx layout.Context, th *material.Theme) layout.D
 		offYMax = 0
 	}
 
-	// 点击消费（一次性读取）→ click 事件（judge R14：列/RowID/偏移一致）。
-	r29EmitClick(v.log, "A", v.gridA, offX, offXMax, offY, offYMax, colWpx, w, focus)
-	r29EmitClick(v.log, "B", v.gridB, 0, 0, v.gridB.ScrollOffset(), len(v.gridB.rows)*rowHpx-(r29BandB-gtx.Dp(unit.Dp(24))), colWpx, w, focus)
+	// 点击消费（一次性读取）→ click 事件（judge R2 判据：坐标×几何核对
+	// 精确列/行；点击当刻选择快照随事件留痕）。
+	bodyBpx := r29BandB - gtx.Dp(unit.Dp(24))
+	r29EmitClick(v.log, "A", v.gridA, offX, offXMax, offY, offYMax, colWpx, w, rowHpx, headerHpx, focus)
+	r29EmitClick(v.log, "B", v.gridB, 0, 0, v.gridB.ScrollOffset(), len(v.gridB.rows)*rowHpx-bodyBpx, colWpx, w, rowHpx, headerHpx, focus)
+
+	// gridB 选择留痕（对照带；R28 selB-change 同款形态）。
+	selB, selBOK := v.gridB.SelectedRowID()
+	selBStr := ""
+	if selBOK {
+		selBStr = selB
+	}
+	if selBStr != v.lastSelB {
+		v.log.emit(map[string]interface{}{"event": "selB-change", "from": v.lastSelB, "to": selBStr, "focus": focus})
+		v.lastSelB = selBStr
+	}
 
 	// 多选集观察（judge R16：集合逐段精确）。
 	ids := v.gridA.SelectedRowIDs()

@@ -164,6 +164,7 @@ type DataGrid struct {
 	clickedID  string
 	clickedCol int
 	clickedOK  bool
+	clickPos   image.Point // 最近一次有效点击的组件本地像素坐标（R2 判据）
 
 	// 绘制宏缓存（LRU 有界）
 	texts map[dgTextKey]*dgTextEntry
@@ -310,6 +311,16 @@ func (g *DataGrid) Clicked() (rowID string, col int, ok bool) {
 	rowID, col, ok = g.clickedID, g.clickedCol, g.clickedOK
 	g.clickedID, g.clickedCol, g.clickedOK = "", 0, false
 	return rowID, col, ok
+}
+
+// LastClick 返回最近一次有效点击的完整观察：稳定 RowID、列号与组件本地
+// 像素坐标（命中判据的独立观察字段），与 Clicked 共享同一一次性消费状态。
+// 供外部按当帧列宽/偏移核对精确命中列（R2 判据；候选 API）。
+func (g *DataGrid) LastClick() (rowID string, col int, pos image.Point, ok bool) {
+	rowID, col, ok = g.clickedID, g.clickedCol, g.clickedOK
+	pos = g.clickPos
+	g.clickedID, g.clickedCol, g.clickedOK = "", 0, false
+	return rowID, col, pos, ok
 }
 
 // ScrollOffset 返回当前滚动偏移（px，诊断用）。
@@ -646,6 +657,7 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 				// 后同位置是另一行——不串）。
 				if ok && g.pressValid && rowID == g.pressRowID && col == g.pressCol {
 					g.clickedID, g.clickedCol, g.clickedOK = rowID, col, true
+					g.clickPos = image.Pt(int(e.Position.X), int(e.Position.Y))
 					g.selID, g.selOK = rowID, true
 					if g.multiSelEnabled {
 						g.commitPointerSelection(rowID, e.Modifiers)
