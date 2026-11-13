@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""R29-B R3 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v3。
+"""R29-B R4 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v4。
 
 用法:
   python judge_r29_native_log.py <log.jsonl> [--json -|路径]
@@ -9,7 +9,20 @@
   STRUCTURAL: PASS/FAIL — 模型化场景时间线与不变式判定
   SCENARIO:   始终 MANUAL-REQUIRED — 「操作者按场景意图做了」的因果确认
 
-R3 域校验与几何一致性（本版新增；先于行列推导）：
+R4 校验收口（本版新增）：
+  域校验统一  所有字段先类型/枚举/位置域校验，缺字段、错误类型、非法
+           枚举与越界坐标统一给出结构化 item（R14d-fields/R14e-fields/
+           R14a-fields），不再有任何 Python 异常路径——逐事件守护把
+           意外异常捕获为 R0-internal 并强制输出 FAIL 判定（JSON 与
+           退出码共同验证，异常不算有效负例）。
+  gridB 前态 R17b selB-change.from 必须等于模型变更前值、to 等于变更后
+           值；快照只核销一次（多余/缺失均拒）；跨步骤时序在场景边界
+           收口。
+  偏移对   R14f click 的 (offX, offY) 作为**一对**与可达偏移对集合比较
+           （轴事件 offX/offY 与 prevX/prevY 的全部历史对 加 同帧轴对）——
+           不再分别比较 X、Y，排除从不同时刻拼出的组合。
+
+沿 R3 域校验与几何一致性（先于行列推导）：
   视口四边 R14d x ∈ [0, viewWpx)（右边界 x==viewWpx 无效——像素域半开
            区间）；y ∈ [headerHpx, headerHpx+bodyHpx)（行点击不可能落在
            表头或表体之外）。
@@ -142,9 +155,10 @@ def main():
     row_aim_variance = []
     n_exact_col = n_exact_row = n_snapshot = 0
     n_domain = n_domain_ok = 0
-    axis_run_x = axis_run_y = None   # 轴时间线运行值（本点击之前）
+    reachable_pairs = set()          # 生产者已发出的全部偏移对（R4：成对比较）
     selb_model = ""                  # gridB 单选身份（恒等序）
-    selb_pending = False
+    selb_prev = ""                   # gridB 变更前值（R4：from 前态核对）
+    selb_pending = False             # gridB 快照待核销（只核销一次）
 
     # gridA 点击步骤（与 RUNBOOK-R29 脚本一一对应）：(rowIdx, action)。
     steps_a = [
@@ -163,256 +177,305 @@ def main():
     for pos, ev in enumerate(events):
         seq = ev.get("seq", 0)
         if type(seq) is not int or seq <= last_seq:
-            print("STRUCTURAL: FAIL — 日志 seq 缺失或未严格递增")
-            return 1
+            item("R0-seq", False,
+                 "日志 seq 缺失或未严格递增（位置 %d：%r）——终止逐事件判定" % (pos, seq))
+            break
         last_seq = seq
-        kind = ev.get("event")
-        focus = ev.get("focus")
+        try:
+            kind = ev.get("event")
+            focus = ev.get("focus")
 
-        if kind == "destroy-callback":
-            lifecycle.append("destroy-callback")
-        elif kind == "run-return":
-            lifecycle.append("run-return")
-            if ev.get("err") != "<nil>":
-                item("R12-run-return", False, "seq=%d run-return.err=%r（fixture 运行失败）" % (seq, ev.get("err")))
-        elif kind == "exit":
-            lifecycle.append("exit")
+            if kind == "destroy-callback":
+                lifecycle.append("destroy-callback")
+            elif kind == "run-return":
+                lifecycle.append("run-return")
+                if ev.get("err") != "<nil>":
+                    item("R12-run-return", False, "seq=%d run-return.err=%r（fixture 运行失败）" % (seq, ev.get("err")))
+            elif kind == "exit":
+                lifecycle.append("exit")
 
-        elif kind == "axis":
-            offX, offY = ev.get("offX"), ev.get("offY")
-            offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
-            prevX, prevY = ev.get("prevX"), ev.get("prevY")
-            if not all(isinstance(v, int) for v in (offX, offY, offXMax, offYMax, prevX, prevY)):
-                item("R13-axis-fields", False, "seq=%d axis 缺偏移整数域" % seq)
-                continue
-            if offX < 0 or offX > offXMax or offY < 0 or offY > offYMax:
-                item("R13-axis-clamp", False, "seq=%d 偏移越界 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
-            dx, dy = offX - prevX, offY - prevY
-            if dx != 0 and dy != 0:
-                item("R13-axis-single", False, "seq=%d 单事件双轴变化 dx=%d dy=%d（错轴）" % (seq, dx, dy))
-            if dx > 0:
-                axis_x_plus += 1
-            if dy > 0:
-                axis_y_plus += 1
-            axis_run_x, axis_run_y = offX, offY
+            elif kind == "axis":
+                offX, offY = ev.get("offX"), ev.get("offY")
+                offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
+                prevX, prevY = ev.get("prevX"), ev.get("prevY")
+                if not all(isinstance(v, int) for v in (offX, offY, offXMax, offYMax, prevX, prevY)):
+                    item("R13-axis-fields", False, "seq=%d axis 缺偏移整数域" % seq)
+                    continue
+                if offX < 0 or offX > offXMax or offY < 0 or offY > offYMax:
+                    item("R13-axis-clamp", False, "seq=%d 偏移越界 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
+                dx, dy = offX - prevX, offY - prevY
+                if dx != 0 and dy != 0:
+                    item("R13-axis-single", False, "seq=%d 单事件双轴变化 dx=%d dy=%d（错轴）" % (seq, dx, dy))
+                if dx > 0:
+                    axis_x_plus += 1
+                if dy > 0:
+                    axis_y_plus += 1
+                reachable_pairs.add((offX, offY))
+                reachable_pairs.add((prevX, prevY))
 
-        elif kind == "click":
-            grid = ev.get("grid")
-            row_id, col = ev.get("rowID"), ev.get("col")
-            x, y = ev.get("x"), ev.get("y")
-            colWpx, viewWpx = ev.get("colWpx"), ev.get("viewWpx")
-            rowHpx, headerHpx = ev.get("rowHpx"), ev.get("headerHpx")
-            bodyHpx = ev.get("bodyHpx")
-            offX, offY = ev.get("offX"), ev.get("offY")
-            sel_ids, lead = ev.get("selIds"), ev.get("lead")
-            click_frame = ev.get("frame")
-            if not SEL_RE.match(str(row_id)):
-                item("R14-rowid", False, "seq=%d 非法 RowID %r" % (seq, row_id))
-                continue
-            if not (isinstance(x, int) and isinstance(y, int)):
-                # 旧格式日志（无本地坐标）：判据升级后不可判定 → 拒绝。
-                item("R14a-coords", False, "seq=%d click 缺本地坐标 x/y（旧格式不可判定，拒绝）" % seq)
-                continue
-            if not (isinstance(sel_ids, list) and isinstance(colWpx, int) and colWpx > 0
-                    and isinstance(viewWpx, int) and viewWpx > 0):
-                item("R16a-snapshot", False, "seq=%d click 缺选择快照或几何（旧格式不可判定，拒绝）" % seq)
-                continue
+            elif kind == "click":
+                grid = ev.get("grid")
+                row_id, col = ev.get("rowID"), ev.get("col")
+                x, y = ev.get("x"), ev.get("y")
+                colWpx, viewWpx = ev.get("colWpx"), ev.get("viewWpx")
+                rowHpx, headerHpx = ev.get("rowHpx"), ev.get("headerHpx")
+                bodyHpx = ev.get("bodyHpx")
+                offX, offY = ev.get("offX"), ev.get("offY")
+                sel_ids, lead = ev.get("selIds"), ev.get("lead")
+                click_frame = ev.get("frame")
+                if not isinstance(click_frame, int):
+                    click_frame = None
+                if not SEL_RE.match(str(row_id)):
+                    item("R14-rowid", False, "seq=%d 非法 RowID %r" % (seq, row_id))
+                    continue
+                if not (isinstance(x, int) and isinstance(y, int)):
+                    # 旧格式日志（无本地坐标）：判据升级后不可判定 → 拒绝。
+                    item("R14a-coords", False, "seq=%d click 缺本地坐标 x/y（旧格式不可判定，拒绝）" % seq)
+                    continue
+                if not (isinstance(sel_ids, list) and isinstance(colWpx, int) and colWpx > 0
+                        and isinstance(viewWpx, int) and viewWpx > 0):
+                    item("R16a-snapshot", False, "seq=%d click 缺选择快照或几何（旧格式不可判定，拒绝）" % seq)
+                    continue
 
-            # —— R3 域校验（先于行列推导；不合法坐标不进入推导）——
-            if not (0 <= x < viewWpx):
-                item("R14d-domain-x", False,
-                     "seq=%d 点击坐标越界 x=%d 不在 [0,%d)（右边界/视口外像素域）"
-                     % (seq, x, viewWpx))
-            if not (isinstance(bodyHpx, int) and bodyHpx > 0):
-                item("R14d-fields", False, "seq=%d click 缺 bodyHpx" % seq)
-            elif not (headerHpx <= y < headerHpx + bodyHpx):
-                item("R14d-domain-y", False,
-                     "seq=%d 点击纵坐标越界 y=%d 不在 [header=%d, header+body=%d)（表头/表体四边）"
-                     % (seq, y, headerHpx, headerHpx + bodyHpx))
-            offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
-            if not (isinstance(offXMax, int) and offXMax >= 0 and isinstance(offYMax, int) and offYMax >= 0):
-                item("R14e-fields", False, "seq=%d click 缺 offXMax/offYMax" % seq)
-            elif not (0 <= offX <= offXMax and 0 <= offY <= offYMax):
-                item("R14e-domain-off", False,
-                     "seq=%d 偏移越域 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
-            # 命中当刻几何 × 轴时间线（仅 gridA——轴事件只来自 gridA；
-            # gridB 无横向滚动，offX 恒 0，由偏移域校验覆盖）：允许
-            # {本点击前运行值} 加 {同帧 axis 值}。
-            if grid == "A":
-                allowed_x = {axis_run_x} if axis_run_x is not None else set()
-                allowed_y = {axis_run_y} if axis_run_y is not None else set()
-                if click_frame in axis_by_frame:
-                    allowed_x.add(axis_by_frame[click_frame][0])
-                    allowed_y.add(axis_by_frame[click_frame][1])
-                if allowed_x and offX not in allowed_x:
-                    item("R14f-hit-geom", False,
-                         "seq=%d 命中当刻 offX=%d 与轴时间线不一致（允许值 %s）"
-                         % (seq, offX, sorted(v for v in allowed_x if v is not None)))
-                if allowed_y and offY not in allowed_y:
-                    item("R14f-hit-geom", False,
-                         "seq=%d 命中当刻 offY=%d 与轴时间线不一致（允许值 %s）"
-                         % (seq, offY, sorted(v for v in allowed_y if v is not None)))
-            n_domain += 1
-            tail = [i["id"] for i in items[-8:]]
-            if not any(i.startswith(("R14d", "R14e", "R14f")) for i in tail):
-                n_domain_ok += 1
+                # —— R4 域校验（先于行列推导；缺字段/错类型/越界统一结构化
+                # item，任何字段不合法都不进入对应推导，也绝不抛异常）——
+                geo_ok = True
+                for nm, val in (("colWpx", colWpx), ("viewWpx", viewWpx), ("rowHpx", rowHpx),
+                                ("headerHpx", headerHpx), ("bodyHpx", bodyHpx)):
+                    if not (isinstance(val, int) and not isinstance(val, bool) and val > 0):
+                        item("R14d-fields", False,
+                             "seq=%d 字段 %s 缺失或类型错误（期望正整数，得到 %r）" % (seq, nm, val))
+                        geo_ok = False
+                offXMax, offYMax = ev.get("offXMax"), ev.get("offYMax")
+                for nm, val in (("offXMax", offXMax), ("offYMax", offYMax), ("offX", offX), ("offY", offY)):
+                    if not (isinstance(val, int) and not isinstance(val, bool) and val >= 0):
+                        item("R14e-fields", False,
+                             "seq=%d 字段 %s 缺失或类型错误（期望非负整数，得到 %r）" % (seq, nm, val))
+                        geo_ok = False
+                if not (isinstance(col, int) and not isinstance(col, bool) and 0 <= col < NCOLS):
+                    item("R14a-fields", False,
+                         "seq=%d 字段 col 缺失或类型错误（期望 [0,%d) 整数，得到 %r）" % (seq, NCOLS, col))
+                    geo_ok = False
+                if geo_ok:
+                    if not (0 <= x < viewWpx):
+                        item("R14d-domain-x", False,
+                             "seq=%d 点击坐标越界 x=%d 不在 [0,%d)（右边界/视口外像素域）"
+                             % (seq, x, viewWpx))
+                    if not (headerHpx <= y < headerHpx + bodyHpx):
+                        item("R14d-domain-y", False,
+                             "seq=%d 点击纵坐标越界 y=%d 不在 [header=%d, header+body=%d)（表头/表体四边）"
+                             % (seq, y, headerHpx, headerHpx + bodyHpx))
+                    if not (0 <= offX <= offXMax and 0 <= offY <= offYMax):
+                        item("R14e-domain-off", False,
+                             "seq=%d 偏移越域 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
+                    # 命中当刻偏移**对** × 可达对集合（仅 gridA——轴事件只来自
+                    # gridA；gridB 无横向滚动，(0,0) 由偏移域覆盖）。可达对 =
+                    # 生产者已发出的全部历史对（offX/offY 与 prevX/prevY）加
+                    # 同帧轴对——成对比较，排除从不同时刻拼出的组合。
+                    if grid == "A":
+                        allowed_pairs = set(reachable_pairs)
+                        if click_frame in axis_by_frame:
+                            allowed_pairs.add(axis_by_frame[click_frame])
+                        if (offX, offY) not in allowed_pairs:
+                            item("R14f-hit-geom", False,
+                                 "seq=%d 命中当刻偏移对 (%d,%d) 不可达（可达对 %s）"
+                                 % (seq, offX, offY, sorted(allowed_pairs)))
+                n_domain += 1
+                tail = [i["id"] for i in items[-12:]]
+                if not any(i.startswith(("R14d", "R14e", "R14f")) for i in tail):
+                    n_domain_ok += 1
 
-            # 精确列：坐标 × 当帧几何（错误但仍可见的列在此被拒）。
-            col_calc = (x + offX) // colWpx
-            if col != col_calc:
-                item("R14a-exact-col", False,
-                     "seq=%d 错列 col=%d ≠ 坐标推算 %d（x=%d offX=%d colWpx=%d；两列可能均可见）"
-                     % (seq, col, col_calc, x, offX, colWpx))
-            elif not (0 <= col < NCOLS):
-                item("R14a-exact-col", False, "seq=%d col=%d 越界" % (seq, col))
-            else:
-                n_exact_col += 1
-            # 精确行：命中映射一致性（gridA 用当序——可能已排序；
-            # gridB 恒等序，从不排序）。
-            row_calc = None
-            if isinstance(rowHpx, int) and rowHpx > 0 and isinstance(headerHpx, int):
-                row_calc = (y - headerHpx + offY) // rowHpx
-                expect_row = order_id(row_calc, sorted_desc and grid == "A")
-                if not (0 <= row_calc < N_ROWS):
-                    item("R14b-exact-row", False, "seq=%d 行越界 row=%d" % (seq, row_calc))
-                elif row_id != expect_row:
-                    item("R14b-exact-row", False,
-                         "seq=%d 错行 rowID=%r ≠ 坐标推算 %r（y=%d offY=%d rowHpx=%d）"
-                         % (seq, row_id, expect_row, y, offY, rowHpx))
+                # 精确列：坐标 × 当帧几何（错误但仍可见的列在此被拒）。
+                col_calc = (x + offX) // colWpx
+                if col != col_calc:
+                    item("R14a-exact-col", False,
+                         "seq=%d 错列 col=%d ≠ 坐标推算 %d（x=%d offX=%d colWpx=%d；两列可能均可见）"
+                         % (seq, col, col_calc, x, offX, colWpx))
+                elif not (0 <= col < NCOLS):
+                    item("R14a-exact-col", False, "seq=%d col=%d 越界" % (seq, col))
                 else:
-                    n_exact_row += 1
-            else:
-                item("R14b-fields", False, "seq=%d click 缺 rowHpx/headerHpx" % seq)
-
-            if grid == "A":
-                if step_idx >= len(steps_a):
-                    # 脚本外点击：未改变选择的真实事件 → 容忍；改变选择 → 拒。
-                    if sel_ids == (last_seen if last_seen is not None else []):
-                        tolerated_noop += 1
+                    n_exact_col += 1
+                # 精确行：命中映射一致性（gridA 用当序——可能已排序；
+                # gridB 恒等序，从不排序）。
+                row_calc = None
+                if isinstance(rowHpx, int) and rowHpx > 0 and isinstance(headerHpx, int):
+                    row_calc = (y - headerHpx + offY) // rowHpx
+                    expect_row = order_id(row_calc, sorted_desc and grid == "A")
+                    if not (0 <= row_calc < N_ROWS):
+                        item("R14b-exact-row", False, "seq=%d 行越界 row=%d" % (seq, row_calc))
+                    elif row_id != expect_row:
+                        item("R14b-exact-row", False,
+                             "seq=%d 错行 rowID=%r ≠ 坐标推算 %r（y=%d offY=%d rowHpx=%d）"
+                             % (seq, row_id, expect_row, y, offY, rowHpx))
                     else:
-                        item("R16-steps", False,
-                             "seq=%d gridA 点击超出场景步骤且改变了选择 %r（脚本外）" % (seq, sel_ids))
-                    continue
-                # 场景阶段边界：上一步的选择变更必须在下一步开始前留痕
-                # （缺失中段快照在此被拒——不只看退出收口）。
-                if pending_change:
-                    item("R16a-gap", False,
-                         "seq=%d 上一步选择变更未留痕（模型 %r vs 最后快照 %r——缺 sel-multi）"
-                         % (seq, [order_id(i, sorted_desc) for i in sorted(set_a)], last_seen))
-                row_idx, action = steps_a[step_idx]
-                set_a, anchor_a, lead_a = model_click(set_a, anchor_a, lead_a, row_idx, action)
-                clicked_a += 1
-                # 快照关联：点击当刻选择必须与模型一致。
-                expect_ids = [order_id(i, sorted_desc) for i in sorted(set_a)]
-                if sel_ids != expect_ids:
-                    item("R16a-snapshot", False,
-                         "seq=%d 错误选择集（click 快照）%r ≠ 模型 %r（步骤 %d 行 %d %s）"
-                         % (seq, sel_ids, expect_ids, step_idx + 1, row_idx, action))
-                expect_lead = order_id(lead_a, sorted_desc) if lead_a is not None else ""
-                if lead != expect_lead:
-                    item("R16a-lead", False,
-                         "seq=%d lead %r ≠ 模型 %r（步骤 %d）" % (seq, lead, expect_lead, step_idx + 1))
-                n_snapshot += 1
-                if row_calc is not None and row_calc != row_idx:
-                    # 瞄准行偏离脚本：SCENARIO 人工项（选择快照兜底——集合
-                    # 不一致已在上方拒绝）。
-                    row_aim_variance.append("步骤 %d：脚本行 %d，实点行 %d"
-                                            % (step_idx + 1, row_idx, row_calc))
-                step_idx += 1
-                if last_seen is None or expect_ids != last_seen:
-                    pending_change = True
-            elif grid == "B":
-                if not steps_b:
-                    item("R16-steps-b", False, "seq=%d gridB 点击超出场景步骤" % seq)
-                    continue
-                if pending_change:
-                    item("R16a-gap", False,
-                         "seq=%d 上一步选择变更未留痕（缺 sel-multi）" % seq)
-                steps_b.pop(0)
-                # R17 gridB 单选身份：点击后选择集必为 [被点行]、lead=被点行。
-                if sel_ids != [row_id]:
-                    item("R17-gridb-snapshot", False,
-                         "seq=%d gridB 选择快照 %r 与被点行 %r 矛盾（单选身份）"
-                         % (seq, sel_ids, row_id))
-                if lead != row_id:
-                    item("R17-gridb-lead", False,
-                         "seq=%d gridB lead %r 与被点行 %r 矛盾" % (seq, lead, row_id))
-                selb_model = row_id
-                selb_pending = True
+                        n_exact_row += 1
+                else:
+                    item("R14b-fields", False, "seq=%d click 缺 rowHpx/headerHpx" % seq)
 
-        elif kind == "sel-multi":
-            ids, count, lead = ev.get("ids"), ev.get("count"), ev.get("lead")
-            if not isinstance(ids, list) or any(not SEL_RE.match(str(i)) for i in ids):
-                item("R16-ids", False, "seq=%d sel-multi 非法 RowID 集 %r" % (seq, ids))
-                continue
-            if len(set(ids)) != len(ids) or count != len(ids):
-                item("R16-count", False, "seq=%d 选择集重复或 count 不符 ids=%r count=%r" % (seq, ids, count))
-                continue
-            if home_pending:
-                # Home（初始无选择）选中第 0 行：场景首个选择快照。
-                expect = [order_id(0, sorted_desc)]
-                if ids != expect:
-                    item("R16-home", False, "seq=%d Home 初始选择 %r ≠ %r" % (seq, ids, expect))
-                home_pending = False
-                set_a, anchor_a, lead_a = [0], 0, 0
-                last_seen = list(expect)
-                pending_change = False
-            else:
-                if pending_change:
-                    expect = [order_id(i, sorted_desc) for i in sorted(set_a)]
+                if grid == "A":
+                    if step_idx >= len(steps_a):
+                        # 脚本外点击：未改变选择的真实事件 → 容忍；改变选择 → 拒。
+                        if sel_ids == (last_seen if last_seen is not None else []):
+                            tolerated_noop += 1
+                        else:
+                            item("R16-steps", False,
+                                 "seq=%d gridA 点击超出场景步骤且改变了选择 %r（脚本外）" % (seq, sel_ids))
+                        continue
+                    # 场景阶段边界：上一步的选择变更必须在下一步开始前留痕
+                    # （缺失中段快照在此被拒——不只看退出收口）。
+                    if pending_change:
+                        item("R16a-gap", False,
+                             "seq=%d 上一步选择变更未留痕（模型 %r vs 最后快照 %r——缺 sel-multi）"
+                             % (seq, [order_id(i, sorted_desc) for i in sorted(set_a)], last_seen))
+                    if selb_pending:
+                        item("R17-gridb-timeline", False,
+                             "seq=%d gridB 选择变更未在场景边界前核销（缺 selB-change）" % seq)
+                    row_idx, action = steps_a[step_idx]
+                    set_a, anchor_a, lead_a = model_click(set_a, anchor_a, lead_a, row_idx, action)
+                    clicked_a += 1
+                    # 快照关联：点击当刻选择必须与模型一致。
+                    expect_ids = [order_id(i, sorted_desc) for i in sorted(set_a)]
+                    if sel_ids != expect_ids:
+                        item("R16a-snapshot", False,
+                             "seq=%d 错误选择集（click 快照）%r ≠ 模型 %r（步骤 %d 行 %d %s）"
+                             % (seq, sel_ids, expect_ids, step_idx + 1, row_idx, action))
+                    expect_lead = order_id(lead_a, sorted_desc) if lead_a is not None else ""
+                    if lead != expect_lead:
+                        item("R16a-lead", False,
+                             "seq=%d lead %r ≠ 模型 %r（步骤 %d）" % (seq, lead, expect_lead, step_idx + 1))
+                    n_snapshot += 1
+                    if row_calc is not None and row_calc != row_idx:
+                        # 瞄准行偏离脚本：SCENARIO 人工项（选择快照兜底——集合
+                        # 不一致已在上方拒绝）。
+                        row_aim_variance.append("步骤 %d：脚本行 %d，实点行 %d"
+                                                % (step_idx + 1, row_idx, row_calc))
+                    step_idx += 1
+                    if last_seen is None or expect_ids != last_seen:
+                        pending_change = True
+                elif grid == "B":
+                    if not steps_b:
+                        item("R16-steps-b", False, "seq=%d gridB 点击超出场景步骤" % seq)
+                        continue
+                    if pending_change:
+                        item("R16a-gap", False,
+                             "seq=%d 上一步选择变更未留痕（缺 sel-multi）" % seq)
+                    steps_b.pop(0)
+                    # R17 gridB 单选身份：点击后选择集必为 [被点行]、lead=被点行。
+                    if sel_ids != [row_id]:
+                        item("R17-gridb-snapshot", False,
+                             "seq=%d gridB 选择快照 %r 与被点行 %r 矛盾（单选身份）"
+                             % (seq, sel_ids, row_id))
+                    if lead != row_id:
+                        item("R17-gridb-lead", False,
+                             "seq=%d gridB lead %r 与被点行 %r 矛盾" % (seq, lead, row_id))
+                    selb_prev = selb_model
+                    selb_model = row_id
+                    selb_pending = True
+
+            elif kind == "sel-multi":
+                ids, count, lead = ev.get("ids"), ev.get("count"), ev.get("lead")
+                if not isinstance(ids, list) or any(not SEL_RE.match(str(i)) for i in ids):
+                    item("R16-ids", False, "seq=%d sel-multi 非法 RowID 集 %r" % (seq, ids))
+                    continue
+                if len(set(ids)) != len(ids) or count != len(ids):
+                    item("R16-count", False, "seq=%d 选择集重复或 count 不符 ids=%r count=%r" % (seq, ids, count))
+                    continue
+                if home_pending:
+                    # Home（初始无选择）选中第 0 行：场景首个选择快照。
+                    expect = [order_id(0, sorted_desc)]
                     if ids != expect:
-                        item("R16-sel-multi", False,
-                             "seq=%d 留痕快照 %r ≠ 模型 %r（错序或错误选择集）" % (seq, ids, expect))
+                        item("R16-home", False, "seq=%d Home 初始选择 %r ≠ %r" % (seq, ids, expect))
+                    home_pending = False
+                    set_a, anchor_a, lead_a = [0], 0, 0
                     last_seen = list(expect)
                     pending_change = False
                 else:
-                    item("R16-sel-multi-order", False,
-                         "seq=%d 多余选择快照 %r（当刻模型无未留痕变更——错序）" % (seq, ids))
+                    if pending_change:
+                        expect = [order_id(i, sorted_desc) for i in sorted(set_a)]
+                        if ids != expect:
+                            item("R16-sel-multi", False,
+                                 "seq=%d 留痕快照 %r ≠ 模型 %r（错序或错误选择集）" % (seq, ids, expect))
+                        last_seen = list(expect)
+                        pending_change = False
+                    else:
+                        item("R16-sel-multi-order", False,
+                             "seq=%d 多余选择快照 %r（当刻模型无未留痕变更——错序）" % (seq, ids))
 
-        elif kind == "selB-change":
-            to = ev.get("to")
-            if to:
-                selb_seen = to
-            if to != selb_model:
-                item("R17-gridb-timeline", False,
-                     "seq=%d selB-change.to=%r 与 gridB 模型 %r 矛盾" % (seq, to, selb_model))
-            else:
-                selb_pending = False
+            elif kind == "selB-change":
+                fr_, to_ = ev.get("from"), ev.get("to")
+                okf = isinstance(fr_, str) and (fr_ == "" or bool(SEL_RE.match(fr_)))
+                okt = isinstance(to_, str) and (to_ == "" or bool(SEL_RE.match(to_)))
+                if not (okf and okt):
+                    item("R17-gridb-fields", False,
+                         "seq=%d selB-change from/to 缺失或类型错误（期望空串或 ROW 编号形式，得到 %r/%r）"
+                         % (seq, fr_, to_))
+                if selb_pending:
+                    # 快照只核销一次：from 必须等于模型变更前值、to 等于变更后值。
+                    if okf and fr_ != selb_prev:
+                        item("R17-gridb-from", False,
+                             "seq=%d selB-change.from=%r 与模型变更前值 %r 不符（错误前态）"
+                             % (seq, fr_, selb_prev))
+                    if okt and to_ != selb_model:
+                        item("R17-gridb-timeline", False,
+                             "seq=%d selB-change.to=%r 与 gridB 模型 %r 矛盾" % (seq, to_, selb_model))
+                    if to_:
+                        selb_seen = to_
+                    selb_pending = False
+                else:
+                    item("R17-gridb-timeline", False,
+                         "seq=%d 多余 selB-change（当刻无未核销变更——错序）" % seq)
+                    if to_:
+                        selb_seen = to_
 
-        elif kind == "sort":
-            seen_sort += 1
-            if seen_sort > 1:
-                item("R15-count", False, "seq=%d 多余 sort 事件（脚本恰一次）" % seq)
-                continue
-            bh, bt = ev.get("before-head"), ev.get("before-tail")
-            ah, at = ev.get("after-head"), ev.get("after-tail")
-            n = ev.get("n")
-            if n != N_ROWS:
-                item("R15-n", False, "seq=%d 排序行数 %r ≠ %d" % (seq, n, N_ROWS))
-            if not all(isinstance(x, list) and x for x in (bh, bt, ah, at)):
-                item("R15-fields", False, "seq=%d sort 缺行序样本" % seq)
-                continue
-            if ah == bh:
-                item("R15-changed", False, "seq=%d 排序后行序未变（无排序）" % seq)
-            if sorted(bh + bt) != sorted(ah + at):
-                item("R15-multiset", False, "seq=%d 头尾样本多重集不等（排序改变数据集）" % seq)
-            if any(ah[i] <= ah[i + 1] for i in range(len(ah) - 1)):
-                item("R15-desc", False, "seq=%d after-head 非严格降序（脚本为反序）" % seq)
-            sorted_desc = True
+            elif kind == "sort":
+                seen_sort += 1
+                if seen_sort > 1:
+                    item("R15-count", False, "seq=%d 多余 sort 事件（脚本恰一次）" % seq)
+                    continue
+                bh, bt = ev.get("before-head"), ev.get("before-tail")
+                ah, at = ev.get("after-head"), ev.get("after-tail")
+                n = ev.get("n")
+                if n != N_ROWS:
+                    item("R15-n", False, "seq=%d 排序行数 %r ≠ %d" % (seq, n, N_ROWS))
+                if not all(isinstance(x, list) and x for x in (bh, bt, ah, at)):
+                    item("R15-fields", False, "seq=%d sort 缺行序样本" % seq)
+                    continue
+                if selb_pending:
+                    item("R17-gridb-timeline", False,
+                         "seq=%d gridB 选择变更未在场景边界前核销（缺 selB-change，排序边界）" % seq)
+                if ah == bh:
+                    item("R15-changed", False, "seq=%d 排序后行序未变（无排序）" % seq)
+                if sorted(bh + bt) != sorted(ah + at):
+                    item("R15-multiset", False, "seq=%d 头尾样本多重集不等（排序改变数据集）" % seq)
+                if any(ah[i] <= ah[i + 1] for i in range(len(ah) - 1)):
+                    item("R15-desc", False, "seq=%d after-head 非严格降序（脚本为反序）" % seq)
+                sorted_desc = True
 
-        elif kind == "focus-change":
-            if ev.get("to") == "editor":
-                focus_editor_before_edit = True
+            elif kind == "focus-change":
+                if ev.get("to") == "editor":
+                    focus_editor_before_edit = True
 
-        elif kind == "edit-delta":
-            if focus != "editor":
-                item("R5b-focus", False, "seq=%d edit-delta focus=%r ≠ editor" % (seq, focus))
-            else:
-                edit_chars += ev.get("chars", 0)
+            elif kind == "edit-delta":
+                if focus != "editor":
+                    item("R5b-focus", False, "seq=%d edit-delta focus=%r ≠ editor" % (seq, focus))
+                else:
+                    ch = ev.get("chars", 0)
+                    if not isinstance(ch, int) or isinstance(ch, bool):
+                        item("R5b-chars", False,
+                             "seq=%d edit-delta.chars 类型错误（期望整数，得到 %r）" % (seq, ch))
+                    else:
+                        edit_chars += ch
 
-        elif kind == "sel-change":
-            if focus == "gridA" and ev.get("to") and not ev.get("visible"):
-                item("R2b-visible", False, "seq=%d gridA 持焦选择当帧不可见 to=%r" % (seq, ev.get("to")))
+            elif kind == "sel-change":
+                if focus == "gridA" and ev.get("to") and not ev.get("visible"):
+                    item("R2b-visible", False, "seq=%d gridA 持焦选择当帧不可见 to=%r" % (seq, ev.get("to")))
+        except Exception as exc:
+            # R4：Python 异常不算有效判定——任何意外异常都强制转为
+            # 结构化 FAIL（JSON 与退出码共同验证），绝不以裸 traceback
+            # 收场；判定流程继续走收口与输出。
+            item("R0-internal", False,
+                 "seq=%r 事件处理意外异常 %r（事件=%s）"
+                 % (ev.get("seq"), repr(exc), json.dumps(ev, ensure_ascii=False)[:200]))
 
     # 场景完整性与留痕收口。
     if home_pending:
@@ -426,7 +489,7 @@ def main():
     elif selb_seen != order_id(0, False):
         item("R16-selB", False, "gridB 最终选择 %r ≠ %r" % (selb_seen, order_id(0, False)))
     if selb_pending:
-        item("R17-gridb-timeline", False, "gridB 点击后的选择变更未留痕（缺 selB-change）")
+        item("R17-gridb-timeline", False, "gridB 点击后的选择变更未留痕（缺 selB-change，退出收口）")
     if pending_change or (last_seen is not None
                           and [order_id(i, sorted_desc) for i in sorted(set_a)] != last_seen):
         item("R16a-final", False,
