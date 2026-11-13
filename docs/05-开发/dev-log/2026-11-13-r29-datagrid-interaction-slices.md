@@ -12,7 +12,7 @@
   稳定排序——等值行保持原相对顺序、RowID 身份不变；排序后重建
   RowID→索引映射并清文本缓存，键盘邻接与点击命中跟随新顺序。
   测试 4 项（键盘邻接、命中、缩短清选、等值稳定）。
-- **S3 多选**（本提交）：`EnableMultiSelect()` 显式 opt-in。Ctrl+点击
+- **S3 多选**（提交 82b7d15）：`EnableMultiSelect()` 显式 opt-in。Ctrl+点击
   切换、Shift+点击/Shift+方向键按锚点范围**替换式**选中（锚点=最后一次
   非 Shift 选择的 RowID）、普通点击/方向键收拢为单行；选择集按 RowID
   表示，`SortRows` 重排天然保留，`SetRows` 缩短/清空剔除失效项并在锚点
@@ -26,7 +26,7 @@
   排序保留、缩短失效、空表与关闭）。
 - 回归口径：`go test ./pkg/widgets/ -count=1` 94 PASS / 0 FAIL / 0 SKIP；
   `go build ./...` 全树通过；`go vet ./pkg/widgets/` 干净。
-- **S4 组合验证与性能**（本提交）：三 opt-in 叠加语义一致性
+- **S4 组合验证与性能**（提交 2980f1b）：三 opt-in 叠加语义一致性
   （横向滚动后命中列解析、排序保留选择集与横向偏移、缩短清空三态）；
   双实例多选焦点隔离（Ctrl/Shift 互不串扰）；Editor 焦点交接下多选集
   保持（Editor 收文本、网格停消费、点击回归后语义恢复）；
@@ -37,5 +37,7 @@
   15.2ms/op（262 allocs）——排序为显式更新阶段一次性成本，不影响帧率。
 - 回归口径（S4 后）：`go test ./pkg/widgets/ -count=1` 97 PASS /
   0 FAIL / 0 SKIP；`go build ./...` 全树通过。
+- **原生场景手册**：cd78211（计划态手册；R1 阶段 4fbdeed 已实装为
+  `TestDataGridR29NativeFixture` + `judge_r29_native_log.py`）。
 - 候选边界：S1–S4 均为默认关闭、显式 opt-in 的候选语义，未批准不入
   规范；原生窗口下的实机连发/IME/DPI 验收仍待协调者组织。
