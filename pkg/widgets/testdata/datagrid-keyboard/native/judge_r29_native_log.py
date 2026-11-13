@@ -122,6 +122,7 @@ def main():
     tolerated_noop = 0
     selb_seen = ""
     row_aim_variance = []
+    n_exact_col = n_exact_row = n_snapshot = 0
 
     # gridA 点击步骤（与 RUNBOOK-R29 脚本一一对应）：(rowIdx, action)。
     steps_a = [
@@ -200,6 +201,8 @@ def main():
                      % (seq, col, col_calc, x, offX, colWpx))
             elif not (0 <= col < NCOLS):
                 item("R14a-exact-col", False, "seq=%d col=%d 越界" % (seq, col))
+            else:
+                n_exact_col += 1
             # 精确行：命中映射一致性（gridA 用当序——可能已排序；
             # gridB 恒等序，从不排序）。
             row_calc = None
@@ -212,6 +215,8 @@ def main():
                     item("R14b-exact-row", False,
                          "seq=%d 错行 rowID=%r ≠ 坐标推算 %r（y=%d offY=%d rowHpx=%d）"
                          % (seq, row_id, expect_row, y, offY, rowHpx))
+                else:
+                    n_exact_row += 1
             else:
                 item("R14b-fields", False, "seq=%d click 缺 rowHpx/headerHpx" % seq)
 
@@ -243,6 +248,7 @@ def main():
                 if lead != expect_lead:
                     item("R16a-lead", False,
                          "seq=%d lead %r ≠ 模型 %r（步骤 %d）" % (seq, lead, expect_lead, step_idx + 1))
+                n_snapshot += 1
                 if row_calc is not None and row_calc != row_idx:
                     # 瞄准行偏离脚本：SCENARIO 人工项（选择快照兜底——集合
                     # 不一致已在上方拒绝）。
@@ -375,10 +381,31 @@ def main():
         print("  - %s" % f)
 
     if json_out:
+        def stage(sid, ok, detail):
+            return {"id": sid, "status": "pass" if ok else "fail", "detail": detail}
         doc = {
             "verdict": verdict,
             "structural": verdict,
             "scenario": "MANUAL-REQUIRED",
+            "scenario_results": [
+                stage("N1-axis", axis_y_plus > 0 and axis_x_plus > 0
+                      and not any(f.startswith("R13") for f in fails),
+                      "Y+ ×%d、X+ ×%d（单事件单轴，域钳制）" % (axis_y_plus, axis_x_plus)),
+                stage("N2-N5-exact-hit", n_exact_col > 0 and n_exact_row > 0
+                      and not any(f.startswith("R14") for f in fails),
+                      "精确列核对 %d 次、精确行核对 %d 次（坐标×当帧几何）" % (n_exact_col, n_exact_row)),
+                stage("N3-sort", seen_sort == 1
+                      and not any(f.startswith("R15") for f in fails),
+                      "排序恰一次，行序翻转样本核对"),
+                stage("N4-N5-snapshot", not any(f.startswith("R16a") for f in fails),
+                      "选择快照关联 %d 次（click.selIds 与 sel-multi 留痕一致）" % n_snapshot),
+                stage("N6-dual-editor", selb_seen == order_id(0, False)
+                      and edit_chars == 2 and focus_editor_before_edit,
+                      "gridB 对照选择 %r；Editor 焦点交接与输入计数" % selb_seen),
+                stage("lifecycle", lifecycle == ["destroy-callback", "run-return", "exit"]
+                      and events[-1].get("event") == "exit",
+                      "destroy-callback → run-return → exit，exit 末位"),
+            ],
             "items": items,
             "manual": manual,
             "counters": {
@@ -387,6 +414,9 @@ def main():
                 "tolerated_noop": tolerated_noop,
                 "sort_events": seen_sort,
                 "edit_chars": edit_chars,
+                "exact_col_checks": n_exact_col,
+                "exact_row_checks": n_exact_row,
+                "snapshot_checks": n_snapshot,
                 "fails": len(fails),
             },
         }
