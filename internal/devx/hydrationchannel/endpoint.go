@@ -31,7 +31,7 @@ type Endpoint struct {
 	ln       net.Listener
 	addr     string
 	closed   bool
-	seen     map[string]struct{} // nonce 防重放（有界：随进程生命周期，小规模）
+	replay   *replayGuard // 有界 nonce 防重放（R29-A S1）
 	inflight int
 	maxInfl  int
 	wg       sync.WaitGroup
@@ -53,8 +53,19 @@ func NewEndpoint(owner OwnerRunner, capture CaptureFunc, session, app, schema, t
 		maxInflight = 4
 	}
 	return &Endpoint{owner: owner, capture: capture, dims: d, token: token,
-		ioDdl: DefaultIODeadline, seen: make(map[string]struct{}), maxInfl: maxInflight}, nil
+		ioDdl: DefaultIODeadline, replay: newReplayGuard(DefaultReplayCapacity, ReplayEvictOldest), maxInfl: maxInflight}, nil
 }
+
+// SetReplayBounds 配置有界 nonce 防重放容量与满额策略（候选；须在 Start 前调用生效）。返回 Endpoint 便于链式。
+func (e *Endpoint) SetReplayBounds(capacity int, policy ReplayPolicy) *Endpoint {
+	e.mu.Lock()
+	e.replay = newReplayGuard(capacity, policy)
+	e.mu.Unlock()
+	return e
+}
+
+// ReplaySize 返回当前 nonce 窗口占用（测试/诊断）。
+func (e *Endpoint) ReplaySize() int { return e.replay.size() }
 
 // Start 在 127.0.0.1:0 上监听并返回 dial 地址（host:port）。仅回环。
 func (e *Endpoint) Start() (string, error) {
@@ -133,19 +144,21 @@ func (e *Endpoint) handle(conn net.Conn) {
 		e.writeErr(conn, ErrBadRequest, req.ReqID, req.Session)
 		return
 	}
-	// 防重放：同一 nonce 只接受一次。
-	e.mu.Lock()
-	if _, dup := e.seen[req.Nonce]; dup {
-		e.mu.Unlock()
+	// 防重放（有界，R29-A S1）：窗口内重复 -> ErrReplay；RejectOnFull 满额 -> ErrReplayWindowFull。
+	// replayGuard 内部自持锁，故此处先做防重放判定，再在 e.mu 下做在途计数。
+	if replay, full := e.replay.checkAndAdd(req.Nonce); replay {
 		e.writeErr(conn, ErrReplay, req.ReqID, req.Session)
 		return
+	} else if full {
+		e.writeErr(conn, ErrReplayWindowFull, req.ReqID, req.Session)
+		return
 	}
+	e.mu.Lock()
 	if e.inflight >= e.maxInfl {
 		e.mu.Unlock()
 		e.writeErr(conn, ErrBusy, req.ReqID, req.Session)
 		return
 	}
-	e.seen[req.Nonce] = struct{}{}
 	e.inflight++
 	e.mu.Unlock()
 	defer func() {
