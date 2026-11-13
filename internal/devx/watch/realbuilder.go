@@ -27,6 +27,9 @@ type RealBuilder struct {
 	ProjectDir string
 	EntryPkg   string // 相对入口包，如 "./app"；空则 "."
 	OutBinary  string
+	// OutDir 可选：本**运行实例**专属输出目录。非空时每代二进制写到 <OutDir>/watch-bin-genN.exe，
+	// 使同项目并行运行的同代二进制互不覆盖（R29-A R5）。空时沿用默认 <ProjectDir>/.goxml（R28 兼容）。
+	OutDir string
 	// Generate 必填（由 adapter 或测试注入，本包不内建 cli 依赖）。
 	Generate GenerateFunc
 	// BuildFn 可注入；nil 用真实 go build（cwd=ProjectDir）。
@@ -80,7 +83,11 @@ func (b *RealBuilder) BinaryPath(gen int) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	return filepath.Join(b.ProjectDir, ".goxml", name)
+	dir := filepath.Join(b.ProjectDir, ".goxml")
+	if b.OutDir != "" {
+		dir = b.OutDir // 本运行实例专属输出目录（并行隔离）
+	}
+	return filepath.Join(dir, name)
 }
 
 // Build 实现 Builder。generate 失败归类 "generate"；go build 失败归类 "build"；ctx 取消/超时按

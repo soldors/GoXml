@@ -118,7 +118,9 @@ func CLIGenerate(ctx context.Context, projectDir string) (int, string) {
 	if !ok {
 		return -1, "watchadapter: no tool executable supplied (source fallback unavailable)"
 	}
-	return generationResult(watch.RunCommandTree(ctx, "go", []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}, root, nil, 0))
+	return withGenerateLock(ctx, projectDir, func() (int, string) {
+		return generationResult(watch.RunCommandTree(ctx, "go", []string{"run", "./cmd/goxml", "generate", projectDir, "--check"}, root, nil, 0))
+	})
 }
 
 func generateWithTool(ctx context.Context, exe, projectDir string) (int, string) {
@@ -127,7 +129,9 @@ func generateWithTool(ctx context.Context, exe, projectDir string) (int, string)
 		return -1, err.Error()
 	}
 	projectDir = absolute
-	return generationResult(watch.RunCommandTree(ctx, exe, []string{"generate", projectDir, "--check"}, projectDir, nil, 0))
+	return withGenerateLock(ctx, projectDir, func() (int, string) {
+		return generationResult(watch.RunCommandTree(ctx, exe, []string{"generate", projectDir, "--check"}, projectDir, nil, 0))
+	})
 }
 
 // 保留执行失败与取消后的清理原因；不能把清理失败压成一个泛化的取消字符串。

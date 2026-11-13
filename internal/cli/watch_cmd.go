@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -149,13 +150,16 @@ func runWatch(ctx context.Context, args []string, stdout, stderr io.Writer, tool
 	cfg := makeWatchConfig(root, o)
 	// S3：opt-in Hydration。默认关闭——不设置时 cfg.Hydration=nil、pm.EnvFor=nil，行为与既有完全一致。
 	if o.hydration {
-		hook, envFor, hErr := buildHydration(root, o, stdout, stderr)
+		hook, envFor, runID, hErr := buildHydration(root, o, stdout, stderr)
 		if hErr != nil {
 			fmt.Fprintf(stderr, "goxml watch: hydration 启用失败: %v\n", hErr)
 			return ExitFailure
 		}
 		cfg.Hydration = hook
 		pm.EnvFor = envFor
+		// 并行安全：本运行实例的构建产物写到专属目录 <root>/.goxml/run/<runID>/，
+		// 使同项目并行 Watch 的同代二进制互不覆盖（R28 默认路径仅在不启用 Hydration 时使用）。
+		b.OutDir = filepath.Join(root, ".goxml", "run", runID)
 	}
 	obs := watchObserver{pm, stdout, stderr}
 	w, err := watch.New(cfg, b, pm, obs)
@@ -220,10 +224,10 @@ func makeWatchConfig(root string, o watchOptions) watch.Config {
 //   - 新代（gen>=2）：子进程以 HYD_MODE=restore 从 HYD_STATE 恢复；注入 HYD_STATE=<本会话状态文件>。
 //   - Capture 失败/取消 -> hook.BeforeSwap 返回错误 -> Watch 保旧不切换（既有配置）。
 //   - 新代启动失败沿用既有 Watch 次序（如实报告当前无服务，不自动复活旧代）。
-func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*watch.HydrationHook, func(int) []string, error) {
+func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*watch.HydrationHook, func(int) []string, string, error) {
 	tok, terr := newSessionToken()
 	if terr != nil {
-		return nil, nil, terr
+		return nil, nil, "", terr
 	}
 	appID := o.hydrationApp
 	if strings.TrimSpace(appID) == "" {
@@ -231,13 +235,13 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 	}
 	// 启动前校验 replay 配置（空=默认 reject；非法值在启动前拒绝）。
 	if o.hydrationReplay != "" && o.hydrationReplay != "reject" && o.hydrationReplay != "evict" {
-		return nil, nil, fmt.Errorf("非法 --hydration-replay=%q（仅 reject|evict）", o.hydrationReplay)
+		return nil, nil, "", fmt.Errorf("非法 --hydration-replay=%q（仅 reject|evict）", o.hydrationReplay)
 	}
 	if o.hydrationReplay == "" {
 		o.hydrationReplay = "reject"
 	}
 	if o.hydrationReplayCap < 0 {
-		return nil, nil, fmt.Errorf("非法 --hydration-replay-cap=%d（须 >=0）", o.hydrationReplayCap)
+		return nil, nil, "", fmt.Errorf("非法 --hydration-replay-cap=%d（须 >=0）", o.hydrationReplayCap)
 	}
 	sess, serr := hc.NewSession(hc.SessionConfig{
 		ProjectDir: root, SessionID: o.hydrationSession, AppID: appID,
@@ -245,7 +249,7 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 		ReplayPolicy: replayPolicyOf(o.hydrationReplay), ReplayCap: o.hydrationReplayCap,
 	})
 	if serr != nil {
-		return nil, nil, serr
+		return nil, nil, "", serr
 	}
 	statePath := sess.Store().Path()
 	baseEnv := func(gen int) []string {
@@ -270,7 +274,8 @@ func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*wat
 		return cl.Capture(ctx, oldGen)
 	}
 	hook := &watch.HydrationHook{Proto: sess.Proto(), Capture: capture, RestoreEnv: nil}
-	return hook, baseEnv, nil
+	// runID 与 session.go 派生一致（sha256(token)[:8]），用于本运行专属构建产物目录。
+	return hook, baseEnv, runIDFromToken(tok), nil
 }
 
 // newSessionToken 生成一次性随机会话 token（仅内存/子进程环境，不打印）。
@@ -290,4 +295,10 @@ func replayPolicyOf(s string) hc.ReplayPolicy {
 		return hc.ReplayEvictOldest
 	}
 	return hc.ReplayRejectOnFull
+}
+
+// runIDFromToken 与 hydrationchannel 派生一致：sha256(token)[:8]（非机密、不写日志）。
+func runIDFromToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:8])
 }
