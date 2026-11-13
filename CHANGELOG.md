@@ -1,11 +1,13 @@
 # Changelog
 
-## 2026-11-10 R28 已批准开发范围
+## 2026-11-13 R28 Windows/amd64 源码发布
 
-- **Hydration**：批准开发态 Windows 首发范围，使用 `127.0.0.1:0` 回环 TCP、显式 DTO、显式 opt-in/默认关闭，以及 `.goxml/hydration/<session>.state` 推荐状态目录。大小、超时和并发限制仍是可配置的开发态默认；代次不符必须 `ErrMismatch` 且不返回 payload。
-- **DataGrid**：批准 C-DG10..16 键盘导航语义，保持默认关闭；原生键盘、IME、DPI 与发布级验收仍未完成。
-- **Lifecycle**：批准 opt-in Owner/Router 页面生命周期合同；`CancelOnly` 只取消 owner 根，页面 Context 由 Router `Shutdown`/`Finalize` 负责，Finalize 不替宿主自动 Shutdown。
-- 以上范围已在组合分支完成无窗口回归、race、构建、vet、docgate 与 diagdoc；原生窗口、跨平台运行和发布级门禁仍需单独验收，不能视为本次已发布。
+- **Hydration** 默认关闭。开发态可显式启用回环 TCP 和 DTO 状态恢复。代次不符返回 `ErrMismatch`，连接取消和代次不符均不交付 payload。公共 CLI 自动恢复尚未接线，nonce 记录容量仍待确定。见 [ADR-0016](docs/03-架构/adr/ADR-0016-Hydration开发态跨进程状态恢复范围.md)。
+- **DataGrid** 默认关闭键盘导航。开启后支持基于稳定 RowID 的单选和当帧滚入可见区域。部分可见的表体行绘制裁剪在固定表头下方。Windows 实机验收覆盖物理键连发、切换键盘布局后的导航、Editor 中的 IME 提交、125% 与 150% 之间的 DPI 切换和标题栏关闭。见 [ADR-0017](docs/03-架构/adr/ADR-0017-DataGrid键盘导航语义.md)。
+- **Lifecycle** 默认关闭。显式开启的 Owner/Router 合同在首次业务 Layout 前挂载，取消页面 Context 后卸载一次。Windows 单窗自然关窗及后台停止后关窗均通过原生 race 验收。见 [ADR-0018](docs/03-架构/adr/ADR-0018-Lifecycle-Owner与Router页面生命周期.md)。
+- **Watch 与 Preview** 在 Windows 上通过工具树取消、服务进程退出证明及 Preview 宿主清理回归。组合代码 `35b61b5` 的全树测试、10 包 race、零 CGO 构建与文档门禁通过。
+
+本次发布范围为 Windows/amd64 源码。Linux/macOS 运行、多窗口与整应用性能仍待验收。验收记录见 [R28 文档索引](docs/00-文档索引.md)。
 
 ## 2026-11-09 R27 Windows 基础范围
 

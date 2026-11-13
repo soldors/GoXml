@@ -35,4 +35,4 @@
 
 generation 必须来自同一 Watch 编号域：`ServiceObserver.ServingGeneration()`、请求 `ServingGen`、端点响应 `Gen` 与客户端旧代校验保持一致；任一错配返回 `ErrMismatch` 且不暴露 payload。token 只用于会话绑定、请求关联和重放拒绝，不承担认证或授权。
 
-**负责人已批准开发态 Windows 首发范围，原生/跨平台发布等级待验收。** 本补记不关闭整卡：CLI 自动恢复参数、通用应用控制通道、最终公开 API、原生窗口/IME、多窗口协调、跨平台运行和正式发布门禁仍未完成。正式决策矩阵见 [ADR-0016-Hydration开发态跨进程状态恢复范围](../../03-架构/adr/ADR-0016-Hydration开发态跨进程状态恢复范围.md)。
+**Windows/amd64 开发态源码发布范围已通过组合门禁。** 整卡仍进行中。CLI 自动恢复参数、通用应用控制通道、最终公开 API、原生窗口中的 Hydration、多窗口协调和跨平台运行仍待完成。批准范围见 [ADR-0016](../../03-架构/adr/ADR-0016-Hydration开发态跨进程状态恢复范围.md)。
