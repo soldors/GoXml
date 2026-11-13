@@ -3,9 +3,10 @@
 **执行前提**：协调者授权的原生阶段。作者阶段不开窗、不注入桌面输入、
 不执行本 fixture。本手册是操作方案，不是「原生通过」声明。
 
-R1 已实装：`TestDataGridR29NativeFixture`（`//go:build nativewindow`）、
-`fixtureR29View`（默认编译，与无窗口回放共用同一生产者）与
-`judge_r29_native_log.py`（模型化结构判定器）。
+R1 实装、R2 精确判据、R3 收口：`TestDataGridR29NativeFixture`
+（`//go:build nativewindow`）、`fixtureR29View`（默认编译，与无窗口回放
+共用同一生产者）与 `judge_r29_native_log.py`（v3 模型化结构判定器：
+域校验先行 + 精确列/行 + 快照留痕 + gridB 单选身份 + 命中当刻几何）。
 
 ## 1. fixture 形态
 
@@ -81,6 +82,15 @@ rowHpx/headerHpx）。判定器按以下公式核对精确命中列/行：
 
 - 坐标是 **DataGrid 组件本地** px（gridA 带内相对坐标）；gridB 点击的
   x/y 同样是其带内本地坐标，offX=0。
+- **命中当刻几何（R3）**：click 的 offX/offY 是 cellAt 实际使用的偏移
+  （DataGrid 内部观察，非帧尾读取）——同帧滚动/缩放时与帧尾值可不同；
+  判定器要求其等于轴时间线运行值或同帧 axis 值（不得混用不同时间的
+  几何）。回放含同帧滚动+点击、同帧 DPI 缩放+点击两个验证尾。
+- **域校验先行（R3）**：x ∈ [0, viewWpx)（右边界 x==viewWpx 无效）、
+  y ∈ [headerHpx, headerHpx+bodyHpx)（表头/表体四边）、offX/offY ∈
+  偏移域——不合法坐标不进入行列推导。
+- **gridB 单选身份（R3）**：click.selIds 必为 [被点行]、lead=被点行；
+  selB-change.to 必须等于模型且变更须留痕。
 - 离屏回放 PxPerDp=1（px=dp）；原生桌面在任意 DPI 下公式仍成立——
   判定器使用日志自带几何，不假设换算系数。
 - click 还携带**点击当刻选择快照**（selIds/lead）：判定器要求每个选择
@@ -91,8 +101,10 @@ rowHpx/headerHpx）。判定器按以下公式核对精确命中列/行：
 - 依赖现场观察（SCENARIO 人工确认）：操作者瞄准的行是否与本手册步骤
   一致、原生窗口与真实输入的存在性。`--json` 输出逐项判定与 manual
   清单。
-- 旧格式日志（click 无坐标/快照字段）在 v2 判据下**不可判定，拒绝**——
-  R1 的历史回放证据不适用，须以 R2 生产者重新生成。
+- 旧格式日志（click 缺坐标/快照/bodyHpx 字段）在 v3 判据下**不可判定，
+  拒绝**——R1/R2 的历史回放证据不适用，须以当前生产者重新生成。
+- **观察留在包内（R3）**：R2 曾以公开 `LastClick()` 为候选 API；R3 收口
+  为包内 `lastClick()`（夹具与组件同包），公开面保持 `Clicked()` 不变。
 
 ## 5. 无窗口回放证据（作者阶段已完成）
 
@@ -104,15 +116,16 @@ rowHpx/headerHpx）。判定器按以下公式核对精确命中列/行：
 链路与日志形态；**不代表原生窗口已执行**——原生 N1–N6 由协调者在授权
 桌面复验。
 
-判定器负例覆盖（v2 已验证拒收，判决书见交付 raw/r2-judge-verdicts/）：
+判定器负例覆盖（v3 已验证拒收，判决书见交付 raw/r3-judge-verdicts/）：
 `neg1-wrong-visible-col`（错误但可见的列——坐标×几何精确核对拒收）、
 `neg2-wrong-axis`（错轴）、`neg3-no-sort`（无排序）、
 `neg4-wrong-selection`（错误选择集）、`neg5-early-exit`（早退）、
-`neg6-missing-last-selection`（缺末次选择快照——退出未留痕变更拒收）、
-`neg7-missing-middle-selection`（缺中段选择快照——步骤边界未留痕拒收）；
-`pos8-tolerated`（未改变选择的脚本外事件——宽容正例）。
-协调者 R2 两份旧格式反例（b-wrong-visible-col / b-missing-last-selection）
-在 v2 判据下拒收（缺坐标/快照字段，旧格式不可判定）。
+`neg6-missing-last-selection`（缺末次选择快照）、
+`neg7-missing-middle-selection`（缺中段选择快照——步骤边界拒收）、
+`neg8-outside-viewport`（右边界 x==viewWpx——域校验拒收）、
+`neg9-contradictory-gridb-snapshot`（gridB 快照与单选身份矛盾——R17 拒收）；
+`pos10-tolerated`（未改变选择的脚本外事件——宽容正例）。
+协调者 R2/R3 历史反例均拒收（旧格式缺字段或新判据直接命中）。
 
 ## 6. 未证边界（不冒充）
 
