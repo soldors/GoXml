@@ -43,3 +43,23 @@
 ## 提交
 - `1a2def0` fix(r29-a r4): 运行身份隔离发现文件 + storeOwning 有界读取
 - `261e79a` test(r29-a r4): 真实进程+固定小容量防重放三态边界（默认/显式 reject 与 evict）
+
+## 组合门禁观察：无 Hydration 的既有 Watch 共享冲突（本轮修复）
+- 组合 `combined-affected` 首轮 `TestDevWatchActualCLIRebuildFailureRecoveryAndCancel` 在删除 `broken.go` 时
+  `cmd\app\broken.go: The process cannot access the file because it is being used by another process`，
+  触发 `goxml watch: 监听/清理失败` 终止。R28 基线与组合定向复跑**均绿**（`raw/r28-watch-control`、`raw/combined-watch-recheck`）。
+- 判定：**瞬时 Windows 文件共享冲突**（并发构建/编辑器短暂持有文件），非确定性扫描/代码生成错误
+  （旁路证据：stderr 中 build 失败为 `undefined: missingApplicationSymbol`，共享冲突发生在扫描 `os.ReadFile` 与删除同一路径并发时）。
+- 但 `watch.Run` 轮询循环对 `Scan` 任一错误 `return err` 终止 Watch（`internal/devx/watch/run.go`），
+  属产品健壮性缺陷：瞬时共享冲突应**有界保旧重试**而非终止。
+- 最小修复（有界、保旧）：`Run` 循环对**瞬时**共享/锁冲突（`ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION`，
+  `scan_transient_windows.go`）跳过本 tick 保旧继续；**连续**超过 `maxTransientScanSkips=40` 才以真实错误终止
+  （保留首败诊断）；非瞬时错误仍立即终止。注入 seam `scanFn` 便于受控测试。
+- 受控测试 `scan_transient_r4_test.go`：瞬时连续冲突 → Run 返回 nil（不终止）；非瞬时 → 终止并返回错误。
+- 真实 `TestDevWatchActualCLIRebuildFailureRecoveryAndCancel` 修复后连跑 2 次均 PASS（`raw/green-watch-recovery.txt`）。
+
+## 本轮门禁（Windows/amd64，CGO=0；race MinGW-W64 16.1.0）
+- 受影响包全绿：hydrationchannel / hydration / watch / cli；`go build ./...` rc0；vet rc0；gofmt 空。
+- **MinGW `-race`**（CGO=1）：hydrationchannel+hydration+watch rc0 / 0 DATA RACE（本轮补，前次环境缺 gcc 未跑）。
+- docgate/diagdoc ok。
+- 原红→绿：`a-r3-shared-discovery-probe_test.go` 在父 `788350d` RED（ErrUnauthorized）→ 本 HEAD GREEN。
