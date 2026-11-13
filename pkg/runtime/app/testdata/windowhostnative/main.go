@@ -141,8 +141,11 @@ type nativePage struct {
 func (p *nativePage) Layout(gtx layout.Context, _ *material.Theme) layout.Dimensions {
 	p.state.noteFrame()
 	p.rec.writeOnce("frame:" + p.state.label)
-	// 关 A 之后 B 的后续帧由操作员目视确认；公开重绘请求不是事件注入。
-	if p.state.label == "B" && p.rec.has("close:A") {
+	// R1：该 marker 必须真实发生在「A 清理完成之后」（finalize:A 由 A 的
+	// DestroyEvent 回调在 LifecycleFinalize 返回之后写）与「B 收尾之前」
+	// （close:B 是 B 的销毁回调第一行）之间。旧实现只检查 close:A，
+	// 可能早于 unmount:A/finalize:A，不能证明 A 已清理完成。
+	if p.state.label == "B" && p.rec.has("finalize:A") && !p.rec.has("close:B") {
 		p.rec.writeOnce("frame:B-after-A")
 	}
 	gtx.Execute(op.InvalidateCmd{})

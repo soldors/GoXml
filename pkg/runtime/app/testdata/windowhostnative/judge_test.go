@@ -141,3 +141,39 @@ func TestJudgeRejectsNonZeroExitCode(t *testing.T) {
 	tr.ExitCode = 1
 	assertFail(t, LogJudge(tr), "exit-code")
 }
+
+// R1：frame:B-after-A 必须晚于 A 清理完成（finalize:A）、早于 B 收尾
+// （close:B）。把该行前移或后移都必须被判定器拒绝。
+func TestJudgeRejectsBAfterABeforeFinalizeA(t *testing.T) {
+	tr := healthyTrace("natural")
+	var kept []string
+	moved := "frame:B-after-A"
+	for _, m := range tr.Markers {
+		if m == moved {
+			continue
+		}
+		kept = append(kept, m)
+		if m == "unmount:A canceled=true count=1" {
+			kept = append(kept, moved) // 早于 finalize:A
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "marker-order")
+}
+
+func TestJudgeRejectsBAfterAAfterBClose(t *testing.T) {
+	tr := healthyTrace("natural")
+	var kept []string
+	moved := "frame:B-after-A"
+	for _, m := range tr.Markers {
+		if m == moved {
+			continue
+		}
+		kept = append(kept, m)
+		if m == "close:B" {
+			kept = append(kept, moved) // 晚于 B 收尾起点
+		}
+	}
+	tr.Markers = kept
+	assertFail(t, LogJudge(tr), "marker-order")
+}
