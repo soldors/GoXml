@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"sort"
 	"time"
 
 	"gioui.org/f32"
@@ -263,6 +264,26 @@ func (g *DataGrid) SetRows(rows []DataGridRow) DataGridUpdateReport {
 	}
 	// 滚动偏移按新数据量重钳制（帧内也会钳）。
 	return rep
+}
+
+// SortRows 按调用方提供的比较规则对当前数据集排序（S2 候选）。
+// 排序在显式更新阶段完成：使用稳定排序保持等值行的原始相对顺序，
+// RowID 身份不变（重排只是索引变化）。排序后键盘邻接和命中跟随新顺序。
+// 调用方也可在 SetRows 前预排序数据，效果等同。
+func (g *DataGrid) SortRows(less func(a, b DataGridRow) bool) {
+	if less == nil || len(g.rows) < 2 {
+		return
+	}
+	// 稳定排序：sort.SliceStable 保持等值行的原始相对顺序。
+	sort.SliceStable(g.rows, func(i, j int) bool {
+		return less(g.rows[i], g.rows[j])
+	})
+	// RowID→索引映射需重建（键盘导航依赖）。
+	if g.idToIdx != nil {
+		g.buildRowIndex()
+	}
+	// 清空文本缓存（行顺序变了，可见区重绘）。
+	g.clearTextCache()
 }
 
 // Rows 返回当前数据行数（O(1)，不做任何扫描）。
