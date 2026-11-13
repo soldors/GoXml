@@ -20,4 +20,7 @@
 - **提交 dc4a3b6**：RUNBOOK-R29 补 R2 坐标/视口判据说明（组件本地 px、
   精确列/行公式、快照关联、宽容规则、依赖现场边界、旧格式不可判定）
   与七类负例矩阵。
+- **提交 f80b6f8**：判定器 --json 结构化输出补场景级逐项结果（N1–N6 各阶段
+  status/detail 与核对计数：exact_col_checks/exact_row_checks/
+  snapshot_checks）。
 - 未证边界：原生窗口 N1–N6 实机执行待协调者。
