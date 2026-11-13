@@ -146,6 +146,11 @@ type DataGrid struct {
 	hScrollEnabled bool
 	hScrollOff     int
 
+	// S3 多选（候逋，显式 opt-in）
+	multiSelEnabled bool
+	selSet          map[string]bool
+	selAnchor       string // Shift 扩展锚点（最后一次非 Shift 选择的 RowID）
+
 	// 按压状态（跨帧；与 scrimState 同款约束）
 	pressed    bool
 	pid        pointer.ID
@@ -260,6 +265,14 @@ func (g *DataGrid) SetRows(rows []DataGridRow) DataGridUpdateReport {
 			g.selOK = false
 			g.selID = ""
 			rep.SelectionCleared = true
+		}
+	}
+	// 多选集维护：删掉新数据中已不存在的 RowID（缩短/清空后幸存者保留）；
+	// Shift 锚点失效时一并清空。
+	if g.multiSelEnabled {
+		g.multiSelectInvalidate()
+		if _, exists := seen[g.selAnchor]; !exists {
+			g.selAnchor = ""
 		}
 	}
 	// 滚动偏移按新数据量重钳制（帧内也会钳）。
@@ -513,7 +526,11 @@ func (g *DataGrid) drawRow(gtx layout.Context, th *material.Theme, row DataGridR
 	rowClip := clip.Rect(rowRect).Push(gtx.Ops)
 	defer rowClip.Pop()
 	bg := dgColRowBg
-	if g.selOK && row.ID == g.selID {
+	if g.multiSelEnabled {
+		if g.selSet[row.ID] {
+			bg = dgColRowSelectedBg
+		}
+	} else if g.selOK && row.ID == g.selID {
 		bg = dgColRowSelectedBg
 	}
 	paint.FillShape(gtx.Ops, bg, clip.Rect(rowRect).Op())
@@ -630,6 +647,9 @@ func (g *DataGrid) handleEvents(gtx layout.Context, viewport image.Point, rowH, 
 				if ok && g.pressValid && rowID == g.pressRowID && col == g.pressCol {
 					g.clickedID, g.clickedCol, g.clickedOK = rowID, col, true
 					g.selID, g.selOK = rowID, true
+					if g.multiSelEnabled {
+						g.commitPointerSelection(rowID, e.Modifiers)
+					}
 				}
 			}
 			g.pressed = false

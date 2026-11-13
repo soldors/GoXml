@@ -121,7 +121,10 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 
 	for _, name := range dgNavKeys {
 		for {
-			ev, ok := gtx.Source.Event(key.Filter{Focus: &g.tag, Name: name})
+			// Optional 放行 Shift：多选模式下 Shift+方向键是扩展选择；
+			// Gio 过滤器要求事件修饰键落在 Required|Optional 之内，不
+			// 声明则 Shift+方向键不匹配（Required=0 且无 Optional）。
+			ev, ok := gtx.Source.Event(key.Filter{Focus: &g.tag, Name: name, Optional: key.ModShift})
 			if !ok {
 				break
 			}
@@ -182,8 +185,9 @@ func (g *DataGrid) handleKeyboard(gtx layout.Context, viewport image.Point, rowH
 			if newIdx == sel {
 				continue
 			}
-			// 单选按稳定 RowID 提交（不伪造鼠标点击事件）。
-			g.selID, g.selOK = g.rows[newIdx].ID, true
+			// 按 RowID 提交选择（不伪造鼠标点击事件）；多选模式下由
+			// commitKeyboardSelection 维护选择集与锚点。
+			g.commitKeyboardSelection(newIdx, e.Modifiers&key.ModShift != 0)
 			// scroll-into-view（本帧生效；空 body 明确不滚动）。
 			if bodyH > 0 {
 				top := newIdx * rowH
