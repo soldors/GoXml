@@ -164,6 +164,51 @@ func TestExitHelperNoWindowAndNoStrayStderr(t *testing.T) {
 	}
 }
 
+// TestExitHelperOwnershipConflictExitCodes（R4）：「Main 已被宿主占用」时
+// 旧单窗进程入口的真实子进程退出码——默认策略由真实 os.Exit(1) 终止；
+// MainConflictReturn 显式选择返回策略，入口返回、子进程正常结束。
+func TestExitHelperOwnershipConflictExitCodes(t *testing.T) {
+	exe := buildExitHelper(t)
+	t.Run("conflict", func(t *testing.T) {
+		rc, marker, out, res := runExitHelper(t, exe, "conflict")
+		if rc != 1 {
+			t.Fatalf("默认策略真实退出码 rc=%d want=1；stdout/stderr=%s", rc, out)
+		}
+		if res.Code != 1 {
+			t.Fatalf("结果 Code=%d 与真实 rc 不一致: %+v", res.Code, res)
+		}
+		if !strings.Contains(res.Err, "Gio Main is already owned") {
+			t.Fatalf("结果缺少所有权错误: %+v", res)
+		}
+		joined := strings.Join(res.Steps, ",")
+		if !strings.HasSuffix(joined, "observer,exit") {
+			t.Fatalf("observer 必须先于真实退出: %v", res.Steps)
+		}
+		if !strings.HasPrefix(marker, "cleanup:") {
+			t.Fatalf("marker 应只含收口行: %q", marker)
+		}
+	})
+	t.Run("conflict-return", func(t *testing.T) {
+		rc, marker, out, res := runExitHelper(t, exe, "conflict-return")
+		if rc != 0 {
+			t.Fatalf("返回策略下子进程应正常结束 rc=0，实得 %d；%s", rc, out)
+		}
+		if !strings.Contains(marker, "returned-without-exit") {
+			t.Fatalf("入口应返回而非退出（marker 缺 returned-without-exit）: %q", marker)
+		}
+		if !strings.Contains(res.Err, "Gio Main is already owned") {
+			t.Fatalf("返回策略仍应看到同一可判别错误: %+v", res)
+		}
+		joined := strings.Join(res.Steps, ",")
+		if !strings.HasSuffix(joined, "observer,return") {
+			t.Fatalf("返回策略的收口步骤应为 observer,return: %v", res.Steps)
+		}
+		if strings.Contains(joined, "exit") {
+			t.Fatalf("返回策略不得记录 exit 阶段: %v", res.Steps)
+		}
+	})
+}
+
 // TestExitHelperProcess is selected only in a self-owned child process. Its
 // package-local seams retain the real public entry and real os.Exit boundary.
 func TestExitHelperProcess(t *testing.T) {
@@ -218,12 +263,28 @@ func TestExitHelperProcess(t *testing.T) {
 		opts.next = nil
 	case "strict":
 		opts.fontFailure = func() error { return fmt.Errorf("helper strict font failure: goxml: font family not found") }
+	case "conflict", "conflict-return": // R4：认领与策略在尾部 Main 门闩处处理
 	default:
 		t.Fatalf("unknown child scenario %q", scenario)
 	}
 	// Main intentionally blocks; only the public entry's real os.Exit can end
 	// this child. No Window.Event or platform Main is called.
 	mainFunc = func() { select {} }
+	switch scenario {
+	case "conflict", "conflict-return":
+		// R4：宿主已认领进程级 Main（包内接缝；不启动窗口、不调用 Main），
+		// 旧单窗入口随后被拒。默认策略由真实 os.Exit(1) 终止本子进程；
+		// conflict-return 显式选择返回策略：入口返回后由测试正常收尾。
+		if err := claimGioMain("helper-host"); err != nil {
+			t.Fatal(err)
+		}
+		if scenario == "conflict-return" {
+			opts.OnMainConflict = MainConflictReturn
+			RunSingleWindowProcess(view, Config{Title: "r27-exit-child"}, opts)
+			appendMarker("returned-without-exit")
+			return
+		}
+	}
 	RunSingleWindowProcess(view, Config{Title: "r27-exit-child"}, opts)
 	t.Fatal("unreachable: process entry returned without exiting child")
 }
