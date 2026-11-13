@@ -10,7 +10,13 @@ import (
 )
 
 func TestProcessOptionsExportsProductionFieldsOnly(t *testing.T) {
-	public := map[string]bool{"Theme": true, "Lazy": true, "Observer": true}
+	// OnMainConflict 是 R29-C R3 的**候选**生产字段（零值 = R28 已批准契约，
+	// 行为不变）。它必须走公开面登记，不能靠放宽守卫偷偷加入：若负责人否决
+	// 该候选，回滚此白名单条目与 process_entry.go 的字段/分支即可。
+	public := map[string]bool{
+		"Theme": true, "Lazy": true, "Observer": true,
+		"OnMainConflict": true,
+	}
 	typ := reflect.TypeOf(ProcessOptions{})
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
