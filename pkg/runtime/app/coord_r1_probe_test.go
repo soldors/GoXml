@@ -49,6 +49,8 @@ func TestCoordR29HostCloseWaitsForWindowDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R3：Open 只注册，显式 Run 才启动事件泵（Main 用桩立即返回）。
+	r3StartHost(t, host)
 	<-w.entered
 	err = handle.Close()
 	close(w.initDone)
@@ -70,6 +72,7 @@ func TestCoordR29HostCloseAfterDestroyDoesNotTouchBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host) // R3：注册与启动分离
 	w.events <- gioapp.DestroyEvent{}
 	<-handle.Done()
 	if err := handle.Close(); err != nil {

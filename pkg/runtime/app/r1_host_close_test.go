@@ -93,6 +93,7 @@ func TestR1FirstEventInitFailureSuppressesBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	<-w.firstEntered // 首个 Event 已进入，驱动尚未就绪
 	if err := wh.Close(); err != nil {
 		t.Fatal(err)
@@ -120,6 +121,7 @@ func TestR1CloseCompetesWithDestroyNeverTouchesBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	<-w.firstEntered
 	close(w.firstGate) // 首个 Event 返回 FrameEvent → 驱动就绪
 	<-w.destroyOffered // 后端已交出第二个 DestroyEvent
@@ -145,6 +147,7 @@ func TestR1ConcurrentCloseDeliversAtMostOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	w.frame()
 	s2WaitFrames(t, wh, 1)
 	var wg sync.WaitGroup
@@ -190,6 +193,7 @@ func TestR1CloseAKeepsBServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	fakes["A"].frame()
 	fakes["B"].frame()
 	s2WaitFrames(t, ha, 1)

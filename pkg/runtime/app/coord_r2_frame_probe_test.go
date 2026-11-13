@@ -63,6 +63,7 @@ func TestCoordR29R1HostDoesNotReadNextEventBeforeSubmittingFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, h) // R3：Open 只注册，Run 才启动事件泵（断言未改）
 	<-v.started
 	// Hold Layout briefly, so an independent reader has an opportunity to
 	// consume the next backend event while the first frame remains outstanding.

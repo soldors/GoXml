@@ -141,6 +141,7 @@ func TestS2TwoIndependentRoutersCloseAKeepsBServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	if setA.r == setB.r || setA.owner == setB.owner {
 		t.Fatal("两个窗口必须各有独立 Router/Owner")
 	}
@@ -209,6 +210,7 @@ func TestS2ExplicitExitAllClosesEachWindowOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	fakes["A"].frame()
 	fakes["B"].frame()
 	s2WaitFrames(t, ha, 1)
@@ -267,6 +269,7 @@ func TestS2OpenFailuresAndDuplicateCloseAreBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	// R1 语义：驱动就绪前 Close 只排队，首个 Event 返回后至多一次交付。
 	fakes["A"].frame()
 	s2WaitFrames(t, ha, 1)
@@ -313,6 +316,7 @@ func TestS2ConcurrentBackgroundCancelUsesEachUIOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	fakes["A"].frame()
 	fakes["B"].frame()
 	s2WaitFrames(t, ha, 1)
@@ -403,7 +407,7 @@ func TestS2LegacyEntryPointsRemainUnchanged(t *testing.T) {
 		t.Fatalf("混用语义异常: exits=%d code=%d err=%v mainCalls=%d",
 			mixExits, mixCode, mixErr, called.Load())
 	}
-	_, _, blocked := GioMainState()
+	_, _, blocked := gioMainState()
 	if blocked != 2 {
 		t.Fatalf("两次被阻止的混用应可计数，实得 %d", blocked)
 	}

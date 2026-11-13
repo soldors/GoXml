@@ -64,6 +64,7 @@ func TestR2FrameHandshakePositive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	r2WaitDone(t, wh)
 	if !w.secondSawFrame.Load() {
 		t.Fatal("下一次 Event() 早于前一帧 Frame 回调（帧握手失效）")
@@ -85,6 +86,7 @@ func TestR2RepeatedCloseOnlyOneDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	w.frame()
 	s2WaitFrames(t, wh, 1)
 	var wg sync.WaitGroup
@@ -108,6 +110,7 @@ func TestR2CloseWithoutNextFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r3StartHost(t, host)
 	w.frame() // 只给一帧，之后不再投递任何事件
 	s2WaitFrames(t, wh, 1)
 	if err := wh.Close(); err != nil {
@@ -162,7 +165,7 @@ func TestR2LegacyFirstThenHostRejected(t *testing.T) {
 	if err := host.Run(); !errors.Is(err, ErrGioMainAlreadyOwned) {
 		t.Fatalf("旧入口先行后 Host 应被拒绝，实得 %v", err)
 	}
-	owner, mainCalls, blocked := GioMainState()
+	owner, mainCalls, blocked := gioMainState()
 	if owner != gioMainLegacyOwner || mainCalls != 1 || blocked != 1 || calls.Load() != 1 {
 		t.Fatalf("所有权状态异常: owner=%q calls=%d blocked=%d main=%d",
 			owner, mainCalls, blocked, calls.Load())
@@ -194,7 +197,7 @@ func TestR2HostFirstThenLegacyRejected(t *testing.T) {
 		t.Fatalf("Host 先行混用未精确失败: main=%d exits=%d code=%d err=%v",
 			calls.Load(), mixExits, mixCode, mixErr)
 	}
-	owner, mainCalls, blocked := GioMainState()
+	owner, mainCalls, blocked := gioMainState()
 	if owner != host.id || mainCalls != 1 || blocked != 2 {
 		t.Fatalf("所有权状态异常: owner=%q calls=%d blocked=%d", owner, mainCalls, blocked)
 	}
@@ -226,7 +229,7 @@ func TestR2ConcurrentGioMainClaims(t *testing.T) {
 	if success != 1 || calls.Load() != 1 {
 		t.Fatalf("并发认领应只有一个成功且 Main 只一次: success=%d main=%d", success, calls.Load())
 	}
-	owner, _, blocked := GioMainState()
+	owner, _, blocked := gioMainState()
 	if owner == gioMainLegacyOwner || blocked != len(hosts)-1 {
 		t.Fatalf("并发状态异常: owner=%q blocked=%d", owner, blocked)
 	}
