@@ -54,7 +54,10 @@ func TestCoordR29R4ZeroWindowExitAllWaitsForStartupVerdict(t *testing.T) {
 		t.Fatal("Run did not finish after releasing the ownership lock")
 	}
 	final := candidate.Wait()
-	if early != nil && early.Rejected != final.Rejected {
-		t.Fatalf("Wait exposed a terminal result before the startup verdict: early.Rejected=%v final.Rejected=%v", early.Rejected, final.Rejected)
+	if !final.Rejected || !errors.Is(final.Err, ErrGioMainAlreadyOwned) {
+		t.Fatalf("Wait lost the startup rejection: Rejected=%v Err=%v", final.Rejected, final.Err)
+	}
+	if early != nil {
+		t.Fatalf("Wait exposed a terminal result before the startup verdict: %+v", *early)
 	}
 }

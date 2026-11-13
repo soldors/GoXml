@@ -319,9 +319,7 @@ func (h *WindowHost) Active() int {
 }
 
 // Wait 阻塞到宿主收口（窗口全部自然关闭、显式退出、Run 被拒或零窗）。
-// R5：返回 finished 关闭瞬间冻结的**不可变终态**。收口之后才发生的
-// 所有权判定/拒绝会继续写 h.result（供 Run 与句柄观察），但绝不改写
-// Wait 的结果；重复 Wait 也返回同一份冻结值。
+// Wait 只在认领判定和窗口收口完成后返回冻结的终态。重复调用返回同一结果。
 func (h *WindowHost) Wait() HostResult {
 	<-h.finished
 	h.mu.Lock()
@@ -360,7 +358,7 @@ func (h *WindowHost) ExitAll(code int) {
 	case hostStarting:
 		// Run 正在做所有权判定、事件泵尚未启动：只把每个已注册窗口的
 		// 关闭请求排队（Close 不触后端），由 Run 启动的 loop 在首个事件
-		// 就绪后交付；不改状态，避免判定成功后无法完成启动。
+		// 就绪后交付。即使当前没有窗口，也由 Run 在认领成功或拒绝后发布终态。
 		h.result.Explicit = true
 		h.result.Code = code
 		pending := make([]*WindowHandle, 0, len(h.windows))
@@ -370,9 +368,6 @@ func (h *WindowHost) ExitAll(code int) {
 		h.mu.Unlock()
 		for _, wh := range pending {
 			_ = wh.Close()
-		}
-		if len(pending) == 0 {
-			h.signalFinished(true)
 		}
 		return
 	case hostRunning:
