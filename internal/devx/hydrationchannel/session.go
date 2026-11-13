@@ -84,8 +84,22 @@ func (s *Session) Store() *devxh.Store { return s.store }
 // Proto 返回会话协议（供 NewWatchHook 复用）。
 func (s *Session) Proto() *devxh.Protocol { return s.proto }
 
-// PortfilePath 返回旧代发现文件路径（与状态目录同处 .goxml，被 Watch 快照排除）。
+// portfilePath 返回本**运行实例**的旧代发现文件路径。
+// 运行身份 = runID（由 token 派生，同一运行三代共享；不同运行隔离）：
+//
+//	<session>.<runID>.port.json
+//
+// 这样同名会话的两个不同 token 运行不会覆盖彼此的发现记录（R29-A R4 修复）。
 func (s *Session) portfilePath() string {
+	name := s.cfg.SessionID + ".port.json"
+	if s.runID != "" {
+		name = s.cfg.SessionID + "." + s.runID + ".port.json"
+	}
+	return filepath.Join(s.store.Dir(), name)
+}
+
+// legacyPortfilePath 返回 R28 旧共享发现文件名（<session>.port.json），仅用于只读兼容回退。
+func (s *Session) legacyPortfilePath() string {
 	return filepath.Join(s.store.Dir(), s.cfg.SessionID+".port.json")
 }
 
@@ -132,8 +146,8 @@ type portRecord struct {
 // maxDiscoveryBytes 限制发现/临时文件读取（防超大/畸形文件）。
 const maxDiscoveryBytes = 64 << 10
 
-// readBoundedFile 读取至多 maxDiscoveryBytes；返回真实 I/O 错误（除不存在）。
-func readBoundedFile(path string) ([]byte, error) {
+// readBoundedFileLimit 读取至多 limit 字节；返回真实 I/O 错误（除不存在）。超限返回错误（不整份读入）。
+func readBoundedFileLimit(path string, limit int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -141,7 +155,7 @@ func readBoundedFile(path string) ([]byte, error) {
 	defer f.Close()
 	buf := make([]byte, 0, 1024)
 	tmp := make([]byte, 1024)
-	for len(buf) <= maxDiscoveryBytes {
+	for len(buf) <= limit {
 		n, rerr := f.Read(tmp)
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
@@ -153,10 +167,15 @@ func readBoundedFile(path string) ([]byte, error) {
 			return nil, rerr
 		}
 	}
-	if len(buf) > maxDiscoveryBytes {
-		return nil, fmt.Errorf("discovery file exceeds %d bytes", maxDiscoveryBytes)
+	if len(buf) > limit {
+		return nil, fmt.Errorf("discovery file exceeds %d bytes", limit)
 	}
 	return buf, nil
+}
+
+// readBoundedFile 读取至多 maxDiscoveryBytes；返回真实 I/O 错误（除不存在）。
+func readBoundedFile(path string) ([]byte, error) {
+	return readBoundedFileLimit(path, maxDiscoveryBytes)
 }
 
 // writePortfile 发布发现记录，共享所有权边界：
@@ -205,9 +224,28 @@ func (s *Session) writePortfile(addr string, gen int) error {
 	return nil
 }
 
-// ReadPortInfo 读取本会话发现记录（有界）；返回 (record, error)。ok=false 表示无记录或会话不匹配。
+// ReadPortInfo 读取本运行实例的发现记录（有界）；返回 (record, error)。ok=false 表示无记录或会话不匹配。
+// 优先读运行身份文件 <session>.<runID>.port.json；仅当它不存在时，只读回退 R28 旧共享文件
+// <session>.port.json（且只接受不含 ownerId 的旧格式记录）——保持 R28 默认入口，绝不删除旧文件。
 func (s *Session) ReadPortInfo() (portRecord, bool, error) {
-	b, err := readBoundedFile(s.portfilePath())
+	rec, ok, err := s.readPortInfoAt(s.portfilePath(), true)
+	if err != nil || ok {
+		return rec, ok, err
+	}
+	legacy, lok, lerr := s.readPortInfoAt(s.legacyPortfilePath(), false)
+	if lerr != nil {
+		return portRecord{}, false, lerr
+	}
+	if lok && legacy.OwnerID == "" {
+		return legacy, true, nil
+	}
+	return portRecord{}, false, nil
+}
+
+// readPortInfoAt 解析指定路径的发现记录。requireOwner=true 时要求含 ownerId 与 gen（新格式）；
+// false 时允许 R28 旧格式（无 ownerId/gen）。坏 JSON / 会话不符 / 无 addr 均返回 ok=false（保留文件）。
+func (s *Session) readPortInfoAt(path string, requireOwner bool) (portRecord, bool, error) {
+	b, err := readBoundedFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return portRecord{}, false, nil
@@ -221,9 +259,8 @@ func (s *Session) ReadPortInfo() (portRecord, bool, error) {
 	if rec.Session != s.cfg.SessionID || rec.App != s.cfg.AppID || rec.Schema != string(s.cfg.Schema) || rec.Addr == "" {
 		return portRecord{}, false, nil
 	}
-	// 缺失 ownerId 或 generation 的“匹配记录”视为**外来**（不接管、不删；R28 旧发现格式需迁移）。
-	if rec.OwnerID == "" || rec.Gen < 1 {
-		return portRecord{}, false, nil
+	if requireOwner && (rec.OwnerID == "" || rec.Gen < 1) {
+		return portRecord{}, false, nil // 缺失 ownerId/gen：新格式下视外来（不接管、不删）
 	}
 	return rec, true, nil
 }
@@ -276,7 +313,10 @@ func (s *Session) Restore(ctx context.Context, minGen int, owner OwnerRunner, ap
 // 返回首个真实错误（不存在不算错误）；所有权不成立时不报错、保留文件。
 func (s *Session) Close() error {
 	var firstErr error
-	if s.storeOwning() {
+	// 状态文件：有界读取 + 完整校验证明所有权才删除；真实读取错误如实上报且不删除（区分不存在）。
+	if own, oerr := s.storeOwningDetail(); oerr != nil {
+		firstErr = oerr
+	} else if own {
 		if err := os.Remove(s.store.Path()); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
 		}
@@ -299,15 +339,29 @@ func (s *Session) Close() error {
 // storeOwning 判断状态文件是否为**本会话**拥有的合法状态（用于 Close 删除前的所有权证明）。
 // 只读判定，不改动文件（保留错误路径原字节与 mtime）。
 func (s *Session) storeOwning() bool {
-	raw, err := os.ReadFile(s.store.Path()) // 仅本实例命名空间路径，绝不读 legacy/他人路径判定删除
+	own, _ := s.storeOwningDetail()
+	return own
+}
+
+// storeOwningDetail 是 storeOwning 的带错误版本：用**有界读取**（至多 MaxEnvelopeBytes+1）替代 os.ReadFile，
+// 区分「不存在」与「真实读取错误」，并对超限/外来/坏文件一律返回 (false,nil) 以保留原字节与 mtime。
+func (s *Session) storeOwningDetail() (bool, error) {
+	// 仅本实例命名空间路径，绝不读 legacy/他人路径判定删除。
+	raw, err := readBoundedFileLimit(s.store.Path(), rst.MaxEnvelopeBytes+1)
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return false, nil // 不存在：不拥有、非错误
+		}
+		return false, err // 真实读取错误：区分并如实返回（Close 上报，不删除）
+	}
+	if len(raw) > rst.MaxEnvelopeBytes {
+		return false, nil // 超限文件：不视本会话，保留（字节/mtime 不变）
 	}
 	exp := rst.Expect{Schema: s.cfg.Schema, AppID: s.cfg.AppID, SessionID: s.cfg.SessionID, MinGeneration: 0}
 	if _, derr := rst.DecodeAndVerify(raw, exp); derr != nil {
-		return false // 非本会话合法状态（坏文件/他人/外来字节）=> 不拥有，保留。
+		return false, nil // 非本会话合法状态（坏文件/他人/外来字节）=> 不拥有，保留。
 	}
-	return true
+	return true, nil
 }
 
 // newOwnerID 生成随机不透明实例标识（非鉴权 token；不写日志）。
