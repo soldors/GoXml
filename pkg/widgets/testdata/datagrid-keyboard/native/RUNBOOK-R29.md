@@ -3,10 +3,11 @@
 **执行前提**：协调者授权的原生阶段。作者阶段不开窗、不注入桌面输入、
 不执行本 fixture。本手册是操作方案，不是「原生通过」声明。
 
-R1 实装、R2 精确判据、R3 收口：`TestDataGridR29NativeFixture`
+R1 实装、R2 精确判据、R3 收口、R4 校验收口：`TestDataGridR29NativeFixture`
 （`//go:build nativewindow`）、`fixtureR29View`（默认编译，与无窗口回放
-共用同一生产者）与 `judge_r29_native_log.py`（v3 模型化结构判定器：
-域校验先行 + 精确列/行 + 快照留痕 + gridB 单选身份 + 命中当刻几何）。
+共用同一生产者）与 `judge_r29_native_log.py`（v4 模型化结构判定器：
+统一域校验 + 精确列/行 + 快照留痕 + gridB 单选身份/前态核销 + 命中当刻
+偏移**对**；任何意外异常强制结构化 FAIL，Python 异常不算有效负例）。
 
 ## 1. fixture 形态
 
@@ -89,8 +90,16 @@ rowHpx/headerHpx）。判定器按以下公式核对精确命中列/行：
 - **域校验先行（R3）**：x ∈ [0, viewWpx)（右边界 x==viewWpx 无效）、
   y ∈ [headerHpx, headerHpx+bodyHpx)（表头/表体四边）、offX/offY ∈
   偏移域——不合法坐标不进入行列推导。
-- **gridB 单选身份（R3）**：click.selIds 必为 [被点行]、lead=被点行；
-  selB-change.to 必须等于模型且变更须留痕。
+- **gridB 单选身份（R3）+ 前态核销（R4）**：click.selIds 必为 [被点行]、
+  lead=被点行；selB-change.from 必须等于模型**变更前值**、to 等于变更后
+  值；快照只核销一次（多余/缺失拒）；变更须在场景边界（gridA 点击/
+  排序/退出）前核销。
+- **偏移对成对比较（R4）**：click 的 (offX, offY) 作为二元组与可达对
+  集合比较——可达对 = 轴事件全部历史对（含 prev）∪ 同帧轴对；两个分量
+  分别在不同时刻出现过的组合（如 (180,320)）被拒。
+- **统一域校验（R4）**：缺字段、错误类型、非法枚举、越界坐标统一给出
+  结构化 item（--json 可机读）；判定以 JSON 内容与退出码共同验证，
+  Python 异常不算有效负例。
 - 离屏回放 PxPerDp=1（px=dp）；原生桌面在任意 DPI 下公式仍成立——
   判定器使用日志自带几何，不假设换算系数。
 - click 还携带**点击当刻选择快照**（selIds/lead）：判定器要求每个选择
