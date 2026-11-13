@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""R29-B R4 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v4。
+"""R29-B R5 DataGrid 交互扩展（N1–N6）原生验收日志结构判定器 v5。
 
 用法:
   python judge_r29_native_log.py <log.jsonl> [--json -|路径]
@@ -9,7 +9,22 @@
   STRUCTURAL: PASS/FAIL — 模型化场景时间线与不变式判定
   SCENARIO:   始终 MANUAL-REQUIRED — 「操作者按场景意图做了」的因果确认
 
-R4 校验收口（本版新增）：
+R5 点击/轴时序收口（本版新增）：
+  当前可达   R14f 点击的 (offX, offY) 只允许等于**当前运行对**（最近一条
+           轴事件的 offX/offY；无轴事件前为初始 (0,0)）或**同帧轴对**——
+           历史任意帧出现过的偏移对不再充当当前证据（陈旧偏移拒绝）。
+           命中当刻偏移对若两者都不满足：若曾在历史轴输出中出现 →
+           「跨帧陈旧偏移」；否则 → 「证据不足（一帧多次滚动的中间态
+           未经生产者观察）」——均拒绝。
+  轴链连续   R13c 每条 axis 事件的 (prevX, prevY) 必须等于其前运行对
+           （首条为初始 (0,0)）——拒绝编造的轴前态。
+  逐行 JSON  R0-json 非法 JSON 行逐行列出（结构化 item），不再整体中止；
+           任一非法行即 FAIL。
+  生产者帧序  帧前=上一帧尾运行对；帧内=命中当刻值（grid 观察）；
+           帧尾=axis 事件值。一帧多次滚动的中间态若未经生产者观察，
+           点击判「证据不足」。
+
+沿 R4 校验收口：
   域校验统一  所有字段先类型/枚举/位置域校验，缺字段、错误类型、非法
            枚举与越界坐标统一给出结构化 item（R14d-fields/R14e-fields/
            R14a-fields），不再有任何 Python 异常路径——逐事件守护把
@@ -112,21 +127,11 @@ def main():
         return 1
     try:
         raw = Path(argv[0]).read_text(encoding="utf-8").strip()
-        events = [json.loads(line) for line in raw.splitlines()]
-    except (OSError, ValueError) as err:
+    except OSError as err:
         print("STRUCTURAL: FAIL — 日志不可读: %s" % err)
         return 1
-    if not events or any(not isinstance(ev, dict) for ev in events):
-        print("STRUCTURAL: FAIL — 空日志或日志项不是对象")
-        return 1
 
-    # 预扫描：axis 事件按帧索引（同帧点击的轴事件在 click 之后才出现，
-    # 命中当刻几何一致性需要整帧视角）。
-    axis_by_frame = {}
-    for ev0 in events:
-        if ev0.get("event") == "axis" and isinstance(ev0.get("frame"), int):
-            axis_by_frame[ev0["frame"]] = (ev0.get("offX"), ev0.get("offY"))
-
+    # 结构化输出容器（先于逐行解析建立——非法 JSON 行也要给出 item）。
     fails = []
     items = []      # 结构化逐项结果
     manual = []     # 依赖现场观察的项（SCENARIO）
@@ -135,6 +140,34 @@ def main():
         items.append({"id": iid, "status": "pass" if ok else "fail", "detail": detail})
         if not ok:
             fails.append("%s: %s" % (iid, detail))
+
+    # R5 逐行 JSON 校验：非法行逐行列出（结构化 item），不整体中止；
+    # 任一非法行即 FAIL。
+    events = []
+    json_fails = 0
+    for ln_no, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError as err:
+            item("R0-json", False, "第 %d 行非法 JSON：%s（原文 %r）" % (ln_no, err, line[:120]))
+            json_fails += 1
+            continue
+        if not isinstance(ev, dict):
+            item("R0-json", False, "第 %d 行不是 JSON 对象：%r" % (ln_no, line[:120]))
+            json_fails += 1
+            continue
+        events.append(ev)
+    if not events:
+        item("R0-json", False, "无有效事件行（空日志或全部非法）")
+
+    # 预扫描：axis 事件按帧索引（同帧点击的轴事件在 click 之后才出现，
+    # 命中当刻几何一致性需要整帧视角）。
+    axis_by_frame = {}
+    for ev0 in events:
+        if ev0.get("event") == "axis" and isinstance(ev0.get("frame"), int):
+            axis_by_frame[ev0["frame"]] = (ev0.get("offX"), ev0.get("offY"))
 
     sorted_desc = False
     set_a, anchor_a, lead_a = [], None, None
@@ -155,7 +188,8 @@ def main():
     row_aim_variance = []
     n_exact_col = n_exact_row = n_snapshot = 0
     n_domain = n_domain_ok = 0
-    reachable_pairs = set()          # 生产者已发出的全部偏移对（R4：成对比较）
+    running_pair = (0, 0)            # 当前运行对（帧尾；生产者初始态 (0,0)）
+    historical_pairs = set()         # 历史轴输出对（仅用于把拒绝细分为陈旧/证据不足）
     selb_model = ""                  # gridB 单选身份（恒等序）
     selb_prev = ""                   # gridB 变更前值（R4：from 前态核对）
     selb_pending = False             # gridB 快照待核销（只核销一次）
@@ -210,8 +244,14 @@ def main():
                     axis_x_plus += 1
                 if dy > 0:
                     axis_y_plus += 1
-                reachable_pairs.add((offX, offY))
-                reachable_pairs.add((prevX, prevY))
+                # R5 轴链连续：prev 对必须等于前运行对（拒绝编造的轴前态）。
+                if (prevX, prevY) != running_pair:
+                    item("R13c-axis-chain", False,
+                         "seq=%d 轴前态 (prevX,prevY)=(%d,%d) 与运行对 %s 不符（编造轴前态）"
+                         % (seq, prevX, prevY, running_pair))
+                historical_pairs.add((offX, offY))
+                historical_pairs.add((prevX, prevY))
+                running_pair = (offX, offY)
 
             elif kind == "click":
                 grid = ev.get("grid")
@@ -268,18 +308,24 @@ def main():
                     if not (0 <= offX <= offXMax and 0 <= offY <= offYMax):
                         item("R14e-domain-off", False,
                              "seq=%d 偏移越域 off=(%d,%d) max=(%d,%d)" % (seq, offX, offY, offXMax, offYMax))
-                    # 命中当刻偏移**对** × 可达对集合（仅 gridA——轴事件只来自
-                    # gridA；gridB 无横向滚动，(0,0) 由偏移域覆盖）。可达对 =
-                    # 生产者已发出的全部历史对（offX/offY 与 prevX/prevY）加
-                    # 同帧轴对——成对比较，排除从不同时刻拼出的组合。
+                    # 命中当刻偏移**对** × **当前可达**（仅 gridA——轴事件只
+                    # 来自 gridA；gridB 无横向滚动，(0,0) 由偏移域覆盖）。
+                    # 当前可达 = 运行对（最近轴事件帧尾值；无轴事件前为初始
+                    # (0,0)）加同帧轴对——历史任意帧出现过的对不充当当前证据
+                    # （R5）。
                     if grid == "A":
-                        allowed_pairs = set(reachable_pairs)
+                        allowed_pairs = {running_pair}
                         if click_frame in axis_by_frame:
                             allowed_pairs.add(axis_by_frame[click_frame])
                         if (offX, offY) not in allowed_pairs:
-                            item("R14f-hit-geom", False,
-                                 "seq=%d 命中当刻偏移对 (%d,%d) 不可达（可达对 %s）"
-                                 % (seq, offX, offY, sorted(allowed_pairs)))
+                            if (offX, offY) in historical_pairs:
+                                item("R14f-hit-geom", False,
+                                     "seq=%d 命中当刻偏移对 (%d,%d) 为跨帧陈旧偏移（当前可达 %s）——历史值不充当当前证据"
+                                     % (seq, offX, offY, sorted(allowed_pairs)))
+                            else:
+                                item("R14f-hit-geom", False,
+                                     "seq=%d 命中当刻偏移对 (%d,%d) 证据不足（当前可达 %s；一帧多次滚动的中间态未经生产者观察）"
+                                     % (seq, offX, offY, sorted(allowed_pairs)))
                 n_domain += 1
                 tail = [i["id"] for i in items[-12:]]
                 if not any(i.startswith(("R14d", "R14e", "R14f")) for i in tail):
@@ -567,6 +613,7 @@ def main():
                 "snapshot_checks": n_snapshot,
                 "domain_checks": n_domain,
                 "domain_clean": n_domain_ok,
+                "json_fails": json_fails,
                 "fails": len(fails),
             },
         }
