@@ -248,14 +248,10 @@ func TestR1LegacyMainAndHostMixIsRejected(t *testing.T) {
 	t.Cleanup(resetGioMainForTest)
 	orig := mainFunc
 	var legacyCalls atomic.Int32
-	mainFunc = func() {
-		gioMain.mu.Lock()
-		gioMain.calls++ // 模拟生产 mainFunc 包装的旧入口计数
-		gioMain.mu.Unlock()
-		legacyCalls.Add(1)
-	}
+	mainFunc = func() { legacyCalls.Add(1) }
 	t.Cleanup(func() { mainFunc = orig })
 
+	// R2：旧入口通过 claimGioMain 认领（不再靠包装计数）。
 	if err := RunWith(&s1View{}, material.NewTheme(), Config{}); err != nil {
 		t.Fatalf("旧 RunWith 应仍可用: %v", err)
 	}

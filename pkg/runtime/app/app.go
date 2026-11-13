@@ -375,6 +375,11 @@ func (a *App) Invalidate() {
 // 后台加载的终态也已确定。不得为了"早点知道结果"而在构造或首帧时同步等待
 // 加载（卡 §1 禁止事项 2：那等于取消懒加载）。
 func (a *App) Run() error {
+	// R2：进程级 Main 认领点。Host 已认领时混用明确返回错误，
+	// 不启动事件循环、不进入 Main；正常单窗路径（无 Host）不受影响。
+	if err := claimGioMain(gioMainLegacyOwner); err != nil {
+		return err
+	}
 	go a.loop()
 	mainFunc()
 	// R27-C：真实 Windows Main 永不返回，下面这行在生产形态不可达。

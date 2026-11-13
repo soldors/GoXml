@@ -82,6 +82,14 @@ func RunSingleWindowProcess(view View, cfg Config, opts ProcessOptions) {
 		fontFailure = a.fontFailure
 	}
 
+	// R2：在启动窗口事件循环之前认领进程级 Main。Host 已认领时混用
+	// 明确失败：Observer 可见错误、退出码 1、不启动窗口、不进入 Main。
+	// 正常单窗路径（无 Host）行为逐字不变。
+	if err := claimGioMain(gioMainLegacyOwner); err != nil {
+		finishProcess(processResultErr(err, "validate"), opts, steps)
+		return
+	}
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -36,29 +36,52 @@ import (
 )
 
 // ErrGioMainAlreadyOwned 表示 Gio Main 的进程级所有权已被其它宿主或
-// 旧单窗入口占用；第二个 WindowHost.Run() 明确拒绝，不偷偷再调 Main。
+// 旧单窗入口占用；混用双方都明确拒绝，绝不第二次进入 Main。
 var ErrGioMainAlreadyOwned = errors.New("app: Gio Main is already owned")
 
+// gioMainLegacyOwner 标记旧单窗入口（Run/RunWith/RunSingleWindowProcess）
+// 已经取得进程级 Main 所有权。
+const gioMainLegacyOwner = "legacy"
+
 // gioMain 是**包级**进程所有权状态（不是每个 Host 一份 Once）。
-// calls 记录经由生产 mainFunc 包装的 Main 调用次数，用于识别旧入口混用。
+// R2：不再只靠 mainFunc 包装计数；所有入口在调用 Main 前必须 claimGioMain，
+// owner 一旦被 Host 认领，旧入口再次进入 Main 会被阻止并计数（可验证边界）。
 var gioMain = struct {
-	mu    sync.Mutex
-	owner string
-	calls int
-	once  sync.Once
+	mu           sync.Mutex
+	owner        string
+	calls        int
+	blockedCalls int
+	once         sync.Once
 }{}
 
 var nextHostID atomic.Uint64
 
-func init() {
-	// 只包一层计数，不改变 Main 的行为；旧入口仍直接调用 mainFunc。
-	base := mainFunc
-	mainFunc = func() {
-		gioMain.mu.Lock()
+// claimGioMain 是进程级 Main 的唯一认领点。并发入口由 mutex 串行化：
+// 第一个认领者成功；同一入口重复调用（受控形态）允许；不同入口混用
+// 明确返回 ErrGioMainAlreadyOwned，且**不调用 mainFunc**。
+func claimGioMain(who string) error {
+	gioMain.mu.Lock()
+	defer gioMain.mu.Unlock()
+	switch {
+	case gioMain.owner == "":
+		gioMain.owner = who
 		gioMain.calls++
-		gioMain.mu.Unlock()
-		base()
+		return nil
+	case gioMain.owner == who:
+		gioMain.calls++
+		return nil
+	default:
+		gioMain.blockedCalls++
+		return fmt.Errorf("%w: owner=%q requestedBy=%q mainCalls=%d",
+			ErrGioMainAlreadyOwned, gioMain.owner, who, gioMain.calls)
 	}
+}
+
+// GioMainState 返回只读快照，供协调者验证进程级所有权边界。
+func GioMainState() (owner string, calls, blocked int) {
+	gioMain.mu.Lock()
+	defer gioMain.mu.Unlock()
+	return gioMain.owner, gioMain.calls, gioMain.blockedCalls
 }
 
 // resetGioMainForTest 只供包内受控测试隔离全局进程所有权状态。
@@ -67,6 +90,7 @@ func resetGioMainForTest() {
 	defer gioMain.mu.Unlock()
 	gioMain.owner = ""
 	gioMain.calls = 0
+	gioMain.blockedCalls = 0
 	gioMain.once = sync.Once{}
 }
 
@@ -160,16 +184,8 @@ func (h *WindowHost) Open(label string, view View, th *material.Theme, cfg Confi
 // 若已有其它 Host 认领，或旧单窗入口已经调用过 Main，返回
 // ErrGioMainAlreadyOwned，绝不重复调用 Main（不扩大退出政策）。
 func (h *WindowHost) Run() error {
-	gioMain.mu.Lock()
-	if gioMain.owner == "" && gioMain.calls == 0 {
-		gioMain.owner = h.id
-	}
-	owns := gioMain.owner == h.id
-	calls := gioMain.calls
-	owner := gioMain.owner
-	gioMain.mu.Unlock()
-	if !owns {
-		return fmt.Errorf("%w: owner=%q mainCalls=%d host=%q", ErrGioMainAlreadyOwned, owner, calls, h.id)
+	if err := claimGioMain(h.id); err != nil {
+		return err
 	}
 	gioMain.once.Do(mainFunc)
 	return nil
@@ -250,39 +266,70 @@ func (h *WindowHost) onWindowClosed(wh *WindowHandle) {
 	}
 }
 
-// loopWindow 是单个窗口的事件循环。事件读取放到 pump goroutine，使
-// loop 能在等待事件的同时接收关闭请求；**所有后端调用都由 loop 串行
-// 执行**，因此 DestroyEvent 一旦到达就绝不会再发出关闭请求。
+// loopWindow 是单个窗口的事件循环（R2 严格帧握手）。
+//
+// Gio v0.10.3 的 os.go eventLoop.deliverEvent 在投递 FrameEvent 后，要等
+// client 调用 FrameEvent.Frame（eventLoop.Frame 阻塞在 frameAck）并用
+// theFlushEvent 确认「前一事件已处理」，之后才投递下一个事件。若独立
+// pump 在前一帧 Layout / Frame 回调完成前就调用下一次 Window.Event()，
+// 会与后端的帧交换/ack 顺序冲突（受控探针证明的是这个生产事件顺序风险，
+// 不等于已在真实原生窗口挂起）。
+//
+// 因此 pump **只在 loop 明确请求时**读取一次 Event()；loop 在处理完该事件
+// （Layout + Frame 回调返回 + 关闭请求结算）之后才发出下一次请求。
+// 每窗拥有独立的 requests/events/pump，互不串扰。
 func (h *WindowHost) loopWindow(wh *WindowHandle) {
 	defer h.onWindowClosed(wh)
-	events := make(chan event.Event, 1)
+	events := make(chan event.Event) // 无缓冲：pump 必须等 loop 接收
+	requests := make(chan struct{})  // loop -> pump：允许拉取下一次 Event()
 	go func() {
 		for {
+			select {
+			case <-requests:
+			case <-wh.done:
+				return
+			}
 			e := wh.w.Event()
+			destroy := false
 			if _, ok := e.(gioapp.DestroyEvent); ok {
 				wh.destroySeen.Store(true) // 后端已交出销毁事件：禁止后续调用
+				destroy = true
 			}
 			select {
 			case events <- e:
 			case <-wh.done:
 				return
 			}
-			if _, ok := e.(gioapp.DestroyEvent); ok {
+			if destroy {
 				return
 			}
 		}
 	}()
 
+	requestNext := func() bool {
+		select {
+		case requests <- struct{}{}:
+			return true
+		case <-wh.done:
+			return false
+		}
+	}
+
 	var ops op.Ops
+	if !requestNext() { // 首个 Event() 由 loop 显式放行
+		return
+	}
 	for {
 		select {
 		case <-wh.closeNotify:
+			// Close 非阻塞：排队信号在这里结算；驱动未就绪时只保留排队。
 			wh.flushClose()
 		case e := <-events:
 			// R27 边界：首个 Event() 返回（pump 已读到事件）才标记驱动就绪。
 			wh.driverReady.Store(true)
 			switch e := e.(type) {
 			case gioapp.DestroyEvent:
+				// 销毁优先：不再请求下一个事件，也不再触后端。
 				wh.destroyed.Store(true)
 				wh.destroyOnce.Do(func() {
 					wh.setErr(windowExitError(e.Err))
@@ -292,11 +339,15 @@ func (h *WindowHost) loopWindow(wh *WindowHandle) {
 			case gioapp.FrameEvent:
 				gtx := gioapp.NewContext(&ops, e)
 				wh.view.Layout(gtx, wh.th)
-				e.Frame(gtx.Ops)
+				e.Frame(gtx.Ops) // 真实后端在此完成帧交换并 ack
 				wh.frames.Add(1)
 			}
-			// 首事件就绪后立刻结算排队的关闭请求（至多一次）。
+			// 首事件就绪后结算排队的关闭请求（至多一次）。
 			wh.flushClose()
+			// 前一事件（含 Frame 回调）处理完成后，才允许拉取下一事件。
+			if !requestNext() {
+				return
+			}
 		}
 	}
 }

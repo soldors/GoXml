@@ -348,35 +348,63 @@ func TestS2ConcurrentBackgroundCancelUsesEachUIOwner(t *testing.T) {
 	}
 }
 
-// TestS2LegacyEntryPointsRemainUnchanged 守卫旧入口兼容性：
-// 宿主不修改 mainFunc/windowEventSource，Main 只调用一次；RunWith 与
-// RunSingleWindowProcess 的既有语义保持。
+// TestS2LegacyEntryPointsRemainUnchanged 守卫旧入口兼容性（R2 语义）：
+// 单窗正常路径照常；Host 的 Main 只调用一次；Host 已认领后旧入口混用
+// 明确返回 ErrGioMainAlreadyOwned / 退出码 1，绝不第二次进入 Main。
 func TestS2LegacyEntryPointsRemainUnchanged(t *testing.T) {
+	resetGioMainForTest()
+	t.Cleanup(resetGioMainForTest)
 	orig := mainFunc
 	defer func() { mainFunc = orig }()
 	var called atomic.Int32
 	mainFunc = func() { called.Add(1) }
 
-	host := NewWindowHost()
-	host.Run()
-	host.Run() // 一次性初始化：第二次不得再调 Main
-	if got := called.Load(); got != 1 {
-		t.Fatalf("Main 应只调用一次，实得 %d", got)
-	}
+	// (1) 已批准的单窗正常路径（无 Host 认领）。
 	if err := RunWith(&s1View{}, material.NewTheme(), Config{}); err != nil {
-		t.Fatalf("旧 RunWith 应仍正常返回: %v", err)
+		t.Fatalf("单窗 RunWith 应仍正常返回: %v", err)
 	}
-	if got := called.Load(); got != 2 {
-		t.Fatalf("旧 RunWith 仍应调用 Main，实得 %d", got)
-	}
-	// 旧单窗进程入口仍是进程级收口（S1 已证；此处独立复核一次）。
-	exits := 0
+	exits, code := 0, -1
 	RunSingleWindowProcess(&s1View{}, Config{}, ProcessOptions{
 		Theme: material.NewTheme(),
 		next:  s1Events(1),
-		exit:  func(int) { exits++ },
+		exit:  func(c int) { exits++; code = c },
 	})
-	if exits != 1 || called.Load() != 3 {
-		t.Fatalf("旧单窗进程入口语义被改动: exits=%d mainCalls=%d", exits, called.Load())
+	if exits != 1 || code != 0 || called.Load() != 2 {
+		t.Fatalf("单窗正常路径被改动: exits=%d code=%d mainCalls=%d", exits, code, called.Load())
+	}
+
+	// (2) 互斥场景：reset 后 Host 取得所有权，Main 只调用一次。
+	resetGioMainForTest()
+	host := NewWindowHost()
+	if err := host.Run(); err != nil {
+		t.Fatalf("首个宿主应取得 Main 所有权: %v", err)
+	}
+	if err := host.Run(); err != nil {
+		t.Fatalf("同一宿主重复 Run 应幂等: %v", err)
+	}
+	if got := called.Load(); got != 3 {
+		t.Fatalf("Host Main 应恰好一次，实得 %d", got)
+	}
+
+	// (3) Host 先行 + 旧 RunWith：明确失败，不进入 Main。
+	if err := RunWith(&s1View{}, material.NewTheme(), Config{}); !errors.Is(err, ErrGioMainAlreadyOwned) {
+		t.Fatalf("Host 先行后旧入口应被明确拒绝，实得 %v", err)
+	}
+	// (4) Host 先行 + 单窗进程入口：Observer 可见错误、exit(1)、不进入 Main。
+	mixExits, mixCode := 0, -1
+	var mixErr error
+	RunSingleWindowProcess(&s1View{}, Config{}, ProcessOptions{
+		Theme:    material.NewTheme(),
+		next:     s1Events(1),
+		Observer: func(res ExitResult) { mixErr = res.Err },
+		exit:     func(c int) { mixExits++; mixCode = c },
+	})
+	if mixExits != 1 || mixCode != 1 || !errors.Is(mixErr, ErrGioMainAlreadyOwned) || called.Load() != 3 {
+		t.Fatalf("混用语义异常: exits=%d code=%d err=%v mainCalls=%d",
+			mixExits, mixCode, mixErr, called.Load())
+	}
+	_, _, blocked := GioMainState()
+	if blocked != 2 {
+		t.Fatalf("两次被阻止的混用应可计数，实得 %d", blocked)
 	}
 }
