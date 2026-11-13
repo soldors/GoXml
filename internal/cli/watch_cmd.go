@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	hc "github.com/goxml/goxml/internal/devx/hydrationchannel"
 	"github.com/goxml/goxml/internal/devx/process"
 	"github.com/goxml/goxml/internal/devx/watch"
 	"github.com/goxml/goxml/internal/devx/watchadapter"
+	rst "github.com/goxml/goxml/pkg/runtime/hydration"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,6 +26,14 @@ const watchUsage = `用法: goxml watch <module-dir> --entry <relative-main-pack
   --build-timeout-seconds <n>    每代生成与构建上限，默认120s
 仅监听模块内文件；构建成功后停止旧进程再启动新代。没有内存状态恢复。
 Ctrl+C停止监听并清理自有进程树。Windows首版。
+
+可选 Hydration（默认关闭；显式 --hydration 才启用）：
+  --hydration                     启用跨进程状态恢复（需应用经 hydrationchannel 实现 Capture/恢复）
+  --hydration-session <id>        会话标识（默认 watch）
+  --hydration-app <id>            应用标识（默认来自 --entry）
+  --hydration-schema <id>         DTO schema（默认 watch.v1）
+启用后：旧代在停旧前于应用 owner 串行点捕获显式 DTO 并原子提交；新代据注入的环境恢复到 owner；
+捕获失败/取消保旧不切换；新代启动失败不自动复活旧代。会话 token 仅经子进程环境注入，不出现在 argv/诊断。
 `
 
 type watchOptions struct {
@@ -30,11 +42,17 @@ type watchOptions struct {
 	timeout     int
 	args        []string
 	excludes    devStringList
+	// Hydration opt-in（候选；默认关闭）。
+	hydration        bool
+	hydrationSession string
+	hydrationApp     string
+	hydrationSchema  string
 }
 
 func parseWatch(args []string) (watchOptions, error) {
 	var o watchOptions
-	pos, opts, tail, err := splitDevArgs(args, map[string]bool{"exclude-dir": true, "entry": true, "poll-ms": true, "build-timeout-seconds": true})
+	pos, opts, tail, err := splitDevArgs(args, map[string]bool{"exclude-dir": true, "entry": true, "poll-ms": true, "build-timeout-seconds": true,
+		"hydration": false, "hydration-session": true, "hydration-app": true, "hydration-schema": true})
 	if err != nil {
 		return o, err
 	}
@@ -44,6 +62,10 @@ func parseWatch(args []string) (watchOptions, error) {
 	fs.StringVar(&o.entry, "entry", "", "")
 	fs.IntVar(&o.poll, "poll-ms", 50, "")
 	fs.IntVar(&o.timeout, "build-timeout-seconds", 120, "")
+	fs.BoolVar(&o.hydration, "hydration", false, "")
+	fs.StringVar(&o.hydrationSession, "hydration-session", "watch", "")
+	fs.StringVar(&o.hydrationApp, "hydration-app", "", "")
+	fs.StringVar(&o.hydrationSchema, "hydration-schema", "watch.v1", "")
 	if err = fs.Parse(opts); err != nil {
 		return o, err
 	}
@@ -119,8 +141,19 @@ func runWatch(ctx context.Context, args []string, stdout, stderr io.Writer, tool
 	pm.WorkDir = root
 	pm.Stdout = stdout
 	pm.Stderr = stderr
+	cfg := makeWatchConfig(root, o)
+	// S3：opt-in Hydration。默认关闭——不设置时 cfg.Hydration=nil、pm.EnvFor=nil，行为与既有完全一致。
+	if o.hydration {
+		hook, envFor, hErr := buildHydration(root, o, stdout, stderr)
+		if hErr != nil {
+			fmt.Fprintf(stderr, "goxml watch: hydration 启用失败: %v\n", hErr)
+			return ExitFailure
+		}
+		cfg.Hydration = hook
+		pm.EnvFor = envFor
+	}
 	obs := watchObserver{pm, stdout, stderr}
-	w, err := watch.New(makeWatchConfig(root, o), b, pm, obs)
+	w, err := watch.New(cfg, b, pm, obs)
 	if err != nil {
 		fmt.Fprintf(stderr, "goxml watch: %v\n", err)
 		return ExitFailure
@@ -174,3 +207,62 @@ func (s *devStringList) Set(v string) error {
 func makeWatchConfig(root string, o watchOptions) watch.Config {
 	return watch.Config{ProjectDir: root, PollIntervalMS: o.poll, DebounceMS: 100, BuildTimeoutMS: o.timeout * 1000, ExcludeDirs: append([]string(nil), o.excludes...)}
 }
+
+// buildHydration 构造 opt-in Hydration 的 Session、Watch Hook 与子进程环境注入。
+// 语义（候选）：
+//   - 会话 token 由父端随机生成（crypto/rand）；**仅经子进程环境** (HYD_TOKEN) 注入，绝不进入 argv 或诊断输出。
+//   - 旧代（gen==1）：子进程以 HYD_MODE=serve 起端点；父端在停旧前经 portfile 发现端点并 Capture（owner 串行，应用侧）。
+//   - 新代（gen>=2）：子进程以 HYD_MODE=restore 从 HYD_STATE 恢复；注入 HYD_STATE=<本会话状态文件>。
+//   - Capture 失败/取消 -> hook.BeforeSwap 返回错误 -> Watch 保旧不切换（既有配置）。
+//   - 新代启动失败沿用既有 Watch 次序（如实报告当前无服务，不自动复活旧代）。
+func buildHydration(root string, o watchOptions, stdout, stderr io.Writer) (*watch.HydrationHook, func(int) []string, error) {
+	tok, terr := newSessionToken()
+	if terr != nil {
+		return nil, nil, terr
+	}
+	appID := o.hydrationApp
+	if strings.TrimSpace(appID) == "" {
+		appID = strings.TrimPrefix(o.entry, "./")
+	}
+	sess, serr := hc.NewSession(hc.SessionConfig{
+		ProjectDir: root, SessionID: o.hydrationSession, AppID: appID,
+		Schema: rstSchema(o.hydrationSchema), Token: tok, CaptureTimeout: hc.DefaultCaptureTimeout,
+	})
+	if serr != nil {
+		return nil, nil, serr
+	}
+	statePath := sess.Store().Path()
+	baseEnv := func(gen int) []string {
+		e := []string{
+			"HYD_PROJECT=" + root, "HYD_SESSION=" + o.hydrationSession,
+			"HYD_APP=" + appID, "HYD_SCHEMA=" + o.hydrationSchema, "HYD_TOKEN=" + tok,
+			fmt.Sprintf("HYD_GEN=%d", gen),
+		}
+		if gen >= 2 {
+			e = append(e, "HYD_MODE=restore", "HYD_STATE="+statePath)
+		} else {
+			e = append(e, "HYD_MODE=serve")
+		}
+		return e
+	}
+	capture := func(ctx context.Context, oldGen int) ([]byte, error) {
+		cl, ok := sess.NewClientFromPort(tok)
+		if !ok {
+			return nil, fmt.Errorf("无可用旧代端点（gen=%d）", oldGen)
+		}
+		return cl.Capture(ctx, oldGen)
+	}
+	hook := &watch.HydrationHook{Proto: sess.Proto(), Capture: capture, RestoreEnv: nil}
+	return hook, baseEnv, nil
+}
+
+// newSessionToken 生成一次性随机会话 token（仅内存/子进程环境，不打印）。
+func newSessionToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func rstSchema(s string) rst.Schema { return rst.Schema(s) }
