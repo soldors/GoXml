@@ -39,3 +39,7 @@
 - S4 边界组（默认关闭/两代恢复/构建失败保旧/协议失败拒绝/退出清理）复跑全绿：id `r4-s4`（rc0）。
 - 全包终态：id `r4-pkg-full-final`（rc0）。
 - 仍**未验证**：`-race`（本机无 gcc/MinGW）；真实业务 app（非 exampleapp/外部 module fixture）的 CLI 原生端到端。
+
+## 提交
+- `1a2def0` fix(r29-a r4): 运行身份隔离发现文件 + storeOwning 有界读取
+- `261e79a` test(r29-a r4): 真实进程+固定小容量防重放三态边界（默认/显式 reject 与 evict）
