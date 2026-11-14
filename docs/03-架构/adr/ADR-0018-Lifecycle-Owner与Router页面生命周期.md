@@ -97,3 +97,7 @@ Owner/Router opt-in 合同为 **Accepted**。受控组合和上述 Windows 单�
 3. [TASK-LIFE-001-3](../../04-WBS/任务卡/TASK-LIFE-001.md) 中静态资产发现、嵌入声明与生成引用已由已发布的 Image v1 覆盖；通用资产 API、额外格式及跨包复制等扩展仍待裁决，不在本 ADR 的批准范围。
 
 本 ADR 的 Windows 原生结论限于上述两条单窗关闭路径。发布状态以协调者的发布记录及 Git 引用为准。
+
+## R29 Windows/amd64 双窗候选
+
+`WindowHost` 与 `ProcessOptions.OnMainConflict` 随源码提供，维持候选等级。进程只认领一次 Gio Main。旧单窗进程入口遇到 Main 冲突时默认退出码为 1，显式选择 `MainConflictReturn` 时在通知 Observer 后返回。保留 `1e52179` 的宿主终态修复。 双窗原生证据见 [R29 发布验收](../../05-开发/2026-11-15-R29-Windows发布与验收.md)。

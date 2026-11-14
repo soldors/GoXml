@@ -68,3 +68,7 @@ Token 仅用于会话绑定、请求关联和重放拒绝。Token 不视为认�
 - `pkg/runtime/hydration` 与 `internal/devx/hydration`：显式 Envelope、校验、原子保存与失败保旧。
 - 既有 R28-A generation closure 证据保留原始失败与修复后结果；本 ADR 不改生产代码、不重写历史报告。
 - 当前批准仅覆盖开发态 Windows 组合；原生窗口、跨平台运行、最终 API 收敛和正式性能/安全门禁必须另行验收。
+
+## R29 Windows/amd64 发布补充
+
+Windows/amd64 开发态可显式使用 `goxml watch --hydration` 与 `pkg/hydrationapp`。状态和端点发现按运行隔离，同项目并行 Watch 分别产出 `.goxml/run/<runID>/watch-bin-genN.exe`。共享生成事务通过 `.goxml/generate.lock` 在 Windows 上串行化，未启用 Hydration 的生成路径也使用该锁。回环 TCP 和显式 DTO 的开发态边界延续。CLI 联动端点默认满额拒绝（`reject`），可显式选 `evict`。直接构造的 Session 零值采用 `evict`。默认容量为 4096，旧记录仅供只读回退。 本节承接前文 R28 发布记录，当前范围见 [R29 发布验收](../../05-开发/2026-11-15-R29-Windows发布与验收.md)。

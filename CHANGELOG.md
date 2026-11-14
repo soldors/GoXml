@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-15 R29 Windows/amd64 源码发布
+
+- **Watch Hydration** 默认关闭。显式启用后，同项目并行运行分别构建并恢复各自的状态。共享生成加锁适用于两条生成路径。
+- **DataGrid** 新增默认关闭的横滚与多选，应用可显式调用稳定排序。真实窗口 N1–N6 连续验收通过。
+- **WindowHost** 与 `OnMainConflict` 保持候选等级。Windows 双窗自然关闭和后台取消后关闭通过原生验收。
+
+跨平台运行、独立 DPI/IME 矩阵和整应用性能未验证。见 [R29 发布范围与验收](docs/05-开发/2026-11-15-R29-Windows发布与验收.md)。
+
 ## 2026-11-13 R28 Windows/amd64 源码发布
 
 - **Hydration** 默认关闭。开发态可显式启用回环 TCP 和 DTO 状态恢复。代次不符返回 `ErrMismatch`，连接取消和代次不符均不交付 payload。公共 CLI 自动恢复尚未接线，nonce 记录容量仍待确定。见 [ADR-0016](docs/03-架构/adr/ADR-0016-Hydration开发态跨进程状态恢复范围.md)。
