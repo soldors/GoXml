@@ -1,5 +1,9 @@
 # TASK-DEVX-001：实现双进程防抖热重启与状态恢复
 
+## 2026-11-15 R29 发布更新
+
+Windows/amd64 已发布 goxml watch --hydration 与 pkg/hydrationapp 的开发态接入，默认关闭。真实并行 Watch 验证了运行隔离和各自恢复。整卡继续跟踪合同外范围。 见 [R29 发布范围与验收](../../05-开发/2026-11-15-R29-Windows发布与验收.md)。
+
 ## 元信息
 - 状态：InProgress（R26 Windows 基础范围已验；整卡剩余范围未闭环） | 优先级：P1 | 预计：6h
 - 分支：feature/TASK-DEVX-001

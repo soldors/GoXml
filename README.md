@@ -44,7 +44,8 @@ GXML 是一个面向 Go 桌面 GUI 的声明式 UI 框架。开发者用 `.gxml`
 - **R28 Windows/amd64 源码发布**：开发态回环 TCP Hydration、DataGrid 键盘导航和 Owner/Router 页面生命周期均显式启用、默认关闭。固定表头、键盘与输入、DPI 切换及 Lifecycle 两种单窗关窗已通过本机验收。见 [R28 验收与范围](docs/00-文档索引.md)。
 - **R27 Windows 基础范围**：显式 DTO Hydration、只读固定行高 DataGrid、显式单窗进程入口已批准并通过限定验收，公开 API 已收敛。无窗口组合与 race、DataGrid 原生交互和单窗退出链路均已验证。见 [R27 范围与验收](docs/05-开发/2026-11-09-R27-基础范围与组合验收.md)。
 - **R26 已发布范围**：Windows `goxml watch`、纯静态 `goxml preview` 与 ContextMenu/Modal，见 [接线与验收](docs/05-开发/2026-11-08-R26-Windows接线与验收.md)。完整 Frame 成本和整卡剩余项分别登记。
-- R28 的功能验收与当前任务入口见 [文档索引](docs/00-文档索引.md)。R25 的 WBS 快照见 [R25 项目状态总览](docs/04-WBS/2026-11-06-R25-项目状态总览.md)。
+- **R29 Windows/amd64 源码发布**：Watch 开发态状态恢复、DataGrid 横滚与多选均默认关闭，应用可显式排序。WindowHost 保持候选等级。见 [R29 发布验收](docs/05-开发/2026-11-15-R29-Windows发布与验收.md)。
+- R29 和 R28 的功能验收与当前任务入口见 [文档索引](docs/00-文档索引.md)。R25 的 WBS 快照见 [R25 项目状态总览](docs/04-WBS/2026-11-06-R25-项目状态总览.md)。
 
 新用户可从[可构建入门工程](examples/gxml/README.md)开始：使用同一份 ViewModel/GXML 完成真实 CLI 生成、构建和可选手工窗口运行。历史并行开发范围见[10月31日计划](docs/05-开发/2026-10-31-并行开发计划.md)。
 
@@ -159,7 +160,7 @@ ADR-0013 主题草稿仍待裁决；ADR-0015 Image 已批准，范围以各自�
 |---|---|
 | Codegen 分阶段验收 | 绑定/事件/布局/If/For/Grid/Input/Image/Expanded基础已有实现与测试；完整边界和性能验收不能仅凭生成成功确认 |
 | Image v1 范围 | 静态 Src/Fit、PNG/JPEG、包内相对资产；绑定 Src/Fit、SVG、网络图不在已批准范围 |
-| CLI 已可用 | generate 单文件/目录、`--out-dir`、`--clean`、`--check`、增量缓存；Windows `watch` 和纯静态 `preview` 已可用，R28 Hydration 保持程序化 opt-in，公共 CLI 自动恢复尚未接线 |
+| CLI 已可用 | generate 单文件/目录、`--out-dir`、`--clean`、`--check`、增量缓存；Windows `watch` 和纯静态 `preview` 已可用，R29 开发态恢复可用 goxml watch --hydration 显式启用，默认关闭 |
 | 窗口渲染未自动验证 | 已有离屏像素/几何/事件语义和 Router 原生事件循环自动化；真实视觉仍需人工确认，R20 人工视觉与原生 race 结论限其声明的冻结提交 |
 | 本批仅 Windows 验证 | 历史 Linux 原生编译记录见平台矩阵；不外推 Linux/macOS 运行结果 |
 | 字体整体正式验收未通过 | M1 阈值、跨平台、第二成功 family 未闭环；比较机制与真实 App M1 已有历史证据但本轮无新采样，见 [R23-B 差距矩阵](docs/03-架构/字体正式验收差距矩阵-R23B.md) |
